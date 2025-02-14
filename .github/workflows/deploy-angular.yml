@@ -25,10 +25,10 @@ jobs:
         run: npm install
 
       - name: Build Angular app
-        run: npm run build -- --configuration=production --output-path=dist/ktchns --base-href "/your-repo-name/"
+        run: npm run build -- --configuration=production --base-href "/ktchns/" --deploy-url "/ktchns/"
 
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
         with:
           branch: gh-pages
-          folder: dist/ktchns/browser 
+          folder: dist/ktchns/browser  # << Ensure this matches your output
