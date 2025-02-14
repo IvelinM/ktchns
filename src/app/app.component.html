@@ -1,1 +1,59 @@
-Hello
+<!-- Header -->
+<mat-toolbar color="primary">
+  <span class="logo">IM Studio</span>
+  <div class="header-content">
+    <nav>
+      <a mat-button href="#">{{ translations[currentLanguage].home }}</a>
+      <a mat-button href="#">{{ translations[currentLanguage].portfolio }}</a>
+      <a mat-button href="#">{{ translations[currentLanguage].services }}</a>
+      <a mat-button href="#">{{ translations[currentLanguage].about }}</a>
+      <a mat-button href="#">{{ translations[currentLanguage].contact }}</a>
+    </nav>
+    <div class="language-toggle">
+      <button mat-button (click)="toggleLanguage('en')">EN</button>
+      <span>/</span>
+      <button mat-button (click)="toggleLanguage('bg')">BG</button>
+    </div>
+  </div>
+  <button mat-icon-button (click)="toggleMenu()" class="hamburger">
+    <mat-icon>menu</mat-icon>
+  </button>
+</mat-toolbar>
+
+<!-- Hero Section -->
+<section class="hero">
+  <div class="hero-content">
+    <h1 id="heroTitle">{{ translations[currentLanguage].heroTitle }}</h1>
+    <p id="heroSubtitle">{{ translations[currentLanguage].heroSubtitle }}</p>
+    <a mat-raised-button color="accent" href="#">
+      {{ translations[currentLanguage].heroCTA }} <mat-icon>phone</mat-icon>
+    </a>
+  </div>
+</section>
+
+<!-- Services Section -->
+<section class="services">
+  <h2 id="servicesTitle">{{ translations[currentLanguage].servicesTitle }}</h2>
+  <div class="service-grid">
+    <div class="service-card">
+      <img src="https://images.unsplash.com/photo-1595526114035-0d45ed16cfbf?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1470&q=80" alt="Zasnemane">
+      <h3 id="service1Title">{{ translations[currentLanguage].service1Title }}</h3>
+      <p id="service1Desc">{{ translations[currentLanguage].service1Desc }}</p>
+    </div>
+    <div class="service-card">
+      <img src="https://images.unsplash.com/photo-1600585152220-90363fe7e115?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1470&q=80" alt="Kitchens">
+      <h3 id="service2Title">{{ translations[currentLanguage].service2Title }}</h3>
+      <p id="service2Desc">{{ translations[currentLanguage].service2Desc }}</p>
+    </div>
+    <div class="service-card">
+      <img src="https://images.unsplash.com/photo-1616486029423-aaa4789e8c9a?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1470&q=80" alt="Other Furniture">
+      <h3 id="service3Title">{{ translations[currentLanguage].service3Title }}</h3>
+      <p id="service3Desc">{{ translations[currentLanguage].service3Desc }}</p>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p>&copy; 2023 IM Studio. All rights reserved.</p>
+</footer>
