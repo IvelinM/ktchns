@@ -18,6 +18,7 @@
           "builder": "@angular-devkit/build-angular:application",
           "options": {
             "outputPath": "dist/ktchns",
+            "baseHref": "ktchns",
             "index": "src/index.html",
             "browser": "src/main.ts",
             "polyfills": [
