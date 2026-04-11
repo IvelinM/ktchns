@@ -1,0 +1,21 @@
+<div class="projects-grid">
+  <mat-card
+    *ngFor="let project of projects"
+    class="project-card"
+    matRipple
+    (click)="open(project)"
+  >
+    <img mat-card-image [src]="project.cover" [alt]="project.name" />
+    <mat-card-content>
+      <h3 class="project-name">{{ project.name }}</h3>
+      <p class="image-count">{{ project.images.length }} снимки</p>
+    </mat-card-content>
+  </mat-card>
+</div>
+
+<app-project-slider
+  *ngIf="activeProject"
+  [images]="activeProject.images"
+  [projectName]="activeProject.name"
+  (closed)="close()"
+></app-project-slider>

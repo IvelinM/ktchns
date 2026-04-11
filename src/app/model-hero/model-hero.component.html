@@ -1,0 +1,38 @@
+<!-- Tall scroll container — camera animates as user scrolls through this height -->
+<section class="model-section" #section>
+
+  <!-- Sticky viewport — stays pinned while section scrolls past -->
+  <div class="sticky-wrapper" #wrapper>
+
+    <canvas #canvas></canvas>
+
+    <!-- Loading spinner -->
+    <div class="loading-overlay" *ngIf="loading">
+      <div class="spinner"></div>
+      <p class="loading-label">Зареждане…</p>
+    </div>
+
+    <!-- Error fallback -->
+    <div class="error-overlay" *ngIf="hasError">
+      <p>Моделът не може да бъде зареден.</p>
+    </div>
+
+    <!-- Hero text — fades out on scroll (production) -->
+    <div class="hero-text" #heroText [class.visible]="!loading && !hasError">
+      <p class="eyebrow">IM Studio</p>
+      <h1>{{ title }}</h1>
+      <p class="subtitle">{{ subtitle }}</p>
+      <button class="cta-btn" (click)="ctaClick.emit()">
+        {{ ctaLabel }}
+        <span class="arrow">→</span>
+      </button>
+    </div>
+
+    <!-- Scroll hint — bottom of sticky panel -->
+    <div class="scroll-hint" [class.visible]="!loading && !hasError">
+      <span class="scroll-line"></span>
+      <span class="scroll-label">scroll</span>
+    </div>
+
+  </div>
+</section>

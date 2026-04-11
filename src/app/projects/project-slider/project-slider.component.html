@@ -1,0 +1,36 @@
+<div class="slider-overlay" (click)="close()">
+
+  <!-- Prevent click propagation on inner content -->
+  <div class="slider-inner" (click)="$event.stopPropagation()">
+
+    <img
+      class="slider-image"
+      [class.fading]="fading"
+      [src]="images[currentIndex]"
+      [alt]="projectName + ' ' + (currentIndex + 1)"
+    />
+
+    <!-- Prev -->
+    <button mat-icon-button class="nav-btn prev-btn" (click)="prev()" aria-label="Previous">
+      <mat-icon>chevron_left</mat-icon>
+    </button>
+
+    <!-- Next -->
+    <button mat-icon-button class="nav-btn next-btn" (click)="next()" aria-label="Next">
+      <mat-icon>chevron_right</mat-icon>
+    </button>
+
+    <!-- Counter -->
+    <div class="counter">{{ currentIndex + 1 }} / {{ images.length }}</div>
+
+  </div>
+
+  <!-- Close -->
+  <button mat-icon-button class="close-btn" (click)="close()" aria-label="Close">
+    <mat-icon>close</mat-icon>
+  </button>
+
+  <!-- Project name -->
+  <div class="project-title">{{ projectName }}</div>
+
+</div>

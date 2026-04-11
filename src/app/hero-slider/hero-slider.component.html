@@ -1,0 +1,38 @@
+<section class="hero-slider">
+  <!-- Slides -->
+  <div class="slides">
+    <div
+      *ngFor="let img of images; let i = index"
+      class="slide"
+      [class.active]="i === currentIndex"
+      [style.background-image]="'url(' + img + ')'"
+    ></div>
+  </div>
+
+  <!-- Dark overlay -->
+  <div class="overlay"></div>
+
+  <!-- Hero text -->
+  <div class="hero-text">
+    <p class="eyebrow">IM Studio</p>
+    <h1>{{ title }}</h1>
+    <p class="subtitle">{{ subtitle }}</p>
+    <button class="cta-btn" (click)="ctaClick.emit()">
+      {{ ctaLabel }}<span class="arrow">→</span>
+    </button>
+  </div>
+
+  <!-- Prev / Next -->
+  <button class="nav prev" (click)="prev()" aria-label="Previous">&#8249;</button>
+  <button class="nav next" (click)="next()" aria-label="Next">&#8250;</button>
+
+  <!-- Dot indicators -->
+  <div class="dots">
+    <span
+      *ngFor="let img of images; let i = index"
+      class="dot"
+      [class.active]="i === currentIndex"
+      (click)="goTo(i)"
+    ></span>
+  </div>
+</section>

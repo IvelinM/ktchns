@@ -3,11 +3,11 @@
   <span class="logo">IM Studio</span>
   <div class="header-content">
     <nav>
-      <a mat-button href="#">{{ translations[currentLanguage].home }}</a>
-      <a mat-button href="#">{{ translations[currentLanguage].portfolio }}</a>
-      <a mat-button href="#">{{ translations[currentLanguage].services }}</a>
-      <a mat-button href="#">{{ translations[currentLanguage].about }}</a>
-      <a mat-button href="#">{{ translations[currentLanguage].contact }}</a>
+      <a mat-button (click)="scrollTo('home')">{{ translations[currentLanguage].home }}</a>
+      <a mat-button (click)="scrollTo('projects')">{{ translations[currentLanguage].projects }}</a>
+      <a mat-button (click)="scrollTo('services')">{{ translations[currentLanguage].services }}</a>
+      <a mat-button (click)="scrollTo('about')">{{ translations[currentLanguage].about }}</a>
+      <a mat-button (click)="scrollTo('contact')">{{ translations[currentLanguage].contact }}</a>
     </nav>
     <div class="language-toggle">
       <button mat-button (click)="toggleLanguage('en')">EN</button>
@@ -20,40 +20,176 @@
   </button>
 </mat-toolbar>
 
-<!-- Hero Section -->
-<section class="hero">
-  <div class="hero-content">
-    <h1 id="heroTitle">{{ translations[currentLanguage].heroTitle }}</h1>
-    <p id="heroSubtitle">{{ translations[currentLanguage].heroSubtitle }}</p>
-    <a mat-raised-button color="accent" href="#">
-      {{ translations[currentLanguage].heroCTA }} <mat-icon>phone</mat-icon>
-    </a>
+<!-- Page body (offset for fixed toolbar) -->
+<div class="page-body">
+
+<!-- Hero Image Slider -->
+<div id="home">
+  <app-hero-slider
+    [title]="translations[currentLanguage].heroTitle"
+    [subtitle]="translations[currentLanguage].heroSubtitle"
+    [ctaLabel]="translations[currentLanguage].heroCTA"
+    (ctaClick)="scrollTo('contact')"
+  ></app-hero-slider>
+</div>
+
+<!-- Services Section -->
+<section class="services" id="services">
+  <h2>{{ translations[currentLanguage].servicesTitle }}</h2>
+  <div class="service-grid">
+
+    <!-- Measurements taking / Заснемане -->
+    <div class="service-card">
+      <div class="service-icon">
+        <svg viewBox="0 0 80 80" fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <!-- Ruler body -->
+          <rect x="8" y="35" width="64" height="14" rx="2"/>
+          <!-- Tick marks -->
+          <line x1="18" y1="35" x2="18" y2="43"/>
+          <line x1="28" y1="35" x2="28" y2="46"/>
+          <line x1="38" y1="35" x2="38" y2="43"/>
+          <line x1="48" y1="35" x2="48" y2="46"/>
+          <line x1="58" y1="35" x2="58" y2="43"/>
+          <!-- Dimension arrow -->
+          <line x1="14" y1="24" x2="66" y2="24"/>
+          <polyline points="20,19 14,24 20,29"/>
+          <polyline points="60,19 66,24 60,29"/>
+          <!-- Floor plan corner -->
+          <polyline points="20,14 8,14 8,33"/>
+          <line x1="20" y1="14" x2="34" y2="14"/>
+        </svg>
+      </div>
+      <h3>{{ translations[currentLanguage].service1Title }}</h3>
+      <p>{{ translations[currentLanguage].service1Desc }}</p>
+    </div>
+
+    <!-- Design / Проектиране -->
+    <div class="service-card">
+      <div class="service-icon">
+        <svg viewBox="0 0 80 80" fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <!-- Blueprint sheet -->
+          <rect x="12" y="10" width="46" height="58" rx="2"/>
+          <!-- Grid lines -->
+          <line x1="12" y1="28" x2="58" y2="28"/>
+          <line x1="12" y1="46" x2="58" y2="46"/>
+          <line x1="35" y1="10" x2="35" y2="68"/>
+          <!-- Cabinet schematic on blueprint -->
+          <rect x="18" y="32" width="14" height="12" rx="1"/>
+          <rect x="37" y="32" width="14" height="12" rx="1"/>
+          <!-- Pencil -->
+          <line x1="60" y1="10" x2="72" y2="22"/>
+          <line x1="58" y1="14" x2="70" y2="26"/>
+          <line x1="58" y1="14" x2="54" y2="26"/>
+          <line x1="70" y1="26" x2="54" y2="26"/>
+          <line x1="62" y1="27" x2="62" y2="32"/>
+        </svg>
+      </div>
+      <h3>{{ translations[currentLanguage].service2Title }}</h3>
+      <p>{{ translations[currentLanguage].service2Desc }}</p>
+    </div>
+
+    <!-- Production / Изработка -->
+    <div class="service-card">
+      <div class="service-icon">
+        <svg viewBox="0 0 80 80" fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <!-- Counter top -->
+          <rect x="7" y="12" width="66" height="7" rx="1.5"/>
+          <!-- Cabinet body -->
+          <rect x="10" y="19" width="60" height="50" rx="1.5"/>
+          <!-- Vertical divider -->
+          <line x1="40" y1="19" x2="40" y2="69"/>
+          <!-- Left door -->
+          <rect x="13" y="23" width="24" height="42" rx="1"/>
+          <!-- Right door -->
+          <rect x="43" y="23" width="24" height="42" rx="1"/>
+          <!-- Handles -->
+          <line x1="29" y1="42" x2="29" y2="50"/>
+          <line x1="51" y1="42" x2="51" y2="50"/>
+        </svg>
+      </div>
+      <h3>{{ translations[currentLanguage].service3Title }}</h3>
+      <p>{{ translations[currentLanguage].service3Desc }}</p>
+    </div>
+
+    <!-- Installation / Монтаж -->
+    <div class="service-card">
+      <div class="service-icon">
+        <svg viewBox="0 0 80 80" fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <!-- Wall cabinet -->
+          <rect x="8" y="12" width="50" height="34" rx="1.5"/>
+          <!-- Cabinet door -->
+          <rect x="12" y="16" width="42" height="26" rx="1"/>
+          <!-- Handle -->
+          <line x1="31" y1="27" x2="31" y2="33"/>
+          <!-- Wall anchor dots -->
+          <circle cx="18" cy="20" r="2.5"/>
+          <circle cx="46" cy="20" r="2.5"/>
+          <!-- Screwdriver -->
+          <line x1="62" y1="18" x2="74" y2="10"/>
+          <line x1="64" y1="22" x2="76" y2="14"/>
+          <line x1="62" y1="18" x2="64" y2="22"/>
+          <line x1="74" y1="10" x2="76" y2="14"/>
+          <!-- Screwdriver shaft -->
+          <line x1="63" y1="20" x2="56" y2="56"/>
+          <!-- Tip -->
+          <polyline points="53,56 56,56 59,56"/>
+          <!-- Base cabinet below (being installed) -->
+          <rect x="8" y="54" width="50" height="20" rx="1.5"/>
+          <line x1="8" y1="60" x2="58" y2="60"/>
+        </svg>
+      </div>
+      <h3>{{ translations[currentLanguage].service4Title }}</h3>
+      <p>{{ translations[currentLanguage].service4Desc }}</p>
+    </div>
+
   </div>
 </section>
 
-<!-- Services Section -->
-<section class="services">
-  <h2 id="servicesTitle">{{ translations[currentLanguage].servicesTitle }}</h2>
-  <div class="service-grid">
-    <div class="service-card">
-      <img src="https://images.unsplash.com/photo-1595526114035-0d45ed16cfbf?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1470&q=80" alt="Zasnemane">
-      <h3 id="service1Title">{{ translations[currentLanguage].service1Title }}</h3>
-      <p id="service1Desc">{{ translations[currentLanguage].service1Desc }}</p>
-    </div>
-    <div class="service-card">
-      <img src="https://images.unsplash.com/photo-1600585152220-90363fe7e115?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1470&q=80" alt="Kitchens">
-      <h3 id="service2Title">{{ translations[currentLanguage].service2Title }}</h3>
-      <p id="service2Desc">{{ translations[currentLanguage].service2Desc }}</p>
-    </div>
-    <div class="service-card">
-      <img src="https://images.unsplash.com/photo-1616486029423-aaa4789e8c9a?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1470&q=80" alt="Other Furniture">
-      <h3 id="service3Title">{{ translations[currentLanguage].service3Title }}</h3>
-      <p id="service3Desc">{{ translations[currentLanguage].service3Desc }}</p>
-    </div>
+<!-- Projects Section -->
+<section class="projects-section" id="projects">
+  <h2>{{ translations[currentLanguage].projectsTitle }}</h2>
+  <app-projects></app-projects>
+</section>
+
+<!-- About Section -->
+<section class="about-section" id="about">
+  <div class="about-inner">
+    <h2>{{ translations[currentLanguage].aboutTitle }}</h2>
+    <p class="about-text">{{ translations[currentLanguage].aboutText }}</p>
+  </div>
+</section>
+
+<!-- Contact Section -->
+<section class="contact-section" id="contact">
+  <div class="contact-inner">
+    <h2>{{ translations[currentLanguage].contactTitle }}</h2>
+    <ul class="contact-list">
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="2" y="4" width="20" height="16" rx="2"/>
+          <polyline points="2,4 12,13 22,4"/>
+        </svg>
+        <a href="mailto:info@imstudio.com">info&#64;imstudio.com</a>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.07 11a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3 .18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 7.91a16 16 0 0 0 9 9l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+        </svg>
+        <a href="tel:+359888888888">+359 888 888 888</a>
+      </li>
+    </ul>
   </div>
 </section>
 
 <!-- Footer -->
 <footer>
-  <p>&copy; 2023 IM Studio. All rights reserved.</p>
+  <p>&copy; 2025 IM Studio. All rights reserved.</p>
 </footer>
+
+</div><!-- /.page-body -->

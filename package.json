@@ -21,7 +21,9 @@
     "@angular/platform-browser": "^19.1.0",
     "@angular/platform-browser-dynamic": "^19.1.0",
     "@angular/router": "^19.1.0",
+    "gsap": "^3.14.2",
     "rxjs": "~7.8.0",
+    "three": "^0.183.2",
     "tslib": "^2.3.0",
     "zone.js": "~0.15.0"
   },
@@ -34,6 +36,7 @@
     "@angular/cli": "^19.1.7",
     "@angular/compiler-cli": "^19.1.0",
     "@types/jasmine": "~5.1.0",
+    "@types/three": "^0.183.1",
     "angular-eslint": "19.1.0",
     "eslint": "^9.20.1",
     "jasmine-core": "~5.5.0",

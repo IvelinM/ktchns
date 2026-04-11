@@ -1,0 +1,164 @@
+.hero-slider {
+  position: relative;
+  height: 100vh;
+  overflow: hidden;
+  background: #080808;
+}
+
+// ── Slides ─────────────────────────────────────────────────────────────────────
+.slides {
+  position: absolute;
+  inset: 0;
+}
+
+.slide {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  opacity: 0;
+  transition: opacity 1.2s ease;
+
+  &.active {
+    opacity: 1;
+  }
+}
+
+// ── Overlay ────────────────────────────────────────────────────────────────────
+.overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.35) 0%,
+    rgba(0, 0, 0, 0.55) 100%
+  );
+  z-index: 1;
+}
+
+// ── Hero text ──────────────────────────────────────────────────────────────────
+.hero-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  text-align: center;
+  padding: 0 24px;
+  color: #fff;
+}
+
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 5px;
+  text-transform: uppercase;
+  color: #d4a96a;
+  margin: 0 0 16px;
+  font-weight: 400;
+}
+
+h1 {
+  font-size: clamp(36px, 6vw, 72px);
+  font-weight: 700;
+  margin: 0 0 16px;
+  line-height: 1.1;
+  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.7);
+}
+
+.subtitle {
+  font-size: clamp(14px, 2vw, 18px);
+  color: rgba(255, 255, 255, 0.8);
+  letter-spacing: 1.5px;
+  margin: 0 0 36px;
+}
+
+.cta-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 32px;
+  border: 1.5px solid #d4a96a;
+  background: transparent;
+  color: #d4a96a;
+  font-size: 14px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background 0.25s ease, color 0.25s ease;
+
+  &:hover {
+    background: #d4a96a;
+    color: #080808;
+  }
+
+  .arrow {
+    font-size: 18px;
+    line-height: 1;
+  }
+}
+
+// ── Prev / Next ────────────────────────────────────────────────────────────────
+.nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  font-size: 36px;
+  width: 48px;
+  height: 48px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  transition: background 0.2s ease;
+  line-height: 1;
+  padding: 0;
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.6);
+  }
+
+  &.prev { left: 20px; }
+  &.next { right: 20px; }
+}
+
+// ── Dots ───────────────────────────────────────────────────────────────────────
+.dots {
+  position: absolute;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  gap: 10px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: background 0.25s ease, transform 0.25s ease;
+
+  &.active {
+    background: #d4a96a;
+    transform: scale(1.25);
+  }
+}
+
+// ── Mobile ─────────────────────────────────────────────────────────────────────
+@media (max-width: 540px) {
+  .nav {
+    width: 36px;
+    height: 36px;
+    font-size: 28px;
+  }
+}
