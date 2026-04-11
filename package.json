@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "scripts": {
     "ng": "ng",
+    "generate": "node scripts/generate-projects.js",
+    "prestart": "node scripts/generate-projects.js",
+    "prebuild": "node scripts/generate-projects.js",
     "start": "ng serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
@@ -21,10 +24,12 @@
     "@angular/platform-browser": "^19.1.0",
     "@angular/platform-browser-dynamic": "^19.1.0",
     "@angular/router": "^19.1.0",
+    "@tsparticles/slim": "^3.9.1",
     "gsap": "^3.14.2",
     "rxjs": "~7.8.0",
     "three": "^0.183.2",
     "tslib": "^2.3.0",
+    "tsparticles": "^3.9.1",
     "zone.js": "~0.15.0"
   },
   "devDependencies": {

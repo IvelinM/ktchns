@@ -1,3 +1,7 @@
+// No z-index on the host — this is intentional.
+// If a z-index were set here it would create a stacking context that traps all
+// children inside it, preventing the fixed particles layer (z-index:2) from
+// appearing between the image slides (z-index:1) and the hero text (z-index:3).
 .hero-slider {
   position: relative;
   height: 100vh;
@@ -5,10 +9,11 @@
   background: #080808;
 }
 
-// ── Slides ─────────────────────────────────────────────────────────────────────
+// ── Slides — behind particles ──────────────────────────────────────────────────
 .slides {
   position: absolute;
   inset: 0;
+  z-index: 1;
 }
 
 .slide {
@@ -24,19 +29,19 @@
   }
 }
 
-// ── Overlay ────────────────────────────────────────────────────────────────────
+// ── Overlay — behind particles ─────────────────────────────────────────────────
 .overlay {
   position: absolute;
   inset: 0;
   background: linear-gradient(
     to bottom,
-    rgba(0, 0, 0, 0.35) 0%,
-    rgba(0, 0, 0, 0.55) 100%
+    rgba(0, 0, 0, 0.25) 0%,
+    rgba(0, 0, 0, 0.45) 100%
   );
   z-index: 1;
 }
 
-// ── Hero text ──────────────────────────────────────────────────────────────────
+// ── Hero text — above particles ────────────────────────────────────────────────
 .hero-text {
   position: absolute;
   inset: 0;
@@ -44,10 +49,11 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  z-index: 2;
+  z-index: 3;
   text-align: center;
   padding: 0 24px;
   color: #fff;
+  pointer-events: none;
 }
 
 .eyebrow {
@@ -87,6 +93,7 @@ h1 {
   text-transform: uppercase;
   cursor: pointer;
   border-radius: 2px;
+  pointer-events: auto;
   transition: background 0.25s ease, color 0.25s ease;
 
   &:hover {
@@ -100,7 +107,7 @@ h1 {
   }
 }
 
-// ── Prev / Next ────────────────────────────────────────────────────────────────
+// ── Prev / Next — above particles ──────────────────────────────────────────────
 .nav {
   position: absolute;
   top: 50%;
@@ -129,7 +136,7 @@ h1 {
   &.next { right: 20px; }
 }
 
-// ── Dots ───────────────────────────────────────────────────────────────────────
+// ── Dots — above particles ─────────────────────────────────────────────────────
 .dots {
   position: absolute;
   bottom: 28px;

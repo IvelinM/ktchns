@@ -6,6 +6,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatMenuModule } from '@angular/material/menu';
 import { ProjectsComponent } from './projects/projects.component';
 import { HeroSliderComponent } from './hero-slider/hero-slider.component';
+import { ParticlesBgComponent } from './particles-bg/particles-bg.component';
 
 type Translations = Record<string, {
   home: string;
@@ -42,6 +43,7 @@ type Translations = Record<string, {
     MatMenuModule,
     ProjectsComponent,
     HeroSliderComponent,
+    ParticlesBgComponent,
   ],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.scss'],
@@ -85,9 +87,9 @@ export class AppComponent {
       heroCTA: 'Поръчай',
       servicesTitle: 'Нашите Услуги',
       service1Title: 'Заснемане',
-      service1Desc: 'Професионално заснемане на вашия завършен кухненски проект.',
+      service1Desc: 'Професионално заснемане на пространството за бъдещите мебели.',
       service2Title: 'Проектиране',
-      service2Desc: 'Персонализиран 3D дизайн, съобразен с вашето пространство.',
+      service2Desc: 'Персонализиран 3D дизайн, съобразен с вашето пространство, както и количествена сметка и спецификация на необходимите детайли.',
       service3Title: 'Изработка',
       service3Desc: 'Висококачествена изработка с прецизност и внимание към детайла.',
       service4Title: 'Монтаж',
