@@ -5,7 +5,9 @@
       "Bash(npm install:*)",
       "Bash(node -e \"const p = require\\('./node_modules/three/package.json'\\); const exp = p.exports; console.log\\(JSON.stringify\\(Object.keys\\(exp\\).filter\\(k => k.includes\\('jsm'\\)\\).slice\\(0,3\\)\\)\\)\")",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(k,':',v\\) for k,v in d.get\\('exports',{}\\).items\\(\\)]\")",
-      "Bash(node scripts/generate-projects.js)"
+      "Bash(node scripts/generate-projects.js)",
+      "Bash(node scripts/optimize-images.js)",
+      "Bash(find D:/WORK_FILES/KTCHNS/assets/images/projects -name \"*.webp\" -delete)"
     ]
   }
 }

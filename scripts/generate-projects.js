@@ -10,7 +10,7 @@
 const fs   = require('fs');
 const path = require('path');
 
-const IMAGE_EXTS  = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif']);
+const IMAGE_EXTS  = new Set(['.webp']);
 const PROJECTS_DIR = path.join(__dirname, '..', 'assets', 'images', 'projects');
 const OUT_FILE     = path.join(__dirname, '..', 'src', 'app', 'projects', 'projects.data.ts');
 

@@ -3,9 +3,10 @@
   "version": "0.0.0",
   "scripts": {
     "ng": "ng",
-    "generate": "node scripts/generate-projects.js",
-    "prestart": "node scripts/generate-projects.js",
-    "prebuild": "node scripts/generate-projects.js",
+    "optimize": "node scripts/optimize-images.js",
+    "generate": "node scripts/optimize-images.js && node scripts/generate-projects.js",
+    "prestart": "node scripts/optimize-images.js && node scripts/generate-projects.js",
+    "prebuild": "node scripts/optimize-images.js && node scripts/generate-projects.js",
     "start": "ng serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
@@ -50,6 +51,7 @@
     "karma-coverage": "~2.2.0",
     "karma-jasmine": "~5.1.0",
     "karma-jasmine-html-reporter": "~2.1.0",
+    "sharp": "^0.34.5",
     "typescript": "~5.7.2",
     "typescript-eslint": "8.23.0"
   }

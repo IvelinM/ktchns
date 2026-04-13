@@ -1,42 +1,31 @@
 <div class="slider-overlay" (click)="close()">
 
-  <!-- Prevent click propagation on inner content -->
   <div class="slider-inner" (click)="$event.stopPropagation()">
 
-    <!-- Only the active and previous images are in the DOM at any time.
-         prev stays at opacity:1 as a backdrop while the new image fades in on top. -->
-    <ng-container *ngFor="let img of images; let i = index">
-      <img
-        *ngIf="i === currentIndex || i === prevIndex"
-        class="slider-image"
-        [class.active]="i === currentIndex"
-        [class.prev]="i === prevIndex"
-        [src]="img"
-        [alt]="projectName + ' ' + (i + 1)"
-      />
-    </ng-container>
+    <img
+      *ngFor="let img of images; let i = index"
+      class="slider-image"
+      [class.active]="i === currentIndex"
+      [src]="img"
+      [alt]="projectName + ' ' + (i + 1)"
+    />
 
-    <!-- Prev -->
     <button mat-icon-button class="nav-btn prev-btn" (click)="prev()" aria-label="Previous">
       <mat-icon>chevron_left</mat-icon>
     </button>
 
-    <!-- Next -->
     <button mat-icon-button class="nav-btn next-btn" (click)="next()" aria-label="Next">
       <mat-icon>chevron_right</mat-icon>
     </button>
 
-    <!-- Counter -->
     <div class="counter">{{ currentIndex + 1 }} / {{ images.length }}</div>
 
   </div>
 
-  <!-- Close -->
   <button mat-icon-button class="close-btn" (click)="close()" aria-label="Close">
     <mat-icon>close</mat-icon>
   </button>
 
-  <!-- Project name -->
   <div class="project-title">{{ projectName }}</div>
 
 </div>

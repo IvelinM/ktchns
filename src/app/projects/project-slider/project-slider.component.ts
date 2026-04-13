@@ -24,9 +24,6 @@ export class ProjectSliderComponent implements OnInit, OnDestroy {
   @Output() closed = new EventEmitter<void>();
 
   currentIndex = 0;
-  prevIndex = -1;
-
-  private clearPrevTimer?: ReturnType<typeof setTimeout>;
 
   ngOnInit() {
     document.body.style.overflow = 'hidden';
@@ -34,7 +31,6 @@ export class ProjectSliderComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     document.body.style.overflow = '';
-    clearTimeout(this.clearPrevTimer);
   }
 
   @HostListener('document:keydown', ['$event'])
@@ -44,21 +40,12 @@ export class ProjectSliderComponent implements OnInit, OnDestroy {
     else if (event.key === 'Escape') this.close();
   }
 
-  goTo(index: number) {
-    if (index === this.currentIndex) return;
-    clearTimeout(this.clearPrevTimer);
-    this.prevIndex = this.currentIndex;
-    this.currentIndex = index;
-    // Clear prev slightly after CSS transition ends (0.4s)
-    this.clearPrevTimer = setTimeout(() => { this.prevIndex = -1; }, 700);
-  }
-
   next() {
-    this.goTo((this.currentIndex + 1) % this.images.length);
+    this.currentIndex = (this.currentIndex + 1) % this.images.length;
   }
 
   prev() {
-    this.goTo((this.currentIndex - 1 + this.images.length) % this.images.length);
+    this.currentIndex = (this.currentIndex - 1 + this.images.length) % this.images.length;
   }
 
   close() {
