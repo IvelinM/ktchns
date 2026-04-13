@@ -4,9 +4,9 @@
   "scripts": {
     "ng": "ng",
     "optimize": "node scripts/optimize-images.js",
-    "generate": "node scripts/optimize-images.js && node scripts/generate-projects.js",
-    "prestart": "node scripts/optimize-images.js && node scripts/generate-projects.js",
-    "prebuild": "node scripts/optimize-images.js && node scripts/generate-projects.js",
+    "generate": "node scripts/generate-projects.js",
+    "prestart": "node scripts/generate-projects.js",
+    "prebuild": "node scripts/generate-projects.js",
     "start": "ng serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",

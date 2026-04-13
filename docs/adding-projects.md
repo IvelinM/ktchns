@@ -8,9 +8,9 @@ This guide explains how to add new kitchen projects to the site. The build pipel
 
 1. Create a folder under `assets/images/projects/` — the folder name becomes the project's display name on the site.
 2. Drop your original JPG or PNG photos into that folder.
-3. Run `npm run build` (or `npm start` for the dev server).
-
-That's it. The scripts run automatically before every build or dev-server start.
+3. Run `npm run optimize` to convert them to WebP locally.
+4. Commit the generated `.webp` files.
+5. Run `npm run build` (or `npm start`) — the project list regenerates automatically from the committed WebPs.
 
 **Example:**
 
@@ -32,9 +32,15 @@ After the next build, "MyNewProject" will appear in the Projects section with al
 
 ## What happens automatically
 
-Two scripts run in sequence before every `npm run build` or `npm start`:
+`scripts/generate-projects.js` runs before every `npm run build` or `npm start` and regenerates the project list from whatever `.webp` files are present. Image optimisation is **not** automatic — you run it manually once per batch of new photos and commit the results.
 
-### 1. `scripts/optimize-images.js` — image optimisation
+### `scripts/optimize-images.js` — image optimisation (manual)
+
+Run once locally after adding new photos:
+
+```bash
+npm run optimize
+```
 
 - Deletes all existing `.webp` files inside every project folder (ensures a clean slate).
 - Converts every `.jpg` / `.jpeg` / `.png` file to `.webp`:
@@ -42,8 +48,9 @@ Two scripts run in sequence before every `npm run build` or `npm start`:
   - Resizes so neither width nor height exceeds **1920 px** while preserving the original aspect ratio. Images smaller than 1920 px are never enlarged.
   - Compresses at **quality 82** — typically a ~90–95 % file size reduction versus the original JPG.
 - Original files are left untouched.
+- **Commit the `.webp` files** after running this — CI has no access to the originals.
 
-### 2. `scripts/generate-projects.js` — code generation
+### `scripts/generate-projects.js` — code generation (automatic)
 
 - Scans every subfolder in `assets/images/projects/`.
 - Reads only the `.webp` files produced by step 1.
@@ -56,17 +63,13 @@ Two scripts run in sequence before every `npm run build` or `npm start`:
 
 ## Manual commands
 
-Run the scripts on their own without triggering a full build:
-
 ```bash
-# Optimise images only (convert JPG/PNG → WebP)
+# Convert JPG/PNG → WebP (run this locally after adding photos, then commit the .webp files)
 npm run optimize
 
-# Optimise images AND regenerate projects.data.ts
+# Regenerate projects.data.ts without a full build
 npm run generate
 ```
-
-Use `npm run generate` after adding a new folder if you want to see the updated data file without waiting for a full build.
 
 ---
 
