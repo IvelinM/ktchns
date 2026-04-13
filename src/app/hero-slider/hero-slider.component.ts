@@ -24,7 +24,10 @@ export class HeroSliderComponent implements OnInit, OnDestroy {
 
   images = HERO_IMAGES;
   currentIndex = 0;
+  prevIndex = -1;
+
   private timer?: ReturnType<typeof setInterval>;
+  private clearPrevTimer?: ReturnType<typeof setTimeout>;
 
   ngOnInit() {
     this.timer = setInterval(() => this.next(), 4500);
@@ -32,17 +35,23 @@ export class HeroSliderComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     clearInterval(this.timer);
+    clearTimeout(this.clearPrevTimer);
+  }
+
+  goTo(index: number) {
+    if (index === this.currentIndex) return;
+    clearTimeout(this.clearPrevTimer);
+    this.prevIndex = this.currentIndex;
+    this.currentIndex = index;
+    // Clear prev slightly after the CSS transition finishes (1.2s)
+    this.clearPrevTimer = setTimeout(() => { this.prevIndex = -1; }, 1400);
   }
 
   next() {
-    this.currentIndex = (this.currentIndex + 1) % this.images.length;
+    this.goTo((this.currentIndex + 1) % this.images.length);
   }
 
   prev() {
-    this.currentIndex = (this.currentIndex - 1 + this.images.length) % this.images.length;
-  }
-
-  goTo(i: number) {
-    this.currentIndex = i;
+    this.goTo((this.currentIndex - 1 + this.images.length) % this.images.length);
   }
 }

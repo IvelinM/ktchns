@@ -3,12 +3,18 @@
   <!-- Prevent click propagation on inner content -->
   <div class="slider-inner" (click)="$event.stopPropagation()">
 
-    <img
-      class="slider-image"
-      [class.fading]="fading"
-      [src]="images[currentIndex]"
-      [alt]="projectName + ' ' + (currentIndex + 1)"
-    />
+    <!-- Only the active and previous images are in the DOM at any time.
+         prev stays at opacity:1 as a backdrop while the new image fades in on top. -->
+    <ng-container *ngFor="let img of images; let i = index">
+      <img
+        *ngIf="i === currentIndex || i === prevIndex"
+        class="slider-image"
+        [class.active]="i === currentIndex"
+        [class.prev]="i === prevIndex"
+        [src]="img"
+        [alt]="projectName + ' ' + (i + 1)"
+      />
+    </ng-container>
 
     <!-- Prev -->
     <button mat-icon-button class="nav-btn prev-btn" (click)="prev()" aria-label="Previous">

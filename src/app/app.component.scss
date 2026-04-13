@@ -16,18 +16,30 @@ a {
   color: inherit;
 }
 
-/* Offset page body so content isn't hidden under the fixed toolbar */
-.page-body {
-  padding-top: 64px;
+/* Sections need scroll-margin so fixed toolbar doesn't overlap them when
+   navigating via anchor links. Hero is intentionally full-bleed (no offset). */
+#services, #projects, #about, #contact {
+  scroll-margin-top: 64px;
+}
+
+@media (max-width: 600px) {
+  #services, #projects, #about, #contact {
+    scroll-margin-top: 56px;
+  }
+
 }
 
 /* Header */
-mat-toolbar {
+.header-wrapper {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   z-index: 1000;
+}
+
+mat-toolbar {
+  position: relative;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -87,6 +99,12 @@ nav a:hover {
 }
 
 .hamburger {
+  display: none;
+}
+
+/* ── Mobile nav dropdown ── */
+/* Hidden everywhere by default; shown only inside the ≤768px media query below */
+.mobile-nav {
   display: none;
 }
 
@@ -191,12 +209,16 @@ nav a:hover {
 /* ── Contact Section ── */
 .contact-section {
   padding: 80px 40px;
+  min-height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background-color: #141414;
 }
 
 .contact-inner {
+  width: 100%;
   max-width: 480px;
-  margin: 0 auto;
   text-align: center;
 
   h2 {
@@ -273,6 +295,55 @@ footer p {
 
   .hamburger {
     display: block;
+  }
+
+  .mobile-nav {
+    display: flex;
+    flex-direction: column;
+    background: #1a1a2e;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.35s ease;
+
+    &.open {
+      max-height: 500px;
+    }
+
+    a {
+      display: block;
+      padding: 14px 24px;
+      color: rgba(255, 255, 255, 0.85);
+      font-size: 15px;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+
+      &:hover {
+        color: #d4a96a;
+        background: rgba(255, 255, 255, 0.04);
+      }
+    }
+
+    .mobile-lang {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 14px 24px;
+
+      button {
+        background: transparent;
+        border: none;
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 14px;
+        cursor: pointer;
+        padding: 4px 8px;
+
+        &:hover { color: #d4a96a; }
+      }
+
+      span { color: rgba(255, 255, 255, 0.4); }
+    }
   }
 
   .hero h1 {

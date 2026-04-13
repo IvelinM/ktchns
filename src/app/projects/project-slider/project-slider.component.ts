@@ -4,6 +4,7 @@ import {
   Output,
   EventEmitter,
   OnInit,
+  OnDestroy,
   HostListener,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -17,16 +18,23 @@ import { MatButtonModule } from '@angular/material/button';
   templateUrl: './project-slider.component.html',
   styleUrls: ['./project-slider.component.scss'],
 })
-export class ProjectSliderComponent implements OnInit {
+export class ProjectSliderComponent implements OnInit, OnDestroy {
   @Input() images: string[] = [];
   @Input() projectName = '';
   @Output() closed = new EventEmitter<void>();
 
   currentIndex = 0;
-  fading = false;
+  prevIndex = -1;
+
+  private clearPrevTimer?: ReturnType<typeof setTimeout>;
 
   ngOnInit() {
     document.body.style.overflow = 'hidden';
+  }
+
+  ngOnDestroy() {
+    document.body.style.overflow = '';
+    clearTimeout(this.clearPrevTimer);
   }
 
   @HostListener('document:keydown', ['$event'])
@@ -37,12 +45,12 @@ export class ProjectSliderComponent implements OnInit {
   }
 
   goTo(index: number) {
-    if (this.fading || index === this.currentIndex) return;
-    this.fading = true;
-    setTimeout(() => {
-      this.currentIndex = index;
-      this.fading = false;
-    }, 350);
+    if (index === this.currentIndex) return;
+    clearTimeout(this.clearPrevTimer);
+    this.prevIndex = this.currentIndex;
+    this.currentIndex = index;
+    // Clear prev slightly after CSS transition ends (0.4s)
+    this.clearPrevTimer = setTimeout(() => { this.prevIndex = -1; }, 700);
   }
 
   next() {
@@ -54,7 +62,6 @@ export class ProjectSliderComponent implements OnInit {
   }
 
   close() {
-    document.body.style.overflow = '';
     this.closed.emit();
   }
 }

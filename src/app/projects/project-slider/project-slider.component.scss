@@ -19,18 +19,36 @@
   cursor: default;
 }
 
+// All images are absolutely stacked; only active and prev are in the DOM.
 .slider-image {
+  position: absolute;
   max-width: 88vw;
   max-height: 88vh;
   object-fit: contain;
   border-radius: 4px;
-  opacity: 1;
-  transition: opacity 0.35s ease;
-  display: block;
+  opacity: 0;
+  z-index: 0;
 
-  &.fading {
-    opacity: 0;
+  // Incoming image: keyframe animation guarantees fade-in fires on element
+  // creation (a CSS transition would not trigger since *ngIf adds the element
+  // with .active already applied in the same render cycle)
+  &.active {
+    opacity: 1;
+    z-index: 2;
+    animation: img-fade-in 0.6s ease forwards;
   }
+
+  // Outgoing image: fades out simultaneously via transition
+  &.prev {
+    opacity: 0;
+    z-index: 1;
+    transition: opacity 0.6s ease;
+  }
+}
+
+@keyframes img-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 .nav-btn {
@@ -41,6 +59,7 @@
   color: #fff !important;
   width: 52px !important;
   height: 52px !important;
+  z-index: 3;
 
   mat-icon {
     font-size: 32px;
@@ -53,13 +72,8 @@
   }
 }
 
-.prev-btn {
-  left: 20px;
-}
-
-.next-btn {
-  right: 20px;
-}
+.prev-btn { left: 20px; }
+.next-btn { right: 20px; }
 
 .close-btn {
   position: absolute;
@@ -83,6 +97,7 @@
   font-size: 13px;
   letter-spacing: 1px;
   pointer-events: none;
+  z-index: 3;
 }
 
 .project-title {
@@ -95,4 +110,5 @@
   letter-spacing: 2px;
   text-transform: uppercase;
   pointer-events: none;
+  z-index: 3;
 }

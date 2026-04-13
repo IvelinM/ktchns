@@ -5,6 +5,7 @@
       *ngFor="let img of images; let i = index"
       class="slide"
       [class.active]="i === currentIndex"
+      [class.prev]="i === prevIndex"
       [style.background-image]="'url(' + img + ')'"
     ></div>
   </div>

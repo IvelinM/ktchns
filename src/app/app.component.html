@@ -1,29 +1,46 @@
 <!-- Fixed particle layer — always visible, behind all content -->
 <app-particles-bg></app-particles-bg>
 
-<!-- Header -->
-<mat-toolbar color="primary">
-  <span class="logo">IM Studio</span>
-  <div class="header-content">
-    <nav>
-      <a mat-button (click)="scrollTo('home')">{{ translations[currentLanguage].home }}</a>
-      <a mat-button (click)="scrollTo('projects')">{{ translations[currentLanguage].projects }}</a>
-      <a mat-button (click)="scrollTo('services')">{{ translations[currentLanguage].services }}</a>
-      <a mat-button (click)="scrollTo('about')">{{ translations[currentLanguage].about }}</a>
-      <a mat-button (click)="scrollTo('contact')">{{ translations[currentLanguage].contact }}</a>
-    </nav>
-    <div class="language-toggle">
-      <button mat-button (click)="toggleLanguage('en')">EN</button>
+<!-- Fixed header wrapper — toolbar + mobile nav share one fixed container
+     so the menu always expands flush below the toolbar with no gap -->
+<div class="header-wrapper">
+  <mat-toolbar color="primary">
+    <span class="logo" (click)="scrollTo('home')" style="cursor:pointer">IM Studio</span>
+    <div class="header-content">
+      <nav>
+        <a mat-button (click)="scrollTo('home')">{{ translations[currentLanguage].home }}</a>
+        <a mat-button (click)="scrollTo('projects')">{{ translations[currentLanguage].projects }}</a>
+        <a mat-button (click)="scrollTo('services')">{{ translations[currentLanguage].services }}</a>
+        <a mat-button (click)="scrollTo('about')">{{ translations[currentLanguage].about }}</a>
+        <a mat-button (click)="scrollTo('contact')">{{ translations[currentLanguage].contact }}</a>
+      </nav>
+      <div class="language-toggle">
+        <button mat-button (click)="toggleLanguage('en')">EN</button>
+        <span>/</span>
+        <button mat-button (click)="toggleLanguage('bg')">BG</button>
+      </div>
+    </div>
+    <button mat-icon-button (click)="toggleMenu()" class="hamburger">
+      <mat-icon>menu</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <!-- Mobile nav dropdown -->
+  <div class="mobile-nav" [class.open]="isMenuOpen">
+    <a (click)="scrollTo('home');    toggleMenu()">{{ translations[currentLanguage].home }}</a>
+    <a (click)="scrollTo('projects'); toggleMenu()">{{ translations[currentLanguage].projects }}</a>
+    <a (click)="scrollTo('services'); toggleMenu()">{{ translations[currentLanguage].services }}</a>
+    <a (click)="scrollTo('about');   toggleMenu()">{{ translations[currentLanguage].about }}</a>
+    <a (click)="scrollTo('contact'); toggleMenu()">{{ translations[currentLanguage].contact }}</a>
+    <div class="mobile-lang">
+      <button (click)="toggleLanguage('en'); toggleMenu()">EN</button>
       <span>/</span>
-      <button mat-button (click)="toggleLanguage('bg')">BG</button>
+      <button (click)="toggleLanguage('bg'); toggleMenu()">BG</button>
     </div>
   </div>
-  <button mat-icon-button (click)="toggleMenu()" class="hamburger">
-    <mat-icon>menu</mat-icon>
-  </button>
-</mat-toolbar>
+</div>
 
-<!-- Page body (offset for fixed toolbar) -->
+<!-- Page body -->
 <div class="page-body">
 
 <!-- Hero Image Slider -->

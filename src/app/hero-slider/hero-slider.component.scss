@@ -22,10 +22,20 @@
   background-size: cover;
   background-position: center;
   opacity: 0;
+  z-index: 0;
   transition: opacity 1.2s ease;
 
+  // Incoming slide: fades in on top
   &.active {
     opacity: 1;
+    z-index: 2;
+  }
+
+  // Outgoing slide: stays fully opaque behind incoming slide so there
+  // is no dark gap visible during the crossfade
+  &.prev {
+    opacity: 1;
+    z-index: 1;
   }
 }
 
