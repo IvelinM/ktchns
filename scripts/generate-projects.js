@@ -29,7 +29,7 @@ const projects = folders.map(folder => {
     .map(f => `assets/images/projects/${folder}/${f}`);
 
   return { id: folder.toLowerCase(), name: folder, cover: images[0] ?? '', images };
-});
+}).filter(p => p.images.length > 0);
 
 // ── Pick hero images: first image from each project, cycle until 6 ───────────
 
