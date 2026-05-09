@@ -28,6 +28,6 @@ Single-page Angular 19 standalone app (no NgModules). Entry point: `src/main.ts`
 
 ## Deployment
 
-Merges to `main` trigger GitHub Actions (`.github/workflows/deploy-angular.yml`), which builds with `--base-href "/ktchns/" --deploy-url "/ktchns/"` and deploys `dist/ktchns/browser/` to the `gh-pages` branch.
+Merges to `main` trigger GitHub Actions (`.github/workflows/deploy-angular.yml`), which builds with `--base-href "/" --deploy-url "/"` and deploys `dist/ktchns/browser/` to the `gh-pages` branch.
 
-The `baseHref` in `angular.json` must remain `"/ktchns/"` (with leading and trailing slashes) to match the GitHub Pages sub-path. The `<base href="/">` in `src/index.html` is overridden at build time by the CLI.
+The site is served from the custom domain `imstudio.design`, so `baseHref` is `/`. The `CNAME` file in `public/` is copied into the build output and tells GitHub Pages to use the custom domain.
