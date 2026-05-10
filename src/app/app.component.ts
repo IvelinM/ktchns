@@ -7,6 +7,7 @@ import { MatMenuModule } from '@angular/material/menu';
 import { ProjectsComponent } from './projects/projects.component';
 import { HeroSliderComponent } from './hero-slider/hero-slider.component';
 import { ParticlesBgComponent } from './particles-bg/particles-bg.component';
+import { ContactFormComponent, ContactTranslations } from './contact-form/contact-form.component';
 
 type Translations = Record<string, {
   home: string;
@@ -30,7 +31,7 @@ type Translations = Record<string, {
   aboutTitle: string;
   aboutText: string;
   contactTitle: string;
-}>;
+} & ContactTranslations>;
 
 @Component({
   selector: 'app-root',
@@ -44,6 +45,7 @@ type Translations = Record<string, {
     ProjectsComponent,
     HeroSliderComponent,
     ParticlesBgComponent,
+    ContactFormComponent,
   ],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.scss'],
@@ -59,12 +61,12 @@ export class AppComponent {
       services: 'Services',
       about: 'About',
       contact: 'Contact',
-      heroTitle: 'Design Your Dream Kitchen',
+      heroTitle: 'Design your kitchen',
       heroSubtitle: 'Custom · Modern · Functional',
       heroCTA: 'Call us',
       servicesTitle: 'Our Services',
       service1Title: 'Measurements taking',
-      service1Desc: 'Professional photography of your finished kitchen project.',
+      service1Desc: 'Professional dimensions taking of real site space.',
       service2Title: 'Design',
       service2Desc: 'Custom 3D design tailored to your space and needs.',
       service3Title: 'Production',
@@ -75,6 +77,16 @@ export class AppComponent {
       aboutTitle: 'About us',
       aboutText: 'We believe that the beauty and functionality of furniture does not depend on the price of the individual components used, but on a minimalist humility, silence and unity of all details — aiming for a finished wholeness that complements the space, elevating the person as the main protagonist in their own home or office.',
       contactTitle: 'Contact',
+      contactNameLabel: 'Your name',
+      contactEmailLabel: 'Your email',
+      contactEmailError: 'Please enter a valid email address.',
+      contactPhoneLabel: 'Phone (e.g. 0888888888 or +359888888888)',
+      contactPhoneError: 'Please enter a valid Bulgarian phone number.',
+      contactMessageLabel: 'Your message',
+      contactSend: 'Send message',
+      contactSending: 'Sending…',
+      contactSuccess: "Message sent! We'll be in touch.",
+      contactError: 'Something went wrong. Please try again.',
     },
     bg: {
       home: 'Начало',
@@ -98,6 +110,16 @@ export class AppComponent {
       aboutTitle: 'За нас',
       aboutText: 'Ние вярваме, че луксът, красотата и функционалността на мебелите не се дължат на цената на използваните отделни детайли, а на минималистична смиреност, тишината и единство на всички детайли, целяща допълване, завършена цялост и съпричастност към обгръщащото пространството, издигаща човекът в основен герой в собственото му жилище или офис.',
       contactTitle: 'Контакти',
+      contactNameLabel: 'Вашето Име',
+      contactEmailLabel: 'Вашият Имейл',
+      contactEmailError: 'Моля въведете валиден имейл адрес.',
+      contactPhoneLabel: 'Телефон (напр. 0888888888 или +359888888888)',
+      contactPhoneError: 'Моля въведете валиден български телефонен номер.',
+      contactMessageLabel: 'Съобщение',
+      contactSend: 'Изпрати',
+      contactSending: 'Изпращане…',
+      contactSuccess: 'Съобщението е изпратено! Ще се свържем с Вас.',
+      contactError: 'Нещо се обърка. Опитайте отново.',
     },
   };
 

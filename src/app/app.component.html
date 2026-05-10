@@ -5,7 +5,7 @@
      so the menu always expands flush below the toolbar with no gap -->
 <div class="header-wrapper">
   <mat-toolbar color="primary">
-    <span class="logo" (click)="scrollTo('home')" style="cursor:pointer">IM Studio Design</span>
+    <span class="logo" (click)="scrollTo('home')" style="cursor:pointer">IMSTUD</span>
     <div class="header-content">
       <nav>
         <a mat-button (click)="scrollTo('home')">{{ translations[currentLanguage].home }}</a>
@@ -204,12 +204,14 @@
         <a href="tel:+359885272317">+359 885 272 317</a>
       </li>
     </ul>
+
+    <app-contact-form [t]="translations[currentLanguage]"></app-contact-form>
   </div>
 </section>
 
 <!-- Footer -->
 <footer>
-  <p>&copy; 2025 IM Studio Design. All rights reserved.</p>
+  <p>&copy; 2025 IMSTUD. All rights reserved.</p>
 </footer>
 
 </div><!-- /.page-body -->

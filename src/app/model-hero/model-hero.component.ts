@@ -34,7 +34,7 @@ interface CamState {
 })
 export class ModelHeroComponent implements AfterViewInit, OnDestroy {
   /** Translatable text passed in from parent */
-  @Input() title = 'IM Studio Design';
+  @Input() title = 'IMSTUD';
   @Input() subtitle = 'Проектиране · Изработка · Монтаж';
   @Input() ctaLabel = 'Обади ни се';
   @Output() ctaClick = new EventEmitter<void>();
