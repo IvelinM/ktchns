@@ -217,6 +217,7 @@ nav a:hover {
   background-color: #141414;
 }
 
+
 .contact-inner {
   width: 100%;
   max-width: 480px;
@@ -267,15 +268,51 @@ nav a:hover {
 
 /* Footer */
 footer {
-  padding: 40px;
+  padding: 48px 40px 32px;
   background-color: #222;
   color: #fff;
   text-align: center;
 }
 
-footer p {
+.footer-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 32px;
+  color: #d4a96a;
+}
+
+.footer-logo {
+  height: 48px;
+  width: auto;
+}
+
+.footer-brand-name {
+  font-family: 'Montserrat', sans-serif;
+  font-size: 11px;
+  font-weight: 300;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: #d4a96a;
   margin: 0;
-  font-size: 14px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(212, 169, 106, 0.4);
+}
+
+.footer-brand-slogan {
+  font-family: 'Montserrat', sans-serif;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  color: rgba(212, 169, 106, 0.65);
+  margin: 0;
+}
+
+.footer-copy {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.35);
 }
 
 /* ── Responsive ── */
