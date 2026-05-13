@@ -66,8 +66,8 @@ export default {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            fromAddress: 'info@imstudio.design',
-            toAddress:   'info@imstudio.design',
+            fromAddress: 'info@viaminima.design',
+            toAddress:   'info@viaminima.design',
             replyTo:     safe(from_email),
             subject:     'CONTACTS FORM REQUEST',
             content:     `Name:  ${safe(from_name)}\nEmail: ${safe(from_email)}\nPhone: ${safe(phone)}\n\n${message}`,
