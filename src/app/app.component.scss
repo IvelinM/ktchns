@@ -46,10 +46,11 @@ mat-toolbar {
   padding: 0 40px;
 }
 
-.logo {
-  font-size: 24px;
-  font-weight: 700;
+.header-logo {
+  height: 36px;
+  width: auto;
   margin-right: 40px;
+  color: #fff;
 }
 
 .header-content {

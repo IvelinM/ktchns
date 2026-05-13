@@ -1,3 +1,5 @@
+<app-loader></app-loader>
+
 <!-- Fixed particle layer — always visible, behind all content -->
 <app-particles-bg></app-particles-bg>
 
@@ -5,7 +7,11 @@
      so the menu always expands flush below the toolbar with no gap -->
 <div class="header-wrapper">
   <mat-toolbar color="primary">
-    <span class="logo" (click)="scrollTo('home')" style="cursor:pointer">Via Minima Design</span>
+    <svg class="header-logo" viewBox="0 0 556.8 303.71" fill="currentColor" xmlns="http://www.w3.org/2000/svg"
+         (click)="scrollTo('home')" style="cursor:pointer" aria-label="Via Minima Design">
+      <polygon points="322.98,32 185.89,244.8 49.37,32 33.13,32 33.13,32.43 183.19,266.33 185.9,266.33 336.85,32"/>
+      <polygon points="495.19,32.84 494.29,32.84 494.29,34.03 355.75,217.01 301.6,145.18 293.86,157.2 353,235.64 355.76,235.64 494.29,52.67 494.29,264.33 506.18,264.33 506.18,36.97 506.18,32.84"/>
+    </svg>
     <div class="header-content">
       <nav>
         <a mat-button (click)="scrollTo('home')">{{ translations[currentLanguage].home }}</a>

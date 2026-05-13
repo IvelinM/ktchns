@@ -1,0 +1,75 @@
+.loader-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #0e0e0e;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 48px;
+  opacity: 1;
+  transition: opacity 0.6s ease;
+
+  &.fade-out { opacity: 0; }
+}
+
+.loader-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  color: #d4a96a;
+}
+
+.loader-mark {
+  width: 120px;
+  height: auto;
+}
+
+.brand-name {
+  margin: 0;
+  font-family: 'Montserrat', sans-serif;
+  font-weight: 300;
+  font-size: 15px;
+  letter-spacing: 0.32em;
+  color: #d4a96a;
+}
+
+.brand-rule {
+  width: 100%;
+  border: none;
+  border-top: 1px solid rgba(212, 169, 106, 0.4);
+  margin: 0;
+}
+
+.brand-slogan {
+  margin: 0;
+  font-family: 'Montserrat', sans-serif;
+  font-weight: 400;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: rgba(212, 169, 106, 0.65);
+}
+
+.progress-track {
+  width: 160px;
+  height: 1px;
+  background: rgba(212, 169, 106, 0.15);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0;
+  background: #d4a96a;
+  animation: load 2.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes load {
+  0%   { width: 0%; }
+  60%  { width: 75%; }
+  85%  { width: 90%; }
+  100% { width: 100%; }
+}

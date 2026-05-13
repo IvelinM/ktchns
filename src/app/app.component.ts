@@ -8,6 +8,7 @@ import { ProjectsComponent } from './projects/projects.component';
 import { HeroSliderComponent } from './hero-slider/hero-slider.component';
 import { ParticlesBgComponent } from './particles-bg/particles-bg.component';
 import { ContactFormComponent, ContactTranslations } from './contact-form/contact-form.component';
+import { LoaderComponent } from './loader/loader.component';
 
 type Translations = Record<string, {
   home: string;
@@ -46,6 +47,7 @@ type Translations = Record<string, {
     HeroSliderComponent,
     ParticlesBgComponent,
     ContactFormComponent,
+    LoaderComponent,
   ],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.scss'],
