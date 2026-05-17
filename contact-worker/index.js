@@ -1,8 +1,8 @@
 function corsHeaders(origin) {
-  const isAllowed = origin === 'https://imstudio.design'
+  const isAllowed = origin === 'https://viaminima.design'
     || origin.startsWith('http://localhost')
     || origin.startsWith('https://localhost');
-  const allowed = isAllowed ? origin : 'https://imstudio.design';
+  const allowed = isAllowed ? origin : 'https://viaminima.design';
   return {
     'Access-Control-Allow-Origin': allowed,
     'Access-Control-Allow-Methods': 'POST, OPTIONS',

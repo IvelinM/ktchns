@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://imstudio.design/sitemap.xml
+Sitemap: https://viaminima.design/sitemap.xml

@@ -30,4 +30,4 @@ Single-page Angular 19 standalone app (no NgModules). Entry point: `src/main.ts`
 
 Merges to `main` trigger GitHub Actions (`.github/workflows/deploy-angular.yml`), which builds with `--base-href "/" --deploy-url "/"` and deploys `dist/ktchns/browser/` to the `gh-pages` branch.
 
-The site is served from the custom domain `imstudio.design`, so `baseHref` is `/`. The `CNAME` file in `public/` is copied into the build output and tells GitHub Pages to use the custom domain.
+The site is served from the custom domain `viaminima.design`, so `baseHref` is `/`. The `CNAME` file in `public/` is copied into the build output and tells GitHub Pages to use the custom domain.
