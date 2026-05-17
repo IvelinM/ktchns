@@ -15,7 +15,7 @@ export interface ContactTranslations {
   contactError: string;
 }
 
-const WORKER_URL = 'https://imstud-contact.ivelinmat.workers.dev';
+const WORKER_URL = 'https://viaminima-contact.ivelinmat.workers.dev';
 
 @Component({
   selector: 'app-contact-form',
