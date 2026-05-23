@@ -7,7 +7,8 @@
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(k,':',v\\) for k,v in d.get\\('exports',{}\\).items\\(\\)]\")",
       "Bash(node scripts/generate-projects.js)",
       "Bash(node scripts/optimize-images.js)",
-      "Bash(find D:/WORK_FILES/KTCHNS/assets/images/projects -name \"*.webp\" -delete)"
+      "Bash(find D:/WORK_FILES/KTCHNS/assets/images/projects -name \"*.webp\" -delete)",
+      "PowerShell(Get-Item *)"
     ]
   }
 }
