@@ -57,3 +57,9 @@
   &.success { color: #6fcf97; }
   &.error   { color: #eb5757; }
 }
+
+@media (max-width: 768px) {
+  .form-submit {
+    align-self: center;
+  }
+}

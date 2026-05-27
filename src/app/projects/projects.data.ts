@@ -44,6 +44,16 @@ export const PROJECTS: Project[] = [
     ],
   },
   {
+    id: 'asen',
+    name: 'Asen',
+    cover: 'assets/images/projects/Asen/IMG_3992.webp',
+    images: [
+    'assets/images/projects/Asen/IMG_3992.webp',
+    'assets/images/projects/Asen/IMG_3996.webp',
+    'assets/images/projects/Asen/IMG_3997.webp',
+    ],
+  },
+  {
     id: 'raychev',
     name: 'RAYCHEV',
     cover: 'assets/images/projects/RAYCHEV/IMG_0345.webp',
@@ -88,9 +98,9 @@ export const PROJECTS: Project[] = [
 
 export const HERO_IMAGES: string[] = [
   'assets/images/projects/Alla/IMG_5012.webp',
+  'assets/images/projects/Asen/IMG_3992.webp',
   'assets/images/projects/RAYCHEV/IMG_0345.webp',
   'assets/images/projects/SERGEY/IMG_9676.webp',
   'assets/images/projects/Alla/IMG_9757.webp',
-  'assets/images/projects/RAYCHEV/IMG_0349.webp',
-  'assets/images/projects/SERGEY/IMG_9677.webp',
+  'assets/images/projects/Asen/IMG_3996.webp',
 ];

@@ -325,6 +325,7 @@ footer {
 @media (max-width: 768px) {
   mat-toolbar {
     padding: 0 20px;
+    justify-content: space-between;
   }
 
   .header-content {

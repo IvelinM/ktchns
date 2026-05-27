@@ -1,19 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- Dark background -->
-  <rect width="32" height="32" rx="5" fill="#0e0e0e"/>
-  <!-- Thin gold frame inset -->
-  <rect x="1.5" y="1.5" width="29" height="29" rx="3.5" fill="none" stroke="#d4a96a" stroke-width="0.6" opacity="0.5"/>
-  <!-- IM letters -->
-  <text
-    x="16" y="20"
-    font-family="Roboto, 'Helvetica Neue', Arial, sans-serif"
-    font-size="13.5"
-    font-weight="300"
-    fill="#d4a96a"
-    text-anchor="middle"
-    letter-spacing="3"
-    dx="1.5"
-  >VM</text>
-  <!-- Accent rule -->
-  <rect x="9" y="24" width="14" height="0.8" rx="0.4" fill="#d4a96a" opacity="0.7"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 556.8 556.8">
+  <rect width="556.8" height="556.8" fill="#0e0e0e"/>
+  <g transform="translate(0, 126.5)" fill="#d4a96a">
+    <polygon points="322.98,32 185.89,244.8 49.37,32 33.13,32 33.13,32.43 183.19,266.33 185.9,266.33 336.85,32"/>
+    <polygon points="495.19,32.84 494.29,32.84 494.29,34.03 355.75,217.01 301.6,145.18 293.86,157.2 353,235.64 355.76,235.64 494.29,52.67 494.29,264.33 506.18,264.33 506.18,36.97 506.18,32.84"/>
+  </g>
 </svg>

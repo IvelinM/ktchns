@@ -8,7 +8,10 @@
       "Bash(node scripts/generate-projects.js)",
       "Bash(node scripts/optimize-images.js)",
       "Bash(find D:/WORK_FILES/KTCHNS/assets/images/projects -name \"*.webp\" -delete)",
-      "PowerShell(Get-Item *)"
+      "PowerShell(Get-Item *)",
+      "WebSearch",
+      "PowerShell(Get-ChildItem *)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts, null, 2\\)\\)\")"
     ]
   }
 }
