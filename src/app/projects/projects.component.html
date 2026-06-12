@@ -5,7 +5,7 @@
     matRipple
     (click)="open(project)"
   >
-    <img mat-card-image [src]="project.cover" [alt]="project.name" />
+    <img mat-card-image [src]="project.cover" [alt]="'Кухня по поръчка – проект ' + project.name" loading="lazy" />
     <mat-card-content>
       <h3 class="project-name">{{ project.name }}</h3>
       <p class="image-count">{{ project.images.length }} снимки</p>
