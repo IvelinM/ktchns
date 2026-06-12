@@ -315,6 +315,49 @@ footer {
   color: rgba(255, 255, 255, 0.35);
 }
 
+/* ── Floating call button ── */
+.call-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  background-color: #d4a96a;
+  color: #fff;
+  border-radius: 999px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  transition: transform 0.25s ease, box-shadow 0.25s ease, background-color 0.25s ease;
+  animation: callPulse 2.4s ease-in-out infinite;
+
+  svg {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+
+  &:hover {
+    background-color: #c5995a;
+    transform: translateY(-2px);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.32);
+  }
+}
+
+@keyframes callPulse {
+  0%, 100% { box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25), 0 0 0 0 rgba(212, 169, 106, 0.45); }
+  50%      { box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25), 0 0 0 12px rgba(212, 169, 106, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .call-fab { animation: none; }
+}
+
 /* ── Responsive ── */
 @media (max-width: 1100px) {
   .service-grid {
@@ -415,5 +458,21 @@ footer {
   .services h2,
   .projects-section h2 {
     font-size: 28px;
+  }
+
+  /* Collapse the call button to a circular icon to save space */
+  .call-fab {
+    right: 16px;
+    bottom: 16px;
+    padding: 16px;
+  }
+
+  .call-fab-label {
+    display: none;
+  }
+
+  .call-fab svg {
+    width: 24px;
+    height: 24px;
   }
 }
