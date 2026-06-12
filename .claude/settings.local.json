@@ -13,7 +13,8 @@
       "PowerShell(Get-ChildItem *)",
       "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts, null, 2\\)\\)\")",
       "Bash(node -e \"const a=require\\('./angular.json'\\); const proj=a.projects[Object.keys\\(a.projects\\)[0]]; console.log\\(JSON.stringify\\(proj.architect.build.options, null, 2\\)\\)\")",
-      "PowerShell(\\(Get-Item \"C:\\\\MATEV\\\\PROJECTS\\\\ktchns\\\\public\\\\favicon.ico\"\\).Length; \\(Get-Item \"C:\\\\MATEV\\\\PROJECTS\\\\ktchns\\\\public\\\\favicon.svg\"\\).Length)"
+      "PowerShell(\\(Get-Item \"C:\\\\MATEV\\\\PROJECTS\\\\ktchns\\\\public\\\\favicon.ico\"\\).Length; \\(Get-Item \"C:\\\\MATEV\\\\PROJECTS\\\\ktchns\\\\public\\\\favicon.svg\"\\).Length)",
+      "Bash(node *)"
     ]
   }
 }

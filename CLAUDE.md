@@ -8,8 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 npm start          # ng serve — dev server at http://localhost:4200/ktchns/
 npm run build      # production build to dist/ktchns/browser/
 npm run watch      # build in watch mode (development config)
-npm test           # run Karma/Jasmine unit tests
+npm test           # run Karma/Jasmine unit tests (headless Chrome)
 npm run lint       # ESLint via angular-eslint
+npm run optimize   # convert assets/images/projects/**/*.{jpg,png} → .webp (manual)
+npm run generate   # regenerate src/app/projects/projects.data.ts from the .webp files
 ```
 
 Run a single spec file:
@@ -17,17 +19,45 @@ Run a single spec file:
 npx ng test --include='src/app/app.component.spec.ts'
 ```
 
+**`generate` runs automatically** before `start` and `build` (npm `prestart`/`prebuild` hooks), so the project list is always fresh. **`optimize` is manual** — run it once after adding new source photos, then commit the resulting `.webp` files (CI never sees the originals).
+
 ## Architecture
 
-Single-page Angular 19 standalone app (no NgModules). Entry point: `src/main.ts` → bootstraps `AppComponent` via `src/app/app.config.ts`.
+Single-page Angular 19 standalone app (no NgModules). Entry: `src/main.ts` → `AppComponent` via `src/app/app.config.ts`. `app.routes.ts` is empty — there is no routing; everything is one scrolling page composed of standalone child components. `app.config.ts` enables zone change detection with `eventCoalescing` and `provideAnimationsAsync()`.
 
-- **`AppComponent`** (`src/app/app.component.*`) — the only component. Contains all UI: toolbar, hero section, services grid, footer. No child routes are defined yet (`app.routes.ts` exports an empty array).
-- **Translations** — handled inline in `AppComponent` via a `translations` object keyed by `'en'` | `'bg'`. `currentLanguage` drives the active language; toggled by `toggleLanguage()`.
-- **Angular Material** — used for UI primitives (toolbar, buttons, icons). Theme: `cyan-orange` prebuilt. Animations provided async via `provideAnimationsAsync()`.
-- **Styling** — global styles in `src/styles.scss`; component styles in `src/app/app.component.scss`.
+### Component composition
+`AppComponent` (`src/app/app.component.*`) is the **shell**: toolbar/nav, section anchors, and the i18n source of truth. It imports and lays out the feature components:
+
+- **`hero-slider`** — auto-rotating background slideshow driven by `HERO_IMAGES`.
+- **`projects` / `projects/project-slider`** — project grid that opens a per-project image lightbox.
+- **`particles-bg`** — tsParticles animated background.
+- **`contact-form`** — see backend note below.
+- **`loader`** — initial loading screen.
+- **`model-hero`** — Three.js wireframe hero (loads `assets/3D/slav.glb`, boots **outside** Angular's zone via `NgZone.runOutsideAngular`, uses `OrbitControls` in dev and GSAP `ScrollTrigger` camera choreography in prod). **Currently dormant** — it is not imported by `AppComponent`; `hero-slider` is the active hero. Keep this in mind before assuming it renders.
+
+### Internationalization
+No i18n library. `AppComponent` holds a `translations` object keyed `'en' | 'bg'` (**default `'bg'`**); `currentLanguage` + `toggleLanguage()` switch it. Child components receive only the slice of strings they need via `@Input` (e.g. the `ContactTranslations` interface is passed into `contact-form`). When adding UI text, extend the `Translations` type and **both** language objects, then thread the strings down as inputs.
+
+### Projects data pipeline (the key non-obvious system)
+Project content is **folder-driven**, not hand-authored:
+
+1. Images live in `assets/images/projects/<FolderName>/`. Folder name = project `id` **and** display name (rendered verbatim).
+2. `scripts/optimize-images.js` (manual, `npm run optimize`) deletes all existing `.webp`, then converts `.jpg/.jpeg/.png` → `.webp` (EXIF-rotated, max 1920px, quality 82, never upscaled). Originals are left untouched and need not be committed.
+3. `scripts/generate-projects.js` (auto pre-build) scans those folders, reads `.webp` files in alphabetical order, and **overwrites** `src/app/projects/projects.data.ts` with `PROJECTS` (first image = `cover`) and `HERO_IMAGES` (up to 6, one per project round-robin).
+
+⚠️ **Never hand-edit `src/app/projects/projects.data.ts`** — it is regenerated on every build. To reorder images, rename source files (`01_...`, `02_...`). Full workflow in `docs/adding-projects.md`.
+
+### Contact form backend
+`contact-form.component.ts` POSTs the form as JSON to a Cloudflare Worker (`WORKER_URL` constant). There is no server-side code in this repo; the Worker is deployed separately.
 
 ## Deployment
 
-Merges to `main` trigger GitHub Actions (`.github/workflows/deploy-angular.yml`), which builds with `--base-href "/" --deploy-url "/"` and deploys `dist/ktchns/browser/` to the `gh-pages` branch.
+Pushes to `main` trigger `.github/workflows/deploy-angular.yml`, which builds with `--configuration=production --base-href "/" --deploy-url "/"` and deploys `dist/ktchns/browser/` to the `gh-pages` branch.
 
-The site is served from the custom domain `viaminima.design`, so `baseHref` is `/`. The `CNAME` file in `public/` is copied into the build output and tells GitHub Pages to use the custom domain.
+The site is served from the custom domain **viaminima.design**, so `baseHref` is `/` (the `public/CNAME` file is copied into the build to tell GitHub Pages the domain). The dev server still serves under `/ktchns/` per `angular.json`.
+
+> Note: `README.md` states the deploy uses `--base-href "/ktchns/"` — that is outdated. The workflow is the source of truth and uses `/`.
+
+## Marketing / ops
+
+The site advertises via a Google Ads account (Via Minima). `docs/google-ads-automation.md` documents how to analyse and fine-tune that account by driving a logged-in Chrome over CDP (`http://localhost:9222`) with the Playwright CLI or the Playwright MCP. That tooling lives **outside this repo** (`C:\Users\MATEV\ads-automation\`) and is machine-local — never make changes that affect ad spend without the user's explicit confirmation.
