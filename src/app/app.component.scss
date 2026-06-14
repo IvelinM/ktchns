@@ -447,13 +447,11 @@ footer {
     padding: 60px 20px;
   }
 
-  .contact-list {
-    max-width: 280px;
-    margin: 0 auto;
+  .contact-list li span {
+    max-width: 200px;
   }
 
-  .contact-list li {
-    justify-content: flex-start;
+  .contact-list li:last-child {
     align-items: flex-start;
   }
 }
