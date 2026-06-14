@@ -446,6 +446,14 @@ footer {
   .projects-section {
     padding: 60px 20px;
   }
+
+  .contact-list {
+    align-items: center;
+
+    li {
+      justify-content: flex-start;
+    }
+  }
 }
 
 @media (max-width: 540px) {
