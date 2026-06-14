@@ -32,6 +32,7 @@ type Translations = Record<string, {
   aboutTitle: string;
   aboutText: string;
   contactTitle: string;
+  contactAddress: string;
   callUs: string;
 } & ContactTranslations>;
 
@@ -80,6 +81,7 @@ export class AppComponent {
       aboutTitle: 'About us',
       aboutText: 'We believe that the beauty and functionality of furniture does not depend on the price of the individual components used, but on a minimalist humility, silence and unity of all details — aiming for a finished wholeness that complements the space, elevating the person as the main protagonist in their own home or office.',
       contactTitle: 'Contact',
+      contactAddress: 'Sofia, Vitosha district, Georgi Raychev St.',
       callUs: 'Call us',
       contactNameLabel: 'Your name',
       contactEmailLabel: 'Your email',
@@ -114,6 +116,7 @@ export class AppComponent {
       aboutTitle: 'За нас',
       aboutText: 'Ние вярваме, че луксът, красотата и функционалността на мебелите не се дължат на цената на използваните отделни детайли, а на минималистична смиреност, тишината и единство на всички детайли, целяща допълване, завършена цялост и съпричастност към обгръщащото пространството, издигаща човекът в основен герой в собственото му жилище или офис.',
       contactTitle: 'Контакти',
+      contactAddress: 'гр.София, кв.Витоша, ул.Георги Райчев',
       callUs: 'Обади се',
       contactNameLabel: 'Вашето Име',
       contactEmailLabel: 'Вашият Имейл',
