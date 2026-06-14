@@ -447,12 +447,8 @@ footer {
     padding: 60px 20px;
   }
 
-  .contact-list {
-    align-items: center;
-
-    li {
-      justify-content: flex-start;
-    }
+  .contact-list li:last-child span {
+    max-width: 190px;
   }
 }
 
