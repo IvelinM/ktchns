@@ -252,16 +252,17 @@ nav a:hover {
       color: #d4a96a;
     }
 
-    a {
+    a,
+    span {
       font-size: 17px;
       color: rgba(255, 255, 255, 0.8);
       text-decoration: none;
       letter-spacing: 0.5px;
       transition: color 0.2s ease;
+    }
 
-      &:hover {
-        color: #d4a96a;
-      }
+    a:hover {
+      color: #d4a96a;
     }
   }
 }
