@@ -252,6 +252,11 @@ nav a:hover {
       color: #d4a96a;
     }
 
+    /* Keep text hugging the icon even when it wraps to multiple lines */
+    span {
+      text-align: left;
+    }
+
     a,
     span {
       font-size: 17px;
