@@ -252,9 +252,9 @@ nav a:hover {
       color: #d4a96a;
     }
 
-    /* Keep text hugging the icon even when it wraps to multiple lines */
+    /* Center the contact text (icon + label) */
     span {
-      text-align: left;
+      text-align: center;
     }
 
     a,
