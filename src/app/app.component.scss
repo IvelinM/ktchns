@@ -446,6 +446,15 @@ footer {
   .projects-section {
     padding: 60px 20px;
   }
+
+  .contact-list li span {
+    max-width: 200px;
+    text-align: center;
+  }
+
+  .contact-list li:last-child {
+    align-items: flex-start;
+  }
 }
 
 @media (max-width: 540px) {
