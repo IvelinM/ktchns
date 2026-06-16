@@ -23,7 +23,9 @@ npx ng test --include='src/app/app.component.spec.ts'
 
 ## Architecture
 
-Single-page Angular 19 standalone app (no NgModules). Entry: `src/main.ts` → `AppComponent` via `src/app/app.config.ts`. `app.routes.ts` is empty — there is no routing; everything is one scrolling page composed of standalone child components. `app.config.ts` enables zone change detection with `eventCoalescing` and `provideAnimationsAsync()`.
+Angular 19 standalone app (no NgModules). Entry: `src/main.ts` → `AppComponent` via `src/app/app.config.ts`. `app.config.ts` enables zone change detection with `eventCoalescing` and `provideAnimationsAsync()`.
+
+`app.routes.ts` defines two routes: `''` → `HomeComponent` (the public marketing site — one scrolling page composed of standalone child components) and `admin` → `AdminPageComponent` (the WebCAD parametric 3D tool). `AppComponent` is the shared shell. See **`docs/webcad.md`** for the full WebCAD architecture.
 
 ### Component composition
 `AppComponent` (`src/app/app.component.*`) is the **shell**: toolbar/nav, section anchors, and the i18n source of truth. It imports and lays out the feature components:

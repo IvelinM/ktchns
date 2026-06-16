@@ -1,0 +1,234 @@
+<div class="admin-layout">
+
+  <!-- ── Control panel ── -->
+  <aside class="control-panel">
+
+    <div class="panel-header">
+      <a routerLink="/" class="back-link">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+        Back to site
+      </a>
+      <h1>WebCAD Viewer</h1>
+    </div>
+
+    <!-- ── Place new object ── -->
+    <section class="panel-section">
+      <h2>FAMILY</h2>
+      <div class="select-wrap">
+        <select [(ngModel)]="selectedFamilyId" (ngModelChange)="onFamilyChange()">
+          <option *ngFor="let f of families" [value]="f.id">{{ f.name }}</option>
+        </select>
+        <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </div>
+
+      <div class="param-grid mt">
+        <ng-container *ngFor="let p of selectedFamily.params">
+          <label class="param-label">{{ p.label }}</label>
+          <ng-container *ngIf="(p.type ?? 'number') === 'toggle'; else numIn">
+            <div class="toggle-wrap">
+              <input type="checkbox"
+                     [checked]="currentParams[p.key] === 1"
+                     (change)="currentParams[p.key] = $any($event.target).checked ? 1 : 0">
+            </div>
+          </ng-container>
+          <ng-template #numIn>
+            <div class="param-input-wrap">
+              <input type="number" [(ngModel)]="currentParams[p.key]" [min]="p.min" [step]="p.step">
+              <span class="param-unit">{{ p.unit }}</span>
+            </div>
+          </ng-template>
+        </ng-container>
+      </div>
+
+      <button class="place-btn" (click)="startPlacing()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" aria-hidden="true">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        Place in Scene
+      </button>
+    </section>
+
+    <!-- ── Multi-select banner ── -->
+    <section class="panel-section multi-select-section" *ngIf="selectedIds.size > 1">
+      <div class="selected-header">
+        <span class="sel-dot"></span>
+        <span class="sel-label">{{ selectedIds.size }} objects selected</span>
+      </div>
+      <div class="action-row">
+        <button class="action-btn move-btn" (click)="startMove()" [disabled]="mode !== 'idle'">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" aria-hidden="true">
+            <polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/>
+            <polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/>
+            <line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/>
+          </svg>
+          Move All
+        </button>
+        <button class="action-btn del-btn" (click)="deleteSelected()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" aria-hidden="true">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+          </svg>
+          Delete All
+        </button>
+      </div>
+    </section>
+
+    <!-- ── Selected object ── -->
+    <section class="panel-section selected-section" *ngIf="selectedInstance && selectedFamilyDef">
+      <div class="selected-header">
+        <span class="sel-dot"></span>
+        <span class="sel-label">{{ selectedInstance.label }}</span>
+      </div>
+
+      <!-- Family params -->
+      <div class="detail-group">
+        <span class="detail-title">Parameters</span>
+        <div class="param-grid">
+          <ng-container *ngFor="let p of selectedFamilyDef!.params">
+            <label class="param-label">{{ p.label }}</label>
+            <ng-container *ngIf="(p.type ?? 'number') === 'toggle'; else numInSel">
+              <div class="toggle-wrap">
+                <input type="checkbox"
+                       [checked]="selectedInstance!.params[p.key] === 1"
+                       (change)="selectedInstance!.params[p.key] = $any($event.target).checked ? 1 : 0; rebuildSelected()">
+              </div>
+            </ng-container>
+            <ng-template #numInSel>
+              <div class="param-input-wrap">
+                <input type="number"
+                       [(ngModel)]="selectedInstance!.params[p.key]"
+                       (ngModelChange)="rebuildSelected()"
+                       [min]="p.min" [step]="p.step">
+                <span class="param-unit">{{ p.unit }}</span>
+              </div>
+            </ng-template>
+          </ng-container>
+        </div>
+      </div>
+
+      <!-- Position -->
+      <div class="detail-group">
+        <span class="detail-title">Position (mm)</span>
+        <div class="xyz-row">
+          <label>x<input type="number" [(ngModel)]="selectedInstance!.x" (ngModelChange)="updatePosition()" step="1"></label>
+          <label>y<input type="number" [(ngModel)]="selectedInstance!.y" (ngModelChange)="updatePosition()" step="1"></label>
+          <label>z<input type="number" [(ngModel)]="selectedInstance!.z" (ngModelChange)="updatePosition()" step="1"></label>
+        </div>
+      </div>
+
+      <!-- Rotation -->
+      <div class="detail-group">
+        <span class="detail-title">Rotation Y</span>
+        <div class="xyz-row">
+          <label>°<input type="number" [(ngModel)]="selectedInstance!.rotY" (ngModelChange)="updateRotation()" step="5"></label>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="action-row">
+        <button class="action-btn move-btn" (click)="startMove()" [disabled]="mode !== 'idle'">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" aria-hidden="true">
+            <polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/>
+            <polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/>
+            <line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/>
+          </svg>
+          Move
+        </button>
+        <button class="action-btn del-btn" (click)="deleteSelected()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" aria-hidden="true">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+            <path d="M10 11v6"/><path d="M14 11v6"/>
+          </svg>
+          Delete
+        </button>
+      </div>
+    </section>
+
+    <!-- ── Scene list ── -->
+    <section class="panel-section scene-section">
+      <div class="section-header">
+        <h2>SCENE</h2>
+        <span class="badge">{{ instances.length }}</span>
+      </div>
+
+      <div class="inst-list" *ngIf="instances.length > 0; else emptyScene">
+        <div class="inst-row"
+             *ngFor="let inst of instances; trackBy: trackById"
+             [class.active]="selectedIds.has(inst.id)"
+             (click)="clickList(inst.id)">
+          <span class="inst-dot" [class.sel]="selectedIds.has(inst.id)"></span>
+          <span class="inst-name">{{ inst.label }}</span>
+          <span class="inst-family">{{ getFamilyDef(inst.familyId).name }}</span>
+        </div>
+      </div>
+      <ng-template #emptyScene>
+        <p class="empty-hint">Set parameters and click "Place in Scene".</p>
+      </ng-template>
+    </section>
+
+  </aside>
+
+  <!-- ── Viewport ── -->
+  <main class="viewport">
+    <canvas #rendererCanvas></canvas>
+
+    <!-- Mode overlay -->
+    <div class="mode-overlay" *ngIf="mode !== 'idle'">
+      <span class="mode-pill"
+            [class.placing]="mode === 'placing'"
+            [class.moving]="mode === 'move-from' || mode === 'move-to'">
+        {{ mode === 'placing' ? 'PLACE' : 'MOVE' }}
+      </span>
+      {{ modeLabel }}
+
+      <!-- Plane selector (only during move) -->
+      <div class="plane-btns" *ngIf="mode === 'move-from' || mode === 'move-to'">
+        <button class="plane-btn" [class.active]="movePlane === 'XZ'" (click)="movePlane = 'XZ'">XZ</button>
+        <button class="plane-btn" [class.active]="movePlane === 'XY'" (click)="movePlane = 'XY'">XY</button>
+        <button class="plane-btn" [class.active]="movePlane === 'YZ'" (click)="movePlane = 'YZ'">YZ</button>
+      </div>
+
+      <button class="cancel-btn" (click)="cancelMode()">✕ Cancel</button>
+    </div>
+
+    <!-- Snap legend -->
+    <div class="snap-legend" *ngIf="mode !== 'idle'">
+      <span class="snap-dot-key endpoint"></span>Endpoint
+      <span class="snap-dot-key midpoint"></span>Midpoint
+      <span class="snap-dot-key grid"></span>Grid
+    </div>
+
+    <!-- Empty hint -->
+    <div class="empty-overlay" *ngIf="instances.length === 0 && mode === 'idle'">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"
+           stroke-linecap="round" aria-hidden="true">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+      </svg>
+      <p>Select a family, set its parameters,<br>then click <strong>Place in Scene</strong></p>
+    </div>
+
+    <!-- Marquee selection box -->
+    <div class="marquee-box"
+         *ngIf="marqueeRect"
+         [style.left.px]="marqueeRect.left"
+         [style.top.px]="marqueeRect.top"
+         [style.width.px]="marqueeRect.width"
+         [style.height.px]="marqueeRect.height">
+    </div>
+
+    <div class="controls-hint">
+      Click · select &nbsp;|&nbsp; Drag · box select &nbsp;|&nbsp;
+      Right-drag · orbit &nbsp;|&nbsp; Mid-drag · pan &nbsp;|&nbsp; Scroll · zoom
+    </div>
+  </main>
+
+</div>
