@@ -116,7 +116,11 @@ Apply only with the user's go-ahead, ideally one change at a time:
    "Calls from ads" (call asset, count calls ≥ ~30–60s) and/or website-number calls.
    Without this nothing else can optimise for calls.
 2. **Call assets** — add the business number (`+359 2 4374685`) so ads show a call
-   button (drives mobile taps-to-call).
+   button (drives mobile taps-to-call). ⚠️ **Only the business number may be used.**
+   Audit existing call assets / ad copy and remove any personal/non-business number
+   (a personal-number call asset previously leaked the owner's mobile and caused
+   misdirected calls). Check abandoned campaign-creation drafts too — the number can
+   sit pre-filled there.
 3. **Budget cap** — a **daily** budget caps the month at `daily × 30.4`. For ~€100/mo
    use **€3.28/day** (€3.00 for headroom). A one-off "total" budget expires and is
    not an ongoing monthly cap.
@@ -158,6 +162,39 @@ Lessons from actually driving this account — they save a lot of dead ends:
     state (don't expect prior tabs to persist).
 - **Windows path mangling:** the Bash tool treats `\` as an escape, so
   `node C:\path\script.js` breaks. Use forward slashes: `node /c/path/script.js`.
+
+## Editing the UI (forms, drawers, dialogs)
+
+Read/analyse is easy; *editing* the Ads SPA has its own traps. Full selector-level
+detail lives in `ads-automation/NOTES.md` (machine-local); the durable lessons:
+
+- **Overlays close on CDP detach.** Dialogs, the **Campaign settings drawer**, the
+  location editor, and the negative-keyword editor all close when the script calls
+  `browser.close()` or the node process exits. So you **cannot** open an editor in
+  one script and act on it in the next — the state is gone. Any *open → fill → Save*
+  edit must run inside **one long-lived node process**. (Read-only nav/extract
+  across scripts is fine.) Pattern: a single script with a `DOSAVE` env flag — dry
+  run for screenshots, then a real run that clicks Save.
+- **"Placeholders" are often `aria-label`,** so `getByPlaceholder()` times out.
+  E.g. the negatives textarea is `textarea[aria-label^="Enter or paste"]`. Also
+  `locator('textarea').first()` tends to grab the hidden support-chat box — always
+  scope to `.acx-overlay-container` or an aria-label.
+- **Material chevrons report `expand_less` even when collapsed** — don't infer
+  open/closed from icon text; check whether a child control is visible.
+- **Direct settings URLs 404** (`/aw/campaigns/settings`). Open settings by clicking
+  the **"Campaign settings"** gear from any campaign sub-page. The drawer is "open"
+  when a `material-expansionpanel:has-text("Bidding")` is visible.
+- **Location targeting** lives in that drawer's **Locations** panel
+  (summary `Locations Bulgaria (country)`). Expanding it makes the summary text
+  vanish, so detect success via the `"Enter another location"` radio, not the panel
+  text. The **Advanced search → Radius** sub-modal (place + value + `mi`/`km` unit)
+  is the most brittle thing to automate — prefer targeting a named city/region over
+  a radius when reliability matters. Set Location options to **Presence** (not
+  "…or interest") for a strictly-local business.
+- **Negative keywords recipe:** click `material-fab[aria-label="Add negative
+  keywords"]`, poll for the `aria-label^="Enter or paste"` textarea, `.fill()` one
+  term per line (quotes = phrase, `[brackets]` = exact), Save, then verify against
+  the live table.
 
 ## Hygiene
 

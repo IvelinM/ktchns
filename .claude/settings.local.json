@@ -14,7 +14,9 @@
       "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts, null, 2\\)\\)\")",
       "Bash(node -e \"const a=require\\('./angular.json'\\); const proj=a.projects[Object.keys\\(a.projects\\)[0]]; console.log\\(JSON.stringify\\(proj.architect.build.options, null, 2\\)\\)\")",
       "PowerShell(\\(Get-Item \"C:\\\\MATEV\\\\PROJECTS\\\\ktchns\\\\public\\\\favicon.ico\"\\).Length; \\(Get-Item \"C:\\\\MATEV\\\\PROJECTS\\\\ktchns\\\\public\\\\favicon.svg\"\\).Length)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(git commit -m 'seo: target Bulgarian \"кухни по поръчка\" + richer local schema' -m '- index.html: switch to lang=bg with Bulgarian-first title/description/OG/Twitter targeting the primary keyword \\(кухни по поръчка София\\); add geo meta, og:locale, og:site_name. *)",
+      "Bash(git push *)"
     ]
   }
 }

@@ -4,7 +4,7 @@ Working notes on the Via Minima Google Ads account: current state, diagnosis,
 what's been changed, and the prioritized next steps. For *how* to drive/inspect
 the account, see `google-ads-automation.md`.
 
-> Last reviewed: **2026-06-12**.
+> Last reviewed: **2026-06-15**.
 
 ## Account & campaign
 
@@ -53,6 +53,54 @@ All **Broad match** in Ad group 1. Spend concentrated on generic furniture terms
   `moderano кухни`, `бохо стил обзавеждане`, `готови ъглови кухни`, `гръб за кухня`.
 - **Website call button** shipped — a persistent one-tap `tel:+35924374685` button
   (gold pill, collapses to an icon on mobile). See `AppComponent` (`.call-fab`).
+
+## Changes made (2026-06-15)
+
+- **Removed a personal-number call asset.** `088 527 2317` (the owner's personal
+  phone) was live as a campaign call asset since Jun 10 (Eligible, 507 impr / 6
+  tap-to-calls) — the cause of off-target personal calls. Removed it; the business
+  `024374685` call asset remains. The personal number is still pre-filled in an
+  **abandoned Performance Max setup draft** (not saved — "Drafts in progress: 0").
+- **+12 phrase-match negatives** at campaign level → **19 total**. Added:
+  `шкаф`, `модулна`, `модулни`, `рафт`, `етажерка`, `термоплот`, `единичен`
+  (single-cabinet / modular parts), `зора`, `ирим` (competitor brands),
+  `идеи`, `снимки`, `безплатно` (low-intent browsing). Note: `шкаф` is broad — it
+  also blocks legit "кухненски шкафове"; remove if it over-restricts.
+
+## Diagnosis confirmed (2026-06-15)
+
+- **Location targeting = the whole country (`Bulgaria`).** This is why a Varna
+  caller got through. Should be **Sofia, presence-only**. Likely also set to the
+  default "presence *or interest*". (Owner wants Sofia city + ~20 km.)
+- **Still zero conversion tracking**, bid strategy **Maximize clicks** → Google
+  optimizes for cheap clicks, not calls. Highest-leverage fix remains call-conversion
+  tracking.
+- Keywords: confirmed all **Broad match**, one ad group; top spend `кухненски мебели`
+  €10, `мебели дизайн` €5, `мебели поръчка` €4.3 — generic furniture, not custom-kitchen.
+
+## Conversion tracking — actual state (2026-06-15)
+
+- **Site tag is present** in `src/index.html`: Google Ads global tag (`gtag.js`)
+  `AW-18183572926` — but it only fires `gtag('config', …)`; **no conversion event**
+  is sent, and the `tel:` links (footer + `.call-fab`) have no click tracking.
+- **A "Calls from ads" conversion action already exists** in the account
+  (`ctId=7621070298`, created 5/23/2026): Primary, category Phone call leads, call
+  length 60 s, 30-day window, data-driven. It read **"No recent conversions"** —
+  set up correctly, just no call ≥ 60 s yet. (`Calls from ads` needs no site tag.)
+- **Change made:** Count `Every` → **`One`** (lead best practice — one caller = one
+  lead). Everything else left as-is.
+- **Open opportunity:** the `AW-18183572926` tag is installed but unused. Adding a
+  "Clicks on phone number" website conversion + a `gtag('event','conversion',…)` on
+  the `.call-fab` / footer `tel:` taps would also capture calls from people who land
+  on the site (needs a small Angular code change). Not yet done.
+
+## Pending (requested, in progress)
+
+Owner asked (2026-06-15) to: tighten location to Sofia presence-only, add the
+modular/competitor negatives (done), tighten keywords (pause generic furniture
+broad → phrase), and set up call-conversion tracking. **Location, keyword
+tightening, and conversion tracking are still to do** — the location edit via UI
+automation is fragile (see `google-ads-automation.md` → "Editing the UI").
 
 ## Roadmap (priority order)
 

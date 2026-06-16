@@ -58,6 +58,20 @@ The site is served from the custom domain **viaminima.design**, so `baseHref` is
 
 > Note: `README.md` states the deploy uses `--base-href "/ktchns/"` — that is outdated. The workflow is the source of truth and uses `/`.
 
+## Contact details & the phone-number guardrail
+
+⚠️ **Only the business number `+359 2 4374685` (`tel:+35924374685`) may ever appear publicly** — on the site, in structured data (`index.html` JSON-LD), or in Google Ads. The owner's **personal mobile must never be exposed**: a personal-number Google Ads *call asset* once leaked it and caused misdirected calls. Never add a non-business phone number to the site, schema, or ads, and **never write a personal number into this repo** (it is **public** on GitHub) — keep such details in local Claude memory only.
+
+The studio address (Sofia, Vitosha district) lives in `AppComponent`'s `translations.*.contactAddress` and the `index.html` JSON-LD `PostalAddress`.
+
+## SEO
+
+`index.html` is intentionally **Bulgarian-first**, targeting the primary keyword **"кухни по поръчка"** (`<html lang="bg">`, Bulgarian `<title>`/description/OG, a `HomeAndConstructionBusiness` JSON-LD block, and a `<noscript>` content fallback for non-JS crawlers). Do **not** revert the meta/title to English. This is a client-rendered SPA; the largest outstanding SEO lever is **prerendering (SSG)** — note that `particles-bg` runs tsParticles in `ngAfterViewInit`, which must be guarded before SSR/prerender will build.
+
 ## Marketing / ops
 
-The site advertises via a Google Ads account (Via Minima). `docs/google-ads-automation.md` documents how to analyse and fine-tune that account by driving a logged-in Chrome over CDP (`http://localhost:9222`) with the Playwright CLI or the Playwright MCP. That tooling lives **outside this repo** (`C:\Users\MATEV\ads-automation\`) and is machine-local — never make changes that affect ad spend without the user's explicit confirmation.
+The site advertises via a Google Ads account (Via Minima). Two docs cover it:
+- `docs/google-ads-automation.md` — **how** to analyse/fine-tune the account by driving a logged-in Chrome over CDP (`http://localhost:9222`) with the Playwright CLI or MCP, including UI-editing traps.
+- `docs/google-ads-campaign-notes.md` — **what** the account state, diagnosis, and roadmap are.
+
+That automation tooling lives **outside this repo** (`C:\Users\MATEV\ads-automation\`) and is machine-local. **Never make changes that affect ad spend without the user's explicit confirmation**, and prefer one supervised change at a time.
