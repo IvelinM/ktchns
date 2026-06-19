@@ -34,29 +34,6 @@
   &::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
 }
 
-.panel-header {
-  padding: 18px 18px 14px;
-  border-bottom: 1px solid #1e1e1e;
-
-  h1 {
-    font-size: 17px;
-    font-weight: 600;
-    color: #d4a96a;
-    margin: 10px 0 0;
-  }
-}
-
-.back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: #777;
-  text-decoration: none;
-  transition: color 0.2s;
-  svg { width: 13px; height: 13px; }
-  &:hover { color: #d4a96a; }
-}
 
 .panel-section {
   padding: 14px 18px;
@@ -115,19 +92,48 @@
   &.mt { margin-top: 12px; }
 }
 
+// Collapsible parameter sections
+.param-sec {
+  margin-top: 8px;
+  border: 1px solid #242424;
+  border-radius: 6px;
+  background: #161616;
+
+  > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 7px 10px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #999;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    &::-webkit-details-marker { display: none; }
+    &::before { content: '▸'; color: #666; font-size: 9px; }
+  }
+  &[open] > summary { color: #d4a96a; border-bottom: 1px solid #242424; }
+  &[open] > summary::before { content: '▾'; }
+
+  .param-grid { padding: 10px; }
+}
+
 .param-label {
   font-size: 11px;
   color: #aaa;
-  white-space: nowrap;
   font-family: 'Courier New', monospace;
 }
+
+.rot-slider { width: 100%; accent-color: #d4a96a; }
 
 .param-input-wrap {
   display: flex;
   align-items: center;
   gap: 4px;
 
-  input[type='number'] {
+  input {
     width: 100%;
     min-width: 0;
     background: #111;
@@ -400,8 +406,9 @@
   font-weight: 700;
   letter-spacing: 0.1em;
 
-  &.placing { background: #2a6a3a; color: #6de88e; }
-  &.moving  { background: #1e3f6e; color: #6ab4f4; }
+  &.placing   { background: #2a6a3a; color: #6de88e; }
+  &.moving    { background: #1e3f6e; color: #6ab4f4; }
+  &.measuring { background: #0d4a52; color: #00e5ff; }
 }
 
 .cancel-btn {
@@ -505,7 +512,190 @@
   border-radius: 50%;
   &.endpoint { background: #00e5ff; }
   &.midpoint { background: #76ff03; }
+  &.origin   { background: #ff44dd; }
   &.grid     { background: #ffffff; }
+}
+
+.move-measure {
+  position: absolute;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(10, 10, 10, 0.9);
+  border: 1px solid #ffcc33;
+  color: #ffcc33;
+  font: 600 11px monospace;
+
+  input {
+    width: 56px;
+    background: transparent;
+    border: none;
+    color: #ffcc33;
+    font: 600 12px monospace;
+    outline: none;
+    appearance: textfield;
+    -moz-appearance: textfield;
+    &::-webkit-inner-spin-button, &::-webkit-outer-spin-button { -webkit-appearance: none; }
+  }
+  .mm { opacity: 0.7; }
+}
+
+// ── Toolbar ───────────────────────────────────────────────────────────────────
+
+.toolbar {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  background: rgba(20, 20, 20, 0.92);
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  backdrop-filter: blur(4px);
+  z-index: 11;
+}
+
+.tool-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #ccc;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  svg { width: 14px; height: 14px; }
+
+  &:hover:not(:disabled) { background: #1e1e1e; border-color: #d4a96a; color: #d4a96a; }
+  &:disabled { opacity: 0.35; cursor: not-allowed; }
+  &.danger:hover:not(:disabled) { border-color: #e05555; color: #e05555; background: rgba(224, 85, 85, 0.1); }
+  &.active { border-color: #6ab4f4; color: #6ab4f4; background: rgba(106, 180, 244, 0.12); }
+}
+
+.tool-count {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: #888;
+  font-size: 12px;
+  input {
+    width: 42px;
+    background: #111;
+    border: 1px solid #2a2a2a;
+    border-radius: 5px;
+    color: #e0e0e0;
+    font-size: 12px;
+    padding: 5px 4px;
+    outline: none;
+    appearance: textfield;
+    -moz-appearance: textfield;
+    &::-webkit-inner-spin-button, &::-webkit-outer-spin-button { -webkit-appearance: none; }
+    &:focus { border-color: #d4a96a; }
+  }
+}
+
+.tool-sep {
+  width: 1px;
+  align-self: stretch;
+  background: #333;
+  margin: 0 2px;
+}
+
+.readonly-note {
+  font-size: 10px;
+  color: #777;
+  margin: -4px 0 12px;
+  font-style: italic;
+}
+
+// Sidebar File menu
+.menubar {
+  padding: 8px 18px;
+  border-bottom: 1px solid #1e1e1e;
+}
+.menu { position: relative; }
+.menu-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #1e1e1e;
+  border: 1px solid #2e2e2e;
+  border-radius: 6px;
+  color: #ccc;
+  font-size: 12px;
+  cursor: pointer;
+  svg { width: 13px; height: 13px; transition: transform 0.15s; }
+  &:hover { border-color: #d4a96a; color: #d4a96a; }
+}
+.menu.open .menu-summary { border-color: #d4a96a; color: #d4a96a; svg { transform: rotate(180deg); } }
+.menu-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 200px;
+  padding: 4px;
+  background: #1b1b1b;
+  border: 1px solid #2e2e2e;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 20;
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #ccc;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  svg { width: 14px; height: 14px; flex-shrink: 0; }
+  &:hover:not(:disabled) { background: #262626; color: #d4a96a; }
+  &:disabled { opacity: 0.4; cursor: not-allowed; }
+}
+.menu-sep { height: 1px; background: #2e2e2e; margin: 3px 0; }
+.menu-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  font-size: 12px;
+  color: #aaa;
+  cursor: pointer;
+  input { accent-color: #d4a96a; cursor: pointer; }
+}
+
+// Measure tool: read-only distance label at the dimension midpoint
+.measure-label {
+  position: absolute;
+  z-index: 7;
+  transform: translate(-50%, -50%);
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(10, 10, 10, 0.9);
+  border: 1px solid #00e5ff;
+  color: #00e5ff;
+  font: 600 11px monospace;
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 // ── Marquee selection box ─────────────────────────────────────────────────────
