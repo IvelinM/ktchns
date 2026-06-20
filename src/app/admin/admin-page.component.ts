@@ -23,7 +23,18 @@ export interface FamilyDef {
   name: string;
   params: ParamDef[];
   buildObject(p: Record<string, number>): THREE.Object3D;
+  hidden?: boolean;   // not offered in the FAMILY picker — created by a dedicated tool (e.g. СТЕНА)
 }
+
+/**
+ * The base (insertion) point of an instance, as a bounding-box anchor. Each axis is
+ * -1 / 0 / +1 = the min face / centre / max face of the object's local bounding box.
+ * The instance's stored x/y/z is the world location of THIS point (default centre).
+ */
+export interface BasePoint { x: number; y: number; z: number; }
+
+/** A ground-plane vertex of a wall polyline, in the instance's LOCAL frame (mm). */
+export interface WallPoint { x: number; z: number; }
 
 export interface SceneInstance {
   id: number;
@@ -35,6 +46,8 @@ export interface SceneInstance {
   y: number;
   z: number;
   rotY: number;
+  anchor?: BasePoint;  // which bbox point x/y/z refers to; absent ⇒ centre {0,0,0}
+  path?: WallPoint[];  // СТЕНА only: the polyline (local coords, first vertex at origin)
 }
 
 /** A restorable copy of the scene's data model for the undo history. */
@@ -48,7 +61,7 @@ interface PanelInfo {
   thickness: number; pvc: boolean[]; kant: number;
 }
 
-export type InteractionMode = 'idle' | 'placing' | 'move-from' | 'move-to' | 'measure-from' | 'measure-to' | 'match';
+export type InteractionMode = 'idle' | 'placing' | 'move-from' | 'move-to' | 'measure-from' | 'measure-to' | 'match' | 'wall-from' | 'wall-to' | 'slab-from' | 'slab-to';
 export type MovePlane      = 'XZ' | 'XY' | 'YZ';
 
 // ── Colors ────────────────────────────────────────────────────────────────────
@@ -121,6 +134,7 @@ function makePvcEdgeMat(pvcThickness: number): THREE.MeshPhongMaterial {
 function makeMesh(
   AB: number, BC: number, angleDeg: number, thickness: number,
   pvcSides: boolean[] = [false, false, false, false], pvcThickness = 0.5,
+  plainEdges = false,   // skip the chipboard image on the extruded perimeter (e.g. walls)
 ): THREE.Object3D {
   const a = angleDeg * (Math.PI / 180);
   const corners = [
@@ -155,7 +169,12 @@ function makeMesh(
   const faceMat = new THREE.MeshPhongMaterial({
     color: COLOR_NORMAL, shininess: 30, specular: new THREE.Color(0x111111),
   });
-  const mass = new THREE.Mesh(extrudePanel(core, thickness, cx, cy), [faceMat, makeChipboardEdgeMat()]);
+  // Group 0 = the two flat faces (solid colour); group 1 = the extruded perimeter. A
+  // plain-edge mesh uses the face colour for both, so there is no chipboard image.
+  const mass = new THREE.Mesh(
+    extrudePanel(core, thickness, cx, cy),
+    plainEdges ? faceMat : [faceMat, makeChipboardEdgeMat()],
+  );
   mass.castShadow = mass.receiveShadow = true;
 
   const bands: THREE.Mesh[] = [];
@@ -357,7 +376,7 @@ export const FAMILIES: FamilyDef[] = [
   // ── Ploskost ──────────────────────────────────────────────────────────────
   {
     id: 'ploskost',
-    name: 'Ploskost',
+    name: 'ПЛОСКОСТ',
     params: [
       { key: 'AB',           label: 'AB',             defaultValue: 600, min: 1,   step: 1,   unit: 'mm' },
       { key: 'BC',           label: 'BC',             defaultValue: 600, min: 1,   step: 1,   unit: 'mm' },
@@ -385,7 +404,127 @@ export const FAMILIES: FamilyDef[] = [
     params: KORPUS_PARAMS,
     buildObject(p) { return buildKorpus(p, true); },
   },
+
+  // ── СТЕНА (wall) — a vertical solid drawn as a POLYLINE on the ground. The whole
+  // polyline is ONE instance: its vertices live in `inst.path` and the geometry is
+  // built by buildWallPath (not buildObject). Created by the СТЕНА toolbar tool, not
+  // the FAMILY picker, hence `hidden`. ВИСОЧИНА/ДЕБЕЛИНА are set on the tool.
+  {
+    id: 'wall',
+    name: 'СТЕНА',
+    hidden: true,
+    params: [
+      { key: 'ВИСОЧИНА', label: 'ВИСОЧИНА', defaultValue: 2600, min: 1, step: 1, unit: 'mm' },
+      { key: 'ДЕБЕЛИНА', label: 'ДЕБЕЛИНА', defaultValue: 100,  min: 1, step: 1, unit: 'mm' },
+    ],
+    // Degenerate fallback (path-less wall): a single 1 m segment. Real walls go through
+    // buildWallPath; this only fires if an instance somehow lacks a path.
+    buildObject(p) { return buildWallPath([{ x: 0, z: 0 }, { x: 1000, z: 0 }], p['ВИСОЧИНА'], p['ДЕБЕЛИНА']); },
+  },
+
+  // ── ПЛОЧА (slab) — a flat solid of ДЕБЕЛИНА drawn as a CLOSED polygon on the ground.
+  // The whole polygon is ONE instance: its vertices live in `inst.path` and the geometry
+  // is built by buildSlabPath. Created by the ПЛОЧА toolbar tool, hence `hidden`.
+  {
+    id: 'slab',
+    name: 'ПЛОЧА',
+    hidden: true,
+    params: [
+      { key: 'ДЕБЕЛИНА', label: 'ДЕБЕЛИНА', defaultValue: 40, min: 1, step: 1, unit: 'mm' },
+    ],
+    // Degenerate fallback (path-less slab): a 600×600 square. Real slabs go through buildSlabPath.
+    buildObject(p) { return buildSlabPath([{ x: 0, z: 0 }, { x: 600, z: 0 }, { x: 600, z: 600 }, { x: 0, z: 600 }], p['ДЕБЕЛИНА']); },
+  },
 ];
+
+/**
+ * The closed footprint outline of a wall centreline `pts`, offset by `half` on each
+ * side with MITRED corners (so adjacent segments share one continuous boundary, no
+ * gaps/overlaps). Returns the outline as ground points (XZ): the left side forward
+ * then the right side back. Uses 2D (x, z) vectors.
+ */
+function wallOutline(pts: WallPoint[], half: number): WallPoint[] {
+  const n = pts.length;
+  const P = pts.map(p => new THREE.Vector2(p.x, p.z));
+  const dir: THREE.Vector2[] = [];
+  const nrm: THREE.Vector2[] = [];   // left normal of each edge
+  for (let i = 0; i < n - 1; i++) {
+    const d = new THREE.Vector2().subVectors(P[i + 1], P[i]).normalize();
+    dir.push(d);
+    nrm.push(new THREE.Vector2(-d.y, d.x));
+  }
+  // Offset every vertex to one side (s = +1 left, −1 right); interior vertices are the
+  // intersection of the two adjacent offset edge lines (the mitre joint).
+  const side = (s: number): THREE.Vector2[] => {
+    const out: THREE.Vector2[] = [];
+    for (let i = 0; i < n; i++) {
+      if (i === 0)            out.push(P[0].clone().addScaledVector(nrm[0], s * half));
+      else if (i === n - 1)   out.push(P[n - 1].clone().addScaledVector(nrm[n - 2], s * half));
+      else {
+        const a = P[i].clone().addScaledVector(nrm[i - 1], s * half);
+        const b = P[i].clone().addScaledVector(nrm[i],     s * half);
+        out.push(lineIntersect(a, dir[i - 1], b, dir[i]));
+      }
+    }
+    return out;
+  };
+  const left = side(1), right = side(-1);
+  const outline: WallPoint[] = [];
+  for (const p of left) outline.push({ x: p.x, z: p.y });
+  for (let i = right.length - 1; i >= 0; i--) outline.push({ x: right[i].x, z: right[i].y });
+  return outline;
+}
+
+/**
+ * Build a wall polyline as ONE continuous solid: extrude the mitred footprint outline
+ * (ДЕБЕЛИНА wide, centred on the centreline) vertically from the ground (y = 0) to
+ * ВИСОЧИНА. `pts` are local ground vertices (XZ); the local origin is the first one.
+ * Plain (untextured) material; edges are added later by addEdges and stay connected.
+ */
+function buildWallPath(pts: WallPoint[], height: number, thickness: number): THREE.Object3D {
+  const group = new THREE.Group();
+  if (pts.length < 2) return group;
+  const outline = wallOutline(pts, thickness / 2);
+  if (outline.length < 3) return group;
+  // Build the footprint in the shape plane as (x, −z); extrude along +Z by the height,
+  // then tip it up so the extrusion axis becomes world +Y (and z maps back correctly).
+  const shape = new THREE.Shape();
+  shape.moveTo(outline[0].x, -outline[0].z);
+  for (let i = 1; i < outline.length; i++) shape.lineTo(outline[i].x, -outline[i].z);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+  geo.rotateX(-Math.PI / 2);
+  const mat = new THREE.MeshPhongMaterial({
+    color: COLOR_NORMAL, shininess: 30, specular: new THREE.Color(0x111111), side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = mesh.receiveShadow = true;
+  group.add(mesh);
+  return group;
+}
+
+/**
+ * Build a ПЛОЧА (slab) as ONE solid: extrude the filled closed polygon `pts` upward by
+ * `thickness` from the ground (y = 0). `pts` are local ground vertices (XZ); the local
+ * origin is the first one. Plain (untextured) material; edges added later by addEdges.
+ */
+function buildSlabPath(pts: WallPoint[], thickness: number): THREE.Object3D {
+  const group = new THREE.Group();
+  if (pts.length < 3) return group;
+  const shape = new THREE.Shape();
+  shape.moveTo(pts[0].x, -pts[0].z);
+  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false });
+  geo.rotateX(-Math.PI / 2);
+  const mat = new THREE.MeshPhongMaterial({
+    color: COLOR_NORMAL, shininess: 30, specular: new THREE.Color(0x111111), side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = mesh.receiveShadow = true;
+  group.add(mesh);
+  return group;
+}
 
 // ── Object3D helpers ──────────────────────────────────────────────────────────
 
@@ -397,6 +536,58 @@ function disposeObj(obj: THREE.Object3D) {
       Array.isArray(m) ? m.forEach(x => x.dispose()) : (m as THREE.Material).dispose();
     }
   });
+}
+
+/** The centre {0,0,0} base point — used when an instance has no anchor set. */
+const CENTRE_ANCHOR: BasePoint = { x: 0, y: 0, z: 0 };
+
+/** Coerce an axis component from loaded JSON into a clamped -1 / 0 / +1. */
+function clampAxis(v: unknown): number {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.max(-1, Math.min(1, n)) : 0;
+}
+
+/** Validate/clamp an anchor from untrusted JSON; falls back to the centre point. */
+function normAnchor(a: unknown): BasePoint {
+  if (!a || typeof a !== 'object') return { ...CENTRE_ANCHOR };
+  const o = a as Record<string, unknown>;
+  return { x: clampAxis(o['x']), y: clampAxis(o['y']), z: clampAxis(o['z']) };
+}
+
+/**
+ * World-axis vector from the centre of the object's ROTATED axis-aligned bounding
+ * box to the bbox point picked by `a`. The box is measured with `rotYDeg` applied,
+ * so the base point is aligned to the WORLD X/Y/Z directions (not the object's local
+ * axes) — e.g. a.x = −1 is always the world-min-X face regardless of rotation.
+ */
+function worldAnchorOffset(obj: THREE.Object3D, a: BasePoint, rotYDeg: number): THREE.Vector3 {
+  const prevRot = obj.rotation.y;
+  obj.rotation.y = rotYDeg * (Math.PI / 180);
+  obj.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(obj);
+  obj.rotation.y = prevRot;
+  obj.updateMatrixWorld(true);
+  if (box.isEmpty()) return new THREE.Vector3();
+  const c = box.getCenter(new THREE.Vector3());
+  const s = box.getSize(new THREE.Vector3());
+  return new THREE.Vector3(c.x + a.x * s.x / 2, c.y + a.y * s.y / 2, c.z + a.z * s.z / 2);
+}
+
+/**
+ * Wrap a freshly-built object so its chosen (world-axis) base point lands on the
+ * wrapper origin — which is where `obj.position` then places it. Because the anchor
+ * is world-aligned, the geometry must be shifted by the INVERSE-rotated world offset
+ * (`R⁻¹·(−worldOffset)`): once the wrapper re-applies `rotYDeg`, the world AABB point
+ * picked by `anchor` sits exactly at `obj.position`. The centre anchor needs no shift.
+ */
+function anchorWrap(built: THREE.Object3D, anchor: BasePoint | undefined, rotYDeg: number): THREE.Object3D {
+  const a = anchor ?? CENTRE_ANCHOR;
+  if (a.x === 0 && a.y === 0 && a.z === 0) return built;
+  const off = worldAnchorOffset(built, a, rotYDeg);
+  built.position.copy(off.multiplyScalar(-1).applyEuler(new THREE.Euler(0, -rotYDeg * (Math.PI / 180), 0)));
+  const wrap = new THREE.Group();
+  wrap.add(built);
+  return wrap;
 }
 
 function addEdges(obj: THREE.Object3D): void {
@@ -495,6 +686,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   // Match tool: the source instance whose properties get applied to clicked targets.
   private matchSourceId: number | null = null;
 
+  // СТЕНА (wall) draw tool — draws a multi-segment polyline as ONE instance.
+  wallThickness = 100;        // mm, applies to the wall being drawn
+  wallHeight    = 2600;       // mm
+  private wallPath: THREE.Vector3[] = [];        // committed world vertices of the current polyline
+  private wallInstanceId: number | null = null;  // the single instance growing as points are added
+
+  // ПЛОЧА (slab) draw tool — draws a CLOSED polygon, finalised into ONE instance.
+  slabThickness = 40;         // mm, applies to the slab being drawn
+  private slabPath: THREE.Vector3[] = [];        // committed world vertices of the current polygon
+
   // TAB hover-cycle: highlight the hovered instance (index 0) then each sub-panel
   // under the cursor (1..N, nearest first), advancing on TAB.
   private hoverId: number | null = null;
@@ -579,6 +780,14 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const t = e.target as HTMLElement | null;
     const inField = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
 
+    // Enter finishes an in-progress polyline tool (closes a slab / ends a wall run).
+    if (e.key === 'Enter' && !inField &&
+        (this.mode === 'slab-from' || this.mode === 'slab-to' || this.mode === 'wall-from' || this.mode === 'wall-to')) {
+      e.preventDefault();
+      this.cancelMode();
+      return;
+    }
+
     // Ctrl/Cmd+Z → undo (let inputs keep their own native text undo).
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
       if (inField) return;
@@ -605,6 +814,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   }
 
   // ── Computed getters ───────────────────────────────────────────────────────
+
+  /** Families offered in the FAMILY dropdown (hidden ones are created by dedicated tools). */
+  get pickableFamilies(): FamilyDef[] { return this.families.filter(f => !f.hidden); }
 
   get selectedFamily(): FamilyDef { return FAMILIES.find(f => f.id === this.selectedFamilyId)!; }
 
@@ -717,6 +929,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       params: { ...this.currentParams },
       material: '',
       x: pos.x, y: 0, z: pos.z, rotY: 0,
+      anchor: { ...CENTRE_ANCHOR },
     };
     this.instances.push(inst);
     this.spawnObject(inst);
@@ -726,10 +939,22 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.snapDot.visible = false;
   }
 
+  /** Build an instance's geometry — a wall from its polyline, any other family from params. */
+  private buildInstanceObject(inst: SceneInstance): THREE.Object3D {
+    if (inst.familyId === 'wall' && inst.path && inst.path.length >= 2) {
+      return buildWallPath(inst.path, inst.params['ВИСОЧИНА'] ?? 2600, inst.params['ДЕБЕЛИНА'] ?? 100);
+    }
+    if (inst.familyId === 'slab' && inst.path && inst.path.length >= 3) {
+      return buildSlabPath(inst.path, inst.params['ДЕБЕЛИНА'] ?? 40);
+    }
+    return this.getFamilyDef(inst.familyId).buildObject(inst.params);
+  }
+
   private spawnObject(inst: SceneInstance) {
     this.backfillParams(inst);
-    const obj = this.getFamilyDef(inst.familyId).buildObject(inst.params);
-    addEdges(obj);
+    const built = this.buildInstanceObject(inst);
+    addEdges(built);
+    const obj = anchorWrap(built, inst.anchor, inst.rotY);
     obj.position.set(inst.x, inst.y, inst.z);
     obj.rotation.y = inst.rotY * (Math.PI / 180);
     this.objectMap.set(inst.id, obj);
@@ -783,7 +1008,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   /** Deep copy of the data model (the source of truth — the 3D scene is derived). */
   private snapshot(): SceneSnapshot {
-    return { instances: this.instances.map(i => ({ ...i, params: { ...i.params } })), nextId: this.nextId };
+    return { instances: this.instances.map(i => ({ ...i, params: { ...i.params }, anchor: i.anchor ? { ...i.anchor } : undefined, path: i.path ? i.path.map(p => ({ ...p })) : undefined })), nextId: this.nextId };
   }
 
   private record(snap: SceneSnapshot) {
@@ -807,7 +1032,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.clearSubSelection();
     this.objectMap.forEach(o => { this.scene.remove(o); disposeObj(o); });
     this.objectMap.clear();
-    this.instances = snap.instances.map(i => ({ ...i, params: { ...i.params } }));
+    this.instances = snap.instances.map(i => ({ ...i, params: { ...i.params }, anchor: i.anchor ? { ...i.anchor } : undefined, path: i.path ? i.path.map(p => ({ ...p })) : undefined }));
     this.nextId = snap.nextId;
     this.instances.forEach(inst => this.spawnObject(inst));
     this.selectedIds = new Set();
@@ -860,6 +1085,10 @@ export class AdminPageComponent implements OnInit, OnDestroy {
           material: String(i.material ?? ''),
           x: Number(i.x) || 0, y: Number(i.y) || 0, z: Number(i.z) || 0,
           rotY: Number(i.rotY) || 0,
+          anchor: normAnchor(i.anchor),
+          path: Array.isArray(i.path)
+            ? i.path.map((p: Partial<WallPoint>) => ({ x: Number(p?.x) || 0, z: Number(p?.z) || 0 }))
+            : undefined,
         })).filter(i => Number.isFinite(i.id) && this.getFamilyDef(i.familyId));
         const maxId = clean.reduce((m, i) => Math.max(m, i.id), 0);
         const nextId = Number(doc.nextId) > maxId ? Number(doc.nextId) : maxId + 1;
@@ -884,6 +1113,67 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.objectMap.get(inst.id)?.position.set(inst.x, inst.y, inst.z);
   }
 
+  // ── Base point (insertion point) ─────────────────────────────────────────────
+  // Base point pickers. ПЛАН (top-down) is a 3×3 grid setting the X column and Z row;
+  // РАЗРЕЗ (front elevation) is a single column of three setting only the Y level
+  // (X/Z come from ПЛАН). Cell→axis maps (grid row/col are 0..2):
+  //   col → x = col − 1      (left/centre/right  → −1/0/+1)
+  //   plan row → z = row − 1 (back/centre/front  → −1/0/+1)
+  //   sect row → y = 1 − row (top/centre/bottom  → +1/0/−1)
+  readonly cells = [0, 1, 2];
+
+  /** This instance's base point, defaulting to the centre when unset. */
+  anchorOf(inst: SceneInstance): BasePoint { return inst.anchor ?? CENTRE_ANCHOR; }
+
+  planActive(row: number, col: number): boolean {
+    const inst = this.selectedInstance; if (!inst) return false;
+    const a = this.anchorOf(inst);
+    return a.x === col - 1 && a.z === row - 1;
+  }
+  sectActive(row: number): boolean {
+    const inst = this.selectedInstance; if (!inst) return false;
+    return this.anchorOf(inst).y === 1 - row;
+  }
+  pickPlan(row: number, col: number) {
+    const inst = this.selectedInstance; if (!inst) return;
+    const a = this.anchorOf(inst);
+    this.setSelectedAnchor({ x: col - 1, y: a.y, z: row - 1 });
+  }
+  pickSect(row: number) {
+    const inst = this.selectedInstance; if (!inst) return;
+    const a = this.anchorOf(inst);
+    this.setSelectedAnchor({ x: a.x, y: 1 - row, z: a.z });
+  }
+
+  /**
+   * Move the selected instance's base point to `next` WITHOUT moving the object:
+   * x/y/z is re-expressed so it now locates the new point. Both points lie on the
+   * same WORLD axis-aligned bounding box, so the shift is a pure world-axis vector
+   * (no rotation): Δ = (next − cur) · worldSize / 2. The object is then rebuilt.
+   */
+  private setSelectedAnchor(next: BasePoint) {
+    const inst = this.selectedInstance; if (!inst) return;
+    const cur = this.anchorOf(inst);
+    if (cur.x === next.x && cur.y === next.y && cur.z === next.z) return;
+    this.pushHistory();
+    const s = this.worldAabbSize(inst);
+    inst.x += (next.x - cur.x) * s.x / 2;
+    inst.y += (next.y - cur.y) * s.y / 2;
+    inst.z += (next.z - cur.z) * s.z / 2;
+    inst.anchor = { ...next };
+    this.rebuildSelected();
+  }
+
+  /** Size of an instance's WORLD axis-aligned bounding box (its rotation applied). */
+  private worldAabbSize(inst: SceneInstance): THREE.Vector3 {
+    const probe = this.buildInstanceObject(inst);
+    probe.rotation.y = inst.rotY * (Math.PI / 180);
+    probe.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(probe);
+    disposeObj(probe);
+    return box.isEmpty() ? new THREE.Vector3() : box.getSize(new THREE.Vector3());
+  }
+
   updateRotation() {
     const inst = this.selectedInstance;
     if (!inst) return;
@@ -892,8 +1182,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const SNAP_DEG = 8;
     const nearest = Math.round(inst.rotY / 90) * 90;
     if (Math.abs(inst.rotY - nearest) <= SNAP_DEG) inst.rotY = nearest;
-    const obj = this.objectMap.get(inst.id);
-    if (obj) obj.rotation.y = inst.rotY * (Math.PI / 180);
+    // A world-aligned X/Z base point offset depends on rotation, so the geometry must
+    // be re-baked to keep that point anchored. (A centre or pure-Y anchor is rotation-
+    // invariant — just spin the existing object.)
+    const a = this.anchorOf(inst);
+    if (a.x !== 0 || a.z !== 0) {
+      this.rebuildSelected();
+    } else {
+      const obj = this.objectMap.get(inst.id);
+      if (obj) obj.rotation.y = inst.rotY * (Math.PI / 180);
+    }
   }
 
   rebuildSelected() {
@@ -1034,6 +1332,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.pushHistory();
     tgt.params = { ...src.params };
     tgt.material = src.material;
+    tgt.path = src.path ? src.path.map(p => ({ ...p })) : undefined;
     const old = this.objectMap.get(id);
     if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(id); }
     this.spawnObject(tgt);
@@ -1047,6 +1346,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Start the two-click measurement tool. */
   startMeasure() {
     this.cancelMode();
+    this.movePlane = 'XZ';   // default construction plane for Shift-constrained measuring
     this.mode = 'measure-from';
     this.modeLabel = 'Click the first point — Esc to finish';
     this.controls.enabled = false;
@@ -1072,6 +1372,142 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private hideMeasure() {
     if (this.measureLine) this.measureLine.visible = false;
     this.measureLabel = null;
+  }
+
+  // ── СТЕНА (wall) tool ────────────────────────────────────────────────────────
+
+  /** Available whenever idle (no selection needed). */
+  get canWall(): boolean { return this.mode === 'idle'; }
+
+  /** Start drawing a wall polyline on the ground (0x-0z) plane. */
+  startWall() {
+    this.cancelMode();
+    this.wallPath = [];
+    this.wallInstanceId = null;
+    this.mode = 'wall-from';
+    this.modeLabel = 'Click the wall start point — Esc to finish';
+    this.controls.enabled = false;
+  }
+
+  /**
+   * Shift-lock for the polyline tools: pin the point to the dominant ground axis from
+   * `from`, so the segment lies in a vertical plane parallel to 0x-0y (z = from.z → runs
+   * along X) or to 0z-0y (x = from.x → runs along Z). Shared by СТЕНА and ПЛОЧА.
+   */
+  private lockAxisXZ(to: THREE.Vector3, from: THREE.Vector3): THREE.Vector3 {
+    const p = to.clone();
+    if (Math.abs(p.x - from.x) >= Math.abs(p.z - from.z)) p.z = from.z;
+    else p.x = from.x;
+    return p;
+  }
+
+  /** Live translucent preview of the in-progress segment `from`→`to`, plus a length readout. */
+  private updateWallGhost(from: THREE.Vector3, to: THREE.Vector3) {
+    if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
+    const dx = to.x - from.x, dz = to.z - from.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 1) { this.ngZone.run(() => { this.measureLabel = null; }); return; }
+    const seg = makeMesh(len, this.wallHeight, 90, this.wallThickness, [false, false, false, false], 0.5, true);
+    ghostify(seg);
+    seg.rotation.y = Math.atan2(-dz, dx);
+    seg.position.set((from.x + to.x) / 2, this.wallHeight / 2, (from.z + to.z) / 2);
+    this.ghost = seg;
+    this.scene.add(this.ghost);
+
+    const canvas = this.canvasRef.nativeElement;
+    const ndc = to.clone().project(this.camera);
+    const x = ndc.x * canvas.clientWidth / 2 + canvas.clientWidth / 2;
+    const y = canvas.clientHeight / 2 - ndc.y * canvas.clientHeight / 2;
+    this.ngZone.run(() => { this.measureLabel = { x, y, text: `${Math.round(len)} mm` }; });
+  }
+
+  /** Append a vertex to the current polyline and create/grow the single wall instance. */
+  private addWallPoint(p: THREE.Vector3) {
+    this.wallPath.push(p.clone());
+    if (this.wallPath.length < 2) return;
+    this.pushHistory();
+    const p0 = this.wallPath[0];
+    const localPath: WallPoint[] = this.wallPath.map(v => ({ x: v.x - p0.x, z: v.z - p0.z }));
+    if (this.wallInstanceId === null) {
+      const id = this.nextId++;
+      const inst: SceneInstance = {
+        id, familyId: 'wall', label: `СТЕНА ${id}`,
+        params: { 'ВИСОЧИНА': this.wallHeight, 'ДЕБЕЛИНА': this.wallThickness },
+        material: '', path: localPath,
+        x: p0.x, y: 0, z: p0.z, rotY: 0, anchor: { ...CENTRE_ANCHOR },
+      };
+      this.instances.push(inst);
+      this.spawnObject(inst);
+      this.wallInstanceId = id;
+    } else {
+      const inst = this.instances.find(i => i.id === this.wallInstanceId);
+      if (!inst) return;
+      inst.path = localPath;
+      inst.params['ВИСОЧИНА'] = this.wallHeight;
+      inst.params['ДЕБЕЛИНА'] = this.wallThickness;
+      const old = this.objectMap.get(inst.id);
+      if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
+      this.spawnObject(inst);
+    }
+  }
+
+  // ── ПЛОЧА (slab) tool ────────────────────────────────────────────────────────
+
+  /** Available whenever idle (no selection needed). */
+  get canSlab(): boolean { return this.mode === 'idle'; }
+
+  /** Start drawing a slab polygon on the ground (0x-0z) plane. */
+  startSlab() {
+    this.cancelMode();
+    this.slabPath = [];
+    this.mode = 'slab-from';
+    this.modeLabel = 'Click the first corner of the slab — Esc to finish';
+    this.controls.enabled = false;
+  }
+
+  /** True when the cursor is within ~12 px of the polygon's first vertex (close gesture). */
+  private nearFirstSlabVertex(e: MouseEvent): boolean {
+    if (this.slabPath.length < 3) return false;
+    const first = this.slabPath[0];
+    const canvas = this.canvasRef.nativeElement;
+    const r = canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector3(first.x, 0, first.z).project(this.camera);
+    const fx = ndc.x * canvas.clientWidth / 2 + canvas.clientWidth / 2;
+    const fy = canvas.clientHeight / 2 - ndc.y * canvas.clientHeight / 2;
+    return Math.hypot(fx - (e.clientX - r.left), fy - (e.clientY - r.top)) < 12;
+  }
+
+  /** Live translucent preview of the closed polygon formed by the path so far + the cursor. */
+  private updateSlabGhost(cursor: THREE.Vector3) {
+    if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
+    const pts: WallPoint[] = [...this.slabPath, cursor].map(p => ({ x: p.x, z: p.z }));
+    if (pts.length < 3) { this.ngZone.run(() => { this.measureLabel = null; }); return; }
+    const obj = buildSlabPath(pts, this.slabThickness);
+    ghostify(obj);
+    this.ghost = obj;
+    this.scene.add(this.ghost);
+    this.ngZone.run(() => { this.measureLabel = null; });
+  }
+
+  /** Append a vertex to the slab polygon (committed on click; finalised on close). */
+  private addSlabPoint(p: THREE.Vector3) { this.slabPath.push(p.clone()); }
+
+  /** Turn the committed polygon into one slab instance (≥3 vertices); returns its id or null. */
+  private finalizeSlab(): number | null {
+    if (this.slabPath.length < 3) return null;
+    this.pushHistory();
+    const p0 = this.slabPath[0];
+    const localPath: WallPoint[] = this.slabPath.map(v => ({ x: v.x - p0.x, z: v.z - p0.z }));
+    const id = this.nextId++;
+    const inst: SceneInstance = {
+      id, familyId: 'slab', label: `ПЛОЧА ${id}`,
+      params: { 'ДЕБЕЛИНА': this.slabThickness },
+      material: '', path: localPath,
+      x: p0.x, y: 0, z: p0.z, rotY: 0, anchor: { ...CENTRE_ANCHOR },
+    };
+    this.instances.push(inst);
+    this.spawnObject(inst);
+    return id;
   }
 
   // ── Move / Copy / Array (two-step snap) ────────────────────────────────────
@@ -1100,7 +1536,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       if (!inst) return;
       this.moveOrigins.set(id, new THREE.Vector3(inst.x, inst.y, inst.z));
       const makeGhost = (key: number) => {
-        const ghost = this.getFamilyDef(inst.familyId).buildObject(inst.params);
+        const ghost = anchorWrap(this.buildInstanceObject(inst), inst.anchor, inst.rotY);
         ghost.position.set(inst.x, inst.y, inst.z);
         ghost.rotation.y = inst.rotY * (Math.PI / 180);
         ghostify(ghost);
@@ -1151,6 +1587,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         if (inst && obj) { inst.x = origin.x; inst.y = origin.y; inst.z = origin.z; obj.position.copy(origin); }
       });
     }
+    // Finishing a polyline tool keeps its result and selects it: walls already have a
+    // live instance; a slab is finalised here from its committed polygon.
+    const finishedWallId = (this.mode === 'wall-from' || this.mode === 'wall-to') ? this.wallInstanceId : null;
+    const finishedSlabId = (this.mode === 'slab-from' || this.mode === 'slab-to') ? this.finalizeSlab() : null;
+    this.wallPath = [];
+    this.wallInstanceId = null;
+    this.slabPath = [];
     this.clearCopyGhosts();
     this.clearHover();
     this.clearSubSelection();
@@ -1165,15 +1608,18 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.hideMeasure();
     this.mode = 'idle'; this.modeLabel = '';
     this.controls.enabled = true;
+    const finishedId = finishedWallId !== null ? finishedWallId : finishedSlabId;
+    if (finishedId !== null) this.applySelect([finishedId]);
   }
 
   // ── Move plane helpers ─────────────────────────────────────────────────────
 
-  private getActivePlane(): THREE.Plane {
+  /** The active construction plane (XZ/XY/YZ), passing through `anchor` (default: the move reference). */
+  private getActivePlane(anchor: THREE.Vector3 = this.moveFrom): THREE.Plane {
     switch (this.movePlane) {
-      case 'XZ': return new THREE.Plane(new THREE.Vector3(0, 1, 0),  -this.moveFrom.y);
-      case 'XY': return new THREE.Plane(new THREE.Vector3(0, 0, 1),  -this.moveFrom.z);
-      case 'YZ': return new THREE.Plane(new THREE.Vector3(1, 0, 0),  -this.moveFrom.x);
+      case 'XZ': return new THREE.Plane(new THREE.Vector3(0, 1, 0),  -anchor.y);
+      case 'XY': return new THREE.Plane(new THREE.Vector3(0, 0, 1),  -anchor.z);
+      case 'YZ': return new THREE.Plane(new THREE.Vector3(1, 0, 0),  -anchor.x);
     }
   }
 
@@ -1243,6 +1689,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const inst: SceneInstance = {
       id: nid, familyId: src.familyId, label: `МОДУЛ ${nid}`,
       params: { ...src.params }, material: src.material, x, y, z, rotY: src.rotY,
+      anchor: src.anchor ? { ...src.anchor } : { ...CENTRE_ANCHOR },
+      path: src.path ? src.path.map(p => ({ ...p })) : undefined,
     };
     this.instances.push(inst);
     this.spawnObject(inst);
@@ -1391,7 +1839,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     e: MouseEvent,
     plane: THREE.Plane | null,
     skip: Set<number> | null,
-  ): { pos: THREE.Vector3; type: 'endpoint' | 'midpoint' | 'origin' | 'grid' } | null {
+  ): { pos: THREE.Vector3; type: 'endpoint' | 'midpoint' | 'origin' | 'axis' | 'grid' } | null {
     const objSnap = this.findObjectSnap(e, skip);
     if (objSnap) {
       if (plane) {
@@ -1411,15 +1859,44 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     pos.x = Math.round(pos.x);
     pos.y = Math.round(pos.y);
     pos.z = Math.round(pos.z);
-    return { pos, type: 'grid' };
+    // Snap onto a main coordinate axis when the cursor is within a few px of one.
+    const onAxis = this.applyAxisSnap(pos);
+    return { pos, type: onAxis ? 'axis' : 'grid' };
   }
 
-  private showSnap(pos: THREE.Vector3, type: 'endpoint' | 'midpoint' | 'origin' | 'grid') {
+  /** Screen-space pixel position of a world point. */
+  private worldToPx(v: THREE.Vector3): { x: number; y: number } {
+    const canvas = this.canvasRef.nativeElement;
+    const ndc = v.clone().project(this.camera);
+    return { x: ndc.x * canvas.clientWidth / 2 + canvas.clientWidth / 2, y: canvas.clientHeight / 2 - ndc.y * canvas.clientHeight / 2 };
+  }
+
+  /**
+   * Pin any coordinate of `pos` to 0 when, on screen, the point is within AXIS_PX of
+   * that coordinate being zero. On the ground plane (y = 0) this lands the point exactly
+   * on the world X axis (z→0) or Z axis (x→0); the screen-space test self-disables when
+   * the active plane is far from that axis. Mutates `pos`; returns true if anything snapped.
+   */
+  private applyAxisSnap(pos: THREE.Vector3): boolean {
+    const AXIS_PX = 10;
+    const here = this.worldToPx(pos);
+    let snapped = false;
+    (['x', 'y', 'z'] as const).forEach(ax => {
+      if (Math.abs(pos[ax]) < 1e-6) return;
+      const alt = pos.clone(); alt[ax] = 0;
+      const p = this.worldToPx(alt);
+      if (Math.hypot(p.x - here.x, p.y - here.y) < AXIS_PX) { pos[ax] = 0; snapped = true; }
+    });
+    return snapped;
+  }
+
+  private showSnap(pos: THREE.Vector3, type: 'endpoint' | 'midpoint' | 'origin' | 'axis' | 'grid') {
     this.snapDot.visible = true;
     this.snapDot.position.copy(pos);
     const hex = type === 'origin'   ? 0xff44dd
               : type === 'endpoint' ? 0x00e5ff
               : type === 'midpoint' ? 0x76ff03
+              : type === 'axis'     ? 0xffd400
               :                       0xffffff;
     (this.snapDot.material as THREE.MeshBasicMaterial).color.setHex(hex);
   }
@@ -1623,8 +2100,44 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (this.mode === 'wall-from') {
+      const snap = this.getSnap(e, this.groundPlane, null);
+      if (!snap) return;
+      this.showSnap(snap.pos, snap.type);
+      return;
+    }
+
+    if (this.mode === 'wall-to') {
+      const snap = this.getSnap(e, this.groundPlane, null);
+      if (!snap) return;
+      const last = this.wallPath[this.wallPath.length - 1];
+      const pos = e.shiftKey ? this.lockAxisXZ(snap.pos, last) : snap.pos;
+      this.showSnap(pos, snap.type);
+      this.updateWallGhost(last, pos);
+      return;
+    }
+
+    if (this.mode === 'slab-from') {
+      const snap = this.getSnap(e, this.groundPlane, null);
+      if (!snap) return;
+      this.showSnap(snap.pos, snap.type);
+      return;
+    }
+
+    if (this.mode === 'slab-to') {
+      const snap = this.getSnap(e, this.groundPlane, null);
+      if (!snap) return;
+      const last = this.slabPath[this.slabPath.length - 1];
+      const pos = e.shiftKey ? this.lockAxisXZ(snap.pos, last) : snap.pos;
+      this.showSnap(pos, snap.type);
+      this.updateSlabGhost(pos);
+      return;
+    }
+
     if (this.mode === 'measure-to') {
-      const snap = this.getSnap(e, null, null);
+      // Shift constrains the second point to the active plane through the first point.
+      const plane = e.shiftKey ? this.getActivePlane(this.measureFrom) : null;
+      const snap = this.getSnap(e, plane, null);
       if (!snap) return;
       this.showSnap(snap.pos, snap.type);
       this.showMeasure(snap.pos);
@@ -1806,6 +2319,53 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (this.mode === 'wall-from') {
+      const snap = this.getSnap(e, this.groundPlane, null);
+      if (snap) {
+        this.wallPath = [snap.pos.clone()];
+        this.wallInstanceId = null;
+        this.ngZone.run(() => {
+          this.mode = 'wall-to';
+          this.modeLabel = 'Click the next corner — hold Shift to lock to X/Z — Esc to finish';
+        });
+      }
+      return;
+    }
+
+    if (this.mode === 'wall-to') {
+      const snap = this.getSnap(e, this.groundPlane, null);
+      if (!snap) return;
+      const last = this.wallPath[this.wallPath.length - 1];
+      const pos = e.shiftKey ? this.lockAxisXZ(snap.pos, last) : snap.pos;
+      if (Math.hypot(pos.x - last.x, pos.z - last.z) >= 1) {
+        this.ngZone.run(() => this.addWallPoint(pos));
+      }
+      return;
+    }
+
+    if (this.mode === 'slab-from') {
+      const snap = this.getSnap(e, this.groundPlane, null);
+      if (snap) {
+        this.slabPath = [snap.pos.clone()];
+        this.ngZone.run(() => {
+          this.mode = 'slab-to';
+          this.modeLabel = 'Click corners — Shift locks X/Z — click the first point or Enter to close';
+        });
+      }
+      return;
+    }
+
+    if (this.mode === 'slab-to') {
+      // Clicking back on the first vertex closes and finalises the polygon.
+      if (this.nearFirstSlabVertex(e)) { this.ngZone.run(() => this.cancelMode()); return; }
+      const snap = this.getSnap(e, this.groundPlane, null);
+      if (!snap) return;
+      const last = this.slabPath[this.slabPath.length - 1];
+      const pos = e.shiftKey ? this.lockAxisXZ(snap.pos, last) : snap.pos;
+      if (Math.hypot(pos.x - last.x, pos.z - last.z) >= 1) this.addSlabPoint(pos);
+      return;
+    }
+
     if (this.mode === 'measure-from') {
       const snap = this.getSnap(e, null, null);
       if (snap) {
@@ -1813,14 +2373,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         this.hideMeasure();   // clear any previous frozen measurement
         this.ngZone.run(() => {
           this.mode = 'measure-to';
-          this.modeLabel = 'Click the second point — Esc to finish';
+          this.modeLabel = 'Click the second point — hold Shift to measure in a plane — Esc to finish';
         });
       }
       return;
     }
 
     if (this.mode === 'measure-to') {
-      const snap = this.getSnap(e, null, null);
+      const plane = e.shiftKey ? this.getActivePlane(this.measureFrom) : null;
+      const snap = this.getSnap(e, plane, null);
       if (snap) {
         this.showMeasure(snap.pos);   // freeze the dimension at the clicked point
         this.ngZone.run(() => {

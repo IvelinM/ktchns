@@ -255,6 +255,78 @@
   }
 }
 
+// ── Base point selector ───────────────────────────────────────────────────────
+
+.basepoint {
+  margin-top: 14px;
+}
+
+.bp-title {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #555;
+  margin-bottom: 8px;
+}
+
+.bp-grids {
+  display: flex;
+  gap: 18px;
+}
+
+.bp-square {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.bp-name {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #888;
+}
+
+.bp-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 3px;
+  width: 72px;
+  height: 72px;
+  padding: 4px;
+  background: #111;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+}
+
+// РАЗРЕЗ: a single column of three (top / middle / bottom) — only the Y level.
+// Keep the 72px square footprint so each cell becomes a wide rectangle.
+.bp-grid--col {
+  grid-template-columns: 1fr;
+}
+
+.bp-cell {
+  padding: 0;
+  border: 1px solid #2f2f2f;
+  border-radius: 3px;
+  background: #1c1c1c;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
+
+  &:hover { border-color: #d4a96a; background: #242424; }
+
+  &.on {
+    background: #d4a96a;
+    border-color: #e8c58a;
+    box-shadow: 0 0 6px rgba(212, 169, 106, 0.5);
+  }
+}
+
 // ── Action buttons ────────────────────────────────────────────────────────────
 
 .action-row {
@@ -491,6 +563,39 @@
   &:hover:not(.active) { border-color: #666; color: #bbb; }
 }
 
+// ── Wall tool dimensions ──────────────────────────────────────────────────────
+
+.wall-dims {
+  display: flex;
+  gap: 8px;
+  margin-left: 8px;
+
+  label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: #999;
+
+    input[type='number'] {
+      width: 56px;
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 4px;
+      color: #e0e0e0;
+      font-size: 11px;
+      padding: 2px 5px;
+      outline: none;
+      appearance: textfield;
+      -moz-appearance: textfield;
+      &::-webkit-inner-spin-button, &::-webkit-outer-spin-button { -webkit-appearance: none; }
+      &:focus { border-color: #d4a96a; }
+    }
+  }
+}
+
 // ── Snap legend ───────────────────────────────────────────────────────────────
 
 .snap-legend {
@@ -513,6 +618,7 @@
   &.endpoint { background: #00e5ff; }
   &.midpoint { background: #76ff03; }
   &.origin   { background: #ff44dd; }
+  &.axis     { background: #ffd400; }
   &.grid     { background: #ffffff; }
 }
 
