@@ -1,10 +1,11 @@
 import {
-  Component, ElementRef, ViewChild, OnInit, OnDestroy, NgZone, HostListener,
+  Component, ElementRef, ViewChild, OnInit, OnDestroy, NgZone, HostListener, HostBinding,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -18,12 +19,34 @@ export interface ParamDef {
   type?: 'number' | 'toggle';
 }
 
+/** A per-panel material choice (a string picked from the scene's material list). */
+export interface MaterialParamDef {
+  key: string;
+  label: string;
+  default: string;
+}
+
+/**
+ * A named material in the scene's library, editable from the Materials dialog. The
+ * visual properties drive the photoreal Render mode (PBR): `color` is the base hex,
+ * `transparency`/`reflection`/`glossiness` are 0–100 % and map to MeshStandard
+ * opacity (1 − t/100), metalness (r/100) and roughness (1 − g/100) respectively.
+ */
+export interface MaterialDef {
+  name: string;
+  color: string;          // '#rrggbb'
+  transparency: number;   // 0–100 %
+  reflection: number;     // 0–100 %
+  glossiness: number;     // 0–100 %
+}
+
 export interface FamilyDef {
   id: string;
   name: string;
   params: ParamDef[];
   buildObject(p: Record<string, number>): THREE.Object3D;
   hidden?: boolean;   // not offered in the FAMILY picker — created by a dedicated tool (e.g. СТЕНА)
+  materialParams?: MaterialParamDef[];   // shown in the МАТЕРИАЛИ section (string selects)
 }
 
 /**
@@ -48,6 +71,7 @@ export interface SceneInstance {
   rotY: number;
   anchor?: BasePoint;  // which bbox point x/y/z refers to; absent ⇒ centre {0,0,0}
   path?: WallPoint[];  // СТЕНА only: the polyline (local coords, first vertex at origin)
+  materials?: Record<string, string>;  // per-panel material choices (МАТЕРИАЛИ section)
 }
 
 /** A restorable copy of the scene's data model for the undo history. */
@@ -370,6 +394,22 @@ const KORPUS_PARAMS: ParamDef[] = [
   { key: 'ГРЪБ_С_КАНТ_ОТДЯСНО', label: 'ГРЪБ С КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
 ];
 
+/** МАТЕРИАЛИ: board + edge-band material per panel of a КОРПУС. Defaults to ГЛАДКО БЯЛО. */
+const KORPUS_MATERIAL_PARAMS: MaterialParamDef[] = [
+  { key: 'ЛЯВА_СТРАНИЦА_МАТЕРИАЛ',       label: 'ЛЯВА СТРАНИЦА МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
+  { key: 'ЛЯВА_СТРАНИЦА_КАНТ_МАТЕРИАЛ',  label: 'ЛЯВА СТРАНИЦА КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
+  { key: 'ДЯСНА_СТРАНИЦА_МАТЕРИАЛ',      label: 'ДЯСНА СТРАНИЦА МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
+  { key: 'ДЯСНА_СТРАНИЦА_КАНТ_МАТЕРИАЛ', label: 'ДЯСНА СТРАНИЦА КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
+  { key: 'ТАВАН_МАТЕРИАЛ',              label: 'ТАВАН МАТЕРИАЛ',              default: 'ГЛАДКО БЯЛО' },
+  { key: 'ТАВАН_КАНТ_МАТЕРИАЛ',         label: 'ТАВАН КАНТ МАТЕРИАЛ',         default: 'ГЛАДКО БЯЛО' },
+  { key: 'ДЪНО_МАТЕРИАЛ',               label: 'ДЪНО МАТЕРИАЛ',               default: 'ГЛАДКО БЯЛО' },
+  { key: 'ДЪНО_КАНТ_МАТЕРИАЛ',          label: 'ДЪНО КАНТ МАТЕРИАЛ',          default: 'ГЛАДКО БЯЛО' },
+  { key: 'ГРЪБ_МАТЕРИАЛ',               label: 'ГРЪБ МАТЕРИАЛ',               default: 'ГЛАДКО БЯЛО' },
+  { key: 'ГРЪБ_КАНТ_МАТЕРИАЛ',          label: 'ГРЪБ КАНТ МАТЕРИАЛ',          default: 'ГЛАДКО БЯЛО' },
+  { key: 'ВРАТИЧКА_МАТЕРИАЛ',           label: 'ВРАТИЧКА МАТЕРИАЛ',           default: 'ГЛАДКО БЯЛО' },
+  { key: 'ВРАТИЧКА_КАНТ_МАТЕРИАЛ',      label: 'ВРАТИЧКА КАНТ МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
+];
+
 // ── Family registry ───────────────────────────────────────────────────────────
 
 export const FAMILIES: FamilyDef[] = [
@@ -402,6 +442,7 @@ export const FAMILIES: FamilyDef[] = [
     id: 'cabinet-door',
     name: 'КОРПУС С ВРАТА',
     params: KORPUS_PARAMS,
+    materialParams: KORPUS_MATERIAL_PARAMS,
     buildObject(p) { return buildKorpus(p, true); },
   },
 
@@ -540,6 +581,7 @@ function disposeObj(obj: THREE.Object3D) {
 
 /** The centre {0,0,0} base point — used when an instance has no anchor set. */
 const CENTRE_ANCHOR: BasePoint = { x: 0, y: 0, z: 0 };
+const WALL_Y = new THREE.Vector3(0, 1, 0);   // axis for wall local↔world rotation
 
 /** Coerce an axis component from loaded JSON into a clamped -1 / 0 / +1. */
 function clampAxis(v: unknown): number {
@@ -655,6 +697,28 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   families   = FAMILIES;
   selectedFamilyId = FAMILIES[0].id;
   currentParams: Record<string, number> = {};
+  currentMaterials: Record<string, string> = {};   // material picks for the "place new" panel
+
+  /**
+   * The scene's material library — the per-panel selects choose by name, and the
+   * Materials dialog edits each one's look (color/transparency/reflection/glossiness),
+   * which Render mode applies as PBR.
+   */
+  materialDefs: MaterialDef[] = [
+    { name: 'ГЛАДКО БЯЛО', color: '#f0f0f0', transparency: 0, reflection: 8, glossiness: 50 },
+    { name: 'БЯЛО МАТ',    color: '#e9e9e9', transparency: 0, reflection: 2, glossiness: 18 },
+  ];
+
+  // ── Materials dialog ──────────────────────────────────────────────────────────
+  materialsDialogOpen = false;
+  editingMaterialIndex = 0;
+
+  // ── Visualisation menu / theme / settings ────────────────────────────────────
+  /** Light vs dark UI theme; bound to the host so the SCSS variable overrides apply. */
+  @HostBinding('class.light') lightTheme = false;
+  visMenuOpen = false;            // the toolbar "Visualisation" dropdown
+  settingsDialogOpen = false;     // the Settings dialog (camera brightness)
+  cameraBrightness = 1.0;         // global light/exposure multiplier (0.2–2.0)
 
   instances  = [] as SceneInstance[];
   selectedIds = new Set<number>();
@@ -676,6 +740,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   @ViewChild('distInput') private distInputRef?: ElementRef<HTMLInputElement>;
   @ViewChild('fileMenu') private fileMenuRef?: ElementRef<HTMLElement>;
+  @ViewChild('visMenu') private visMenuRef?: ElementRef<HTMLElement>;
 
   // Measurement tool: a dimension line from a start point to the cursor, with a
   // read-only distance label at its midpoint.
@@ -691,6 +756,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   wallHeight    = 2600;       // mm
   private wallPath: THREE.Vector3[] = [];        // committed world vertices of the current polyline
   private wallInstanceId: number | null = null;  // the single instance growing as points are added
+
+  // Editing a finished wall: draggable vertex + segment handles on the selected wall.
+  private wallHandleGroup: THREE.Group | null = null;
+  private wallEdit: { instId: number; kind: 'vertex' | 'edge'; index: number } | null = null;
+  private wallEditOrig: WallPoint[] | null = null;
+  private readonly vtxHandleGeo  = new THREE.SphereGeometry(70, 16, 12);
+  private readonly edgeHandleGeo = new THREE.SphereGeometry(48, 12, 10);
+  private readonly vtxHandleMat  = new THREE.MeshBasicMaterial({ color: 0xffd400, depthTest: false, transparent: true, opacity: 0.95 });
+  private readonly edgeHandleMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, depthTest: false, transparent: true, opacity: 0.9 });
 
   // ПЛОЧА (slab) draw tool — draws a CLOSED polygon, finalised into ONE instance.
   slabThickness = 40;         // mm, applies to the slab being drawn
@@ -718,6 +792,26 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private snapDot!: THREE.Mesh;
   private moveLine!: THREE.Line;   // 3D guide line drawn from moveFrom to the cursor during a move
   private ghost: THREE.Object3D | null = null;
+
+  // ── Render (photoreal preview) mode ──────────────────────────────────────────
+  renderMode = false;
+  private viewHelpers: THREE.Object3D[] = [];     // grid/axes/labels — hidden while rendering
+  private ambientLight!: THREE.AmbientLight;
+  private keyLight!: THREE.DirectionalLight;
+  private fillLight!: THREE.DirectionalLight;
+  private envTexture: THREE.Texture | null = null;  // cached PMREM environment (lazy)
+  private renderFloor: THREE.Mesh | null = null;    // shadow-catching ground, only in render mode
+
+  // ── Photo (high-quality post-processed raster) mode ───────────────────────────
+  photoMode = false;
+  photoSamples = 0;                                 // accumulated TAA frames since the last camera move
+  private composer: any = null;                     // EffectComposer (lazy-loaded three/examples passes)
+  private taaPass: any = null;                      // TAARenderPass — temporal AA + accumulation
+  photoLoading = false;                             // true while the post-processing modules load
+  private lastPhotoSamples = -1;
+  private boundPhotoReset: (() => void) | null = null;
+  /** Either realistic look is active (shared PBR materials, env, floor, hidden helpers). */
+  get realistic(): boolean { return this.renderMode || this.photoMode; }
   private objectMap = new Map<number, THREE.Object3D>();
   private nextId = 1;
   private moveFrom    = new THREE.Vector3();
@@ -732,11 +826,14 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private mouseDownAt  = { x: 0, y: 0 };
   private marqueeStart = { x: 0, y: 0 };
   private isMarqueeing = false;
+  private orbiting = false;                 // Shift + middle-drag orbit while a tool is active
+  private orbitPrev = { x: 0, y: 0 };
 
   private boundClick!: (e: MouseEvent) => void;
   private boundMove!:  (e: MouseEvent) => void;
   private boundDown!:  (e: MouseEvent) => void;
   private boundUp!:    (e: MouseEvent) => void;
+  private boundWheel!: (e: WheelEvent) => void;
 
   constructor(private ngZone: NgZone) {}
 
@@ -753,29 +850,44 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     cv.removeEventListener('mousemove', this.boundMove);
     cv.removeEventListener('mousedown', this.boundDown);
     cv.removeEventListener('mouseup',   this.boundUp);
+    cv.removeEventListener('wheel',     this.boundWheel);
     this.moveLine?.geometry.dispose();
     (this.moveLine?.material as THREE.Material | undefined)?.dispose();
     this.measureLine?.geometry.dispose();
     (this.measureLine?.material as THREE.Material | undefined)?.dispose();
     this.renderer?.dispose();
+    this.envTexture?.dispose();
+    if (this.boundPhotoReset) this.controls?.removeEventListener('change', this.boundPhotoReset);
+    this.composer?.dispose?.();
+    if (this.renderFloor) { this.renderFloor.geometry.dispose(); (this.renderFloor.material as THREE.Material).dispose(); }
     this.objectMap.forEach(o => disposeObj(o));
     this.copyGhosts.forEach(g => disposeObj(g));
+    this.removeWallHandles();
+    this.vtxHandleGeo.dispose(); this.edgeHandleGeo.dispose();
+    this.vtxHandleMat.dispose(); this.edgeHandleMat.dispose();
   }
 
   toggleFileMenu() { this.fileMenuOpen = !this.fileMenuOpen; }
 
-  /** Close the File menu when clicking anywhere outside it. */
+  /** Close the File / Visualisation menus when clicking anywhere outside them. */
   @HostListener('document:click', ['$event'])
   onDocClick(e: MouseEvent) {
     if (this.fileMenuOpen && this.fileMenuRef &&
         !this.fileMenuRef.nativeElement.contains(e.target as Node)) {
       this.fileMenuOpen = false;
     }
+    if (this.visMenuOpen && this.visMenuRef &&
+        !this.visMenuRef.nativeElement.contains(e.target as Node)) {
+      this.visMenuOpen = false;
+    }
   }
 
   @HostListener('document:keydown', ['$event'])
   onKey(e: KeyboardEvent) {
-    if (e.key === 'Escape') { this.cancelMode(); this.fileMenuOpen = false; return; }
+    if (e.key === 'Escape') {
+      this.cancelMode(); this.fileMenuOpen = false; this.visMenuOpen = false;
+      this.materialsDialogOpen = false; this.settingsDialogOpen = false; return;
+    }
 
     const t = e.target as HTMLElement | null;
     const inField = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
@@ -904,12 +1016,86 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private resetParams() {
     this.currentParams = {};
     for (const p of this.selectedFamily.params) this.currentParams[p.key] = p.defaultValue;
+    this.currentMaterials = {};
+    for (const mp of this.selectedFamily.materialParams ?? []) this.currentMaterials[mp.key] = mp.default;
+  }
+
+  // ── Materials (МАТЕРИАЛИ section) ────────────────────────────────────────────
+
+  /** Every material name selectable in the scene: the library plus any already in use. */
+  get availableMaterials(): string[] {
+    const set = new Set<string>(this.materialDefs.map(m => m.name));
+    for (const inst of this.instances) {
+      if (inst.material && inst.material.trim()) set.add(inst.material.trim());
+      if (inst.materials) for (const v of Object.values(inst.materials)) if (v) set.add(v);
+    }
+    return [...set];
+  }
+
+  /** Look up a library material by name (used by Render mode to read its look). */
+  private materialDef(name: string | undefined): MaterialDef | undefined {
+    return name ? this.materialDefs.find(m => m.name === name) : undefined;
+  }
+
+  // ── Materials dialog ──────────────────────────────────────────────────────────
+
+  toggleMaterials() { this.materialsDialogOpen = !this.materialsDialogOpen; }
+  closeMaterials() { this.materialsDialogOpen = false; }
+
+  get editingMaterial(): MaterialDef | undefined { return this.materialDefs[this.editingMaterialIndex]; }
+  selectEditingMaterial(i: number) { this.editingMaterialIndex = i; }
+
+  /** Re-skin the scene live while editing a material (only matters in Render mode). */
+  onMaterialEdited() {
+    if (!this.realistic) return;
+    this.refreshAllObjects();
+    this.photoSamples = 0; this.lastPhotoSamples = -1;   // restart Photo accumulation
+  }
+
+  /** Add a fresh material to the library (unique name) and select it for editing. */
+  addMaterial() {
+    let n = 1, name = 'НОВ МАТЕРИАЛ';
+    const names = new Set(this.materialDefs.map(m => m.name));
+    while (names.has(name)) name = `НОВ МАТЕРИАЛ ${++n}`;
+    this.materialDefs.push({ name, color: '#cccccc', transparency: 0, reflection: 10, glossiness: 50 });
+    this.editingMaterialIndex = this.materialDefs.length - 1;
+  }
+
+  /** Remove a material from the library (keeps at least one); instances keep their name. */
+  deleteMaterial(i: number) {
+    if (this.materialDefs.length <= 1) return;
+    this.materialDefs.splice(i, 1);
+    this.editingMaterialIndex = Math.min(this.editingMaterialIndex, this.materialDefs.length - 1);
+    this.onMaterialEdited();
+  }
+
+  /** The current material chosen for `key` on an instance (defaults to blank). */
+  materialOf(inst: SceneInstance, key: string): string { return inst.materials?.[key] ?? ''; }
+
+  /** Assign a per-panel material on the selected instance (data only — no geometry rebuild). */
+  setMaterial(key: string, value: string) {
+    const inst = this.selectedInstance;
+    if (!inst) return;
+    if (!inst.materials) inst.materials = {};
+    inst.materials[key] = value;
+    this.commitPendingEdit();
+  }
+
+  /** Fill in any МАТЕРИАЛИ keys this instance is missing (from the family defaults). */
+  private backfillMaterials(inst: SceneInstance): boolean {
+    const mps = this.getFamilyDef(inst.familyId).materialParams;
+    if (!mps) return false;
+    if (!inst.materials) inst.materials = {};
+    let changed = false;
+    for (const mp of mps) if (!(mp.key in inst.materials)) { inst.materials[mp.key] = mp.default; changed = true; }
+    return changed;
   }
 
   // ── Placement ──────────────────────────────────────────────────────────────
 
   startPlacing() {
     this.cancelMode();
+    this.removeWallHandles();
     this.mode = 'placing';
     this.modeLabel = 'Click viewport to place — Esc to cancel';
     const obj = this.selectedFamily.buildObject({ ...this.currentParams });
@@ -928,6 +1114,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       label: `МОДУЛ ${id}`,
       params: { ...this.currentParams },
       material: '',
+      materials: { ...this.currentMaterials },
       x: pos.x, y: 0, z: pos.z, rotY: 0,
       anchor: { ...CENTRE_ANCHOR },
     };
@@ -952,11 +1139,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   private spawnObject(inst: SceneInstance) {
     this.backfillParams(inst);
+    this.backfillMaterials(inst);
     const built = this.buildInstanceObject(inst);
     addEdges(built);
     const obj = anchorWrap(built, inst.anchor, inst.rotY);
     obj.position.set(inst.x, inst.y, inst.z);
     obj.rotation.y = inst.rotY * (Math.PI / 180);
+    if (this.realistic) this.applyRenderMaterials(obj, inst);
     this.objectMap.set(inst.id, obj);
     this.scene.add(obj);
   }
@@ -997,6 +1186,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       const obj = this.objectMap.get(id);
       if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
     });
+    this.updateWallHandles();   // show editable handles when a single wall is selected
   }
 
   clickList(id: number) {
@@ -1008,7 +1198,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   /** Deep copy of the data model (the source of truth — the 3D scene is derived). */
   private snapshot(): SceneSnapshot {
-    return { instances: this.instances.map(i => ({ ...i, params: { ...i.params }, anchor: i.anchor ? { ...i.anchor } : undefined, path: i.path ? i.path.map(p => ({ ...p })) : undefined })), nextId: this.nextId };
+    return { instances: this.instances.map(i => ({ ...i, params: { ...i.params }, materials: i.materials ? { ...i.materials } : undefined, anchor: i.anchor ? { ...i.anchor } : undefined, path: i.path ? i.path.map(p => ({ ...p })) : undefined })), nextId: this.nextId };
   }
 
   private record(snap: SceneSnapshot) {
@@ -1032,11 +1222,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.clearSubSelection();
     this.objectMap.forEach(o => { this.scene.remove(o); disposeObj(o); });
     this.objectMap.clear();
-    this.instances = snap.instances.map(i => ({ ...i, params: { ...i.params }, anchor: i.anchor ? { ...i.anchor } : undefined, path: i.path ? i.path.map(p => ({ ...p })) : undefined }));
+    this.instances = snap.instances.map(i => ({ ...i, params: { ...i.params }, materials: i.materials ? { ...i.materials } : undefined, anchor: i.anchor ? { ...i.anchor } : undefined, path: i.path ? i.path.map(p => ({ ...p })) : undefined }));
     this.nextId = snap.nextId;
     this.instances.forEach(inst => this.spawnObject(inst));
     this.selectedIds = new Set();
     this.pendingSnapshot = null;
+    this.removeWallHandles();   // selection cleared → no handles
   }
 
   /** Ctrl/Cmd+Z — restore the most recent snapshot and rebuild the scene from it. */
@@ -1049,12 +1240,26 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   /** Download the current scene as a JSON file describing every instance and its props. */
   saveScene() {
+    const cam = this.camera, tgt = this.controls.target;
     const doc = {
       format: 'webcad-scene',
-      version: 1,
+      version: 2,
       savedAt: new Date().toISOString(),
       nextId: this.nextId,
+      // Family instances: position, rotation, anchor, every parameter value, the module
+      // material name, per-panel МАТЕРИАЛИ picks, and any wall/slab polyline.
       instances: this.instances,
+      // The editable material library (name + colour/transparency/reflection/glossiness).
+      materials: this.materialDefs,
+      // Visualisation + view settings so the scene reopens looking identical.
+      view: {
+        theme: this.lightTheme ? 'light' : 'dark',
+        cameraBrightness: this.cameraBrightness,
+        camera: {
+          position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
+          target:   { x: tgt.x, y: tgt.y, z: tgt.z },
+        },
+      },
     };
     const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1083,6 +1288,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
           label: String(i.label ?? `МОДУЛ ${i.id}`),
           params: { ...(i.params ?? {}) },
           material: String(i.material ?? ''),
+          materials: i.materials && typeof i.materials === 'object' ? { ...i.materials } : undefined,
           x: Number(i.x) || 0, y: Number(i.y) || 0, z: Number(i.z) || 0,
           rotY: Number(i.rotY) || 0,
           anchor: normAnchor(i.anchor),
@@ -1095,6 +1301,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         this.ngZone.run(() => {
           this.pushHistory();   // loading is undoable
           this.restoreScene({ instances: clean, nextId });
+          this.restoreMaterialLibrary(doc.materials);
+          this.restoreView(doc.view);
         });
       } catch {
         this.ngZone.run(() => alert('Invalid scene file — expected WebCAD scene JSON.'));
@@ -1104,6 +1312,44 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     input.value = '';   // allow re-loading the same file
   }
 
+  /** Restore the saved material library (v2+); older files leave the current library intact. */
+  private restoreMaterialLibrary(mats: unknown) {
+    if (!Array.isArray(mats)) return;
+    const clean: MaterialDef[] = mats
+      .filter((m): m is Partial<MaterialDef> => !!m && typeof m === 'object')
+      .map(m => ({
+        name: String(m.name ?? 'МАТЕРИАЛ'),
+        color: typeof m.color === 'string' ? m.color : '#cccccc',
+        transparency: Number(m.transparency) || 0,
+        reflection: Number(m.reflection) || 0,
+        glossiness: Number.isFinite(m.glossiness as number) ? Number(m.glossiness) : 50,
+      }));
+    if (!clean.length) return;
+    this.materialDefs = clean;
+    this.editingMaterialIndex = 0;
+  }
+
+  /** Restore the saved visualisation/view settings (v2+): theme, brightness, camera pose. */
+  private restoreView(view: any) {
+    if (!view || typeof view !== 'object') return;
+    if (view.theme === 'light' || view.theme === 'dark') {
+      this.lightTheme = view.theme === 'light';
+      this.applyViewportBackground();
+    }
+    if (Number.isFinite(view.cameraBrightness)) {
+      this.cameraBrightness = Math.min(2, Math.max(0.2, Number(view.cameraBrightness)));
+      this.applyLighting();
+    }
+    const cp = view.camera?.position, ct = view.camera?.target;
+    if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y) && Number.isFinite(cp.z)) {
+      this.camera.position.set(cp.x, cp.y, cp.z);
+    }
+    if (ct && Number.isFinite(ct.x) && Number.isFinite(ct.y) && Number.isFinite(ct.z)) {
+      this.controls.target.set(ct.x, ct.y, ct.z);
+    }
+    this.controls.update();
+  }
+
   // ── Property editing ───────────────────────────────────────────────────────
 
   updatePosition() {
@@ -1111,6 +1357,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (!inst) return;
     this.commitPendingEdit();
     this.objectMap.get(inst.id)?.position.set(inst.x, inst.y, inst.z);
+    if (inst.familyId === 'wall') this.updateWallHandles();
   }
 
   // ── Base point (insertion point) ─────────────────────────────────────────────
@@ -1192,6 +1439,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       const obj = this.objectMap.get(inst.id);
       if (obj) obj.rotation.y = inst.rotY * (Math.PI / 180);
     }
+    if (inst.familyId === 'wall') this.updateWallHandles();
   }
 
   rebuildSelected() {
@@ -1318,6 +1566,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.cancelMode();
     this.matchSourceId = [...this.selectedIds][0];
     this.applySelect([this.matchSourceId]);   // keep the source highlighted as reference
+    this.removeWallHandles();
     this.mode = 'match';
     this.modeLabel = 'Click objects to copy the source properties onto — Esc to finish';
     // controls stay enabled: left-click picks targets, right-drag still orbits.
@@ -1346,9 +1595,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Start the two-click measurement tool. */
   startMeasure() {
     this.cancelMode();
-    this.movePlane = 'XZ';   // default construction plane for Shift-constrained measuring
+    this.removeWallHandles();
     this.mode = 'measure-from';
-    this.modeLabel = 'Click the first point — Esc to finish';
+    this.modeLabel = 'Click the first point — Shift+scroll-drag orbits — Esc to finish';
     this.controls.enabled = false;
   }
 
@@ -1382,6 +1631,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Start drawing a wall polyline on the ground (0x-0z) plane. */
   startWall() {
     this.cancelMode();
+    this.removeWallHandles();
     this.wallPath = [];
     this.wallInstanceId = null;
     this.mode = 'wall-from';
@@ -1451,6 +1701,137 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     }
   }
 
+  // ── Wall vertex / segment editing (after the wall is finished) ────────────────
+
+  /** True while a wall vertex or segment is being repositioned. */
+  get wallVertexEditing(): boolean { return !!this.wallEdit; }
+
+  /** Local wall-frame point → world ground position (honours the wall's rotation). */
+  private wallToWorld(inst: SceneInstance, p: WallPoint): THREE.Vector3 {
+    return new THREE.Vector3(p.x, 0, p.z)
+      .applyAxisAngle(WALL_Y, inst.rotY * (Math.PI / 180))
+      .add(new THREE.Vector3(inst.x, inst.y, inst.z));
+  }
+
+  /** World ground position → local wall-frame point (rounded to mm). */
+  private worldToWallLocal(inst: SceneInstance, w: THREE.Vector3): WallPoint {
+    const v = w.clone().sub(new THREE.Vector3(inst.x, inst.y, inst.z))
+      .applyAxisAngle(WALL_Y, -inst.rotY * (Math.PI / 180));
+    return { x: Math.round(v.x), z: Math.round(v.z) };
+  }
+
+  /** (Re)build the draggable handles for the single selected wall, or remove them. */
+  private updateWallHandles() {
+    this.removeWallHandles();
+    if (this.mode !== 'idle' && !this.wallEdit) return;
+    if (this.selectedIds.size !== 1) return;
+    const inst = this.selectedInstance;
+    if (!inst || inst.familyId !== 'wall' || !inst.path || inst.path.length < 2) return;
+
+    const g = new THREE.Group();
+    inst.path.forEach((p, i) => {
+      const m = new THREE.Mesh(this.vtxHandleGeo, this.vtxHandleMat);
+      m.position.copy(this.wallToWorld(inst, p));
+      m.renderOrder = 1000;
+      m.userData = { wallHandle: 'vertex', index: i };
+      g.add(m);
+    });
+    for (let i = 0; i < inst.path.length - 1; i++) {
+      const a = this.wallToWorld(inst, inst.path[i]);
+      const b = this.wallToWorld(inst, inst.path[i + 1]);
+      const m = new THREE.Mesh(this.edgeHandleGeo, this.edgeHandleMat);
+      m.position.copy(a.add(b).multiplyScalar(0.5));
+      m.renderOrder = 1000;
+      m.userData = { wallHandle: 'edge', index: i };
+      g.add(m);
+    }
+    this.wallHandleGroup = g;
+    this.scene.add(g);
+  }
+
+  private removeWallHandles() {
+    if (this.wallHandleGroup) { this.scene.remove(this.wallHandleGroup); this.wallHandleGroup = null; }
+  }
+
+  /** Raycast the wall handles; returns the picked vertex/segment, or null. */
+  private pickWallHandle(e: MouseEvent): { kind: 'vertex' | 'edge'; index: number } | null {
+    if (!this.wallHandleGroup) return null;
+    this.raycaster.setFromCamera(this.ndc(e), this.camera);
+    const hits = this.raycaster.intersectObjects(this.wallHandleGroup.children, false);
+    if (!hits.length) return null;
+    const ud = hits[0].object.userData;
+    return { kind: ud['wallHandle'], index: ud['index'] };
+  }
+
+  /**
+   * Pick up a wall vertex (or whole segment) for repositioning. Click-move-click, like
+   * the Move tool: it reuses the move-to drag so Shift axis-lock, snapping and the typed
+   * distance editor all work; commit with a click or a typed distance + Enter.
+   */
+  private startWallEdit(kind: 'vertex' | 'edge', index: number) {
+    const inst = this.selectedInstance;
+    if (!inst || inst.familyId !== 'wall' || !inst.path) return;
+    this.pushHistory();
+    this.wallEdit = { instId: inst.id, kind, index };
+    this.wallEditOrig = inst.path.map(p => ({ ...p }));
+    const from = kind === 'vertex'
+      ? this.wallToWorld(inst, inst.path[index])
+      : this.wallToWorld(inst, inst.path[index]).add(this.wallToWorld(inst, inst.path[index + 1])).multiplyScalar(0.5);
+    this.moveFrom.copy(from);
+    this.movePlane = 'XZ';
+    this.isCopy = false; this.isArray = false;
+    this.mode = 'move-to';
+    this.modeLabel = (kind === 'vertex' ? 'Move vertex' : 'Move segment')
+      + ' — click to drop · Shift locks axis · type distance + Enter · Esc cancels';
+    this.distanceLocked = false; this.distanceStr = ''; this.distFocusPending = true;
+    this.controls.enabled = false;
+  }
+
+  /** Apply the in-progress vertex/segment move to `pos` (world ground point) and rebuild. */
+  private applyWallEdit(pos: THREE.Vector3) {
+    if (!this.wallEdit || !this.wallEditOrig) return;
+    const inst = this.instances.find(i => i.id === this.wallEdit!.instId);
+    if (!inst) return;
+    const path = this.wallEditOrig.map(p => ({ ...p }));
+    const i = this.wallEdit.index;
+    if (this.wallEdit.kind === 'vertex') {
+      path[i] = this.worldToWallLocal(inst, pos);
+    } else {
+      const dl = pos.clone().sub(this.moveFrom).applyAxisAngle(WALL_Y, -inst.rotY * (Math.PI / 180));
+      path[i]     = { x: Math.round(this.wallEditOrig[i].x     + dl.x), z: Math.round(this.wallEditOrig[i].z     + dl.z) };
+      path[i + 1] = { x: Math.round(this.wallEditOrig[i + 1].x + dl.x), z: Math.round(this.wallEditOrig[i + 1].z + dl.z) };
+    }
+    inst.path = path;
+    const old = this.objectMap.get(inst.id);
+    if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
+    this.spawnObject(inst);
+    const obj = this.objectMap.get(inst.id);
+    if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+    this.updateWallHandles();
+  }
+
+  /** Live preview while moving the cursor with a vertex/segment picked up. */
+  private wallEditMove(e: MouseEvent) {
+    const snap = this.getSnap(e, this.groundPlane, new Set([this.wallEdit!.instId]));
+    if (!snap) return;
+    const pos = e.shiftKey ? this.lockAxisXZ(snap.pos, this.moveFrom) : snap.pos;
+    this.showSnap(pos, snap.type);
+    this.applyWallEdit(pos);
+    this.showMoveMeasure(e, pos);
+  }
+
+  /** Drop the vertex/segment at `pos` and return to idle. */
+  private finishWallEdit(pos: THREE.Vector3) {
+    this.applyWallEdit(pos);
+    this.wallEdit = null; this.wallEditOrig = null;
+    this.mode = 'idle'; this.modeLabel = '';
+    this.controls.enabled = true;
+    this.snapDot.visible = false;
+    this.hideMoveMeasure();
+    this.distanceLocked = false; this.distanceStr = '';
+    this.updateWallHandles();
+  }
+
   // ── ПЛОЧА (slab) tool ────────────────────────────────────────────────────────
 
   /** Available whenever idle (no selection needed). */
@@ -1459,6 +1840,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Start drawing a slab polygon on the ground (0x-0z) plane. */
   startSlab() {
     this.cancelMode();
+    this.removeWallHandles();
     this.slabPath = [];
     this.mode = 'slab-from';
     this.modeLabel = 'Click the first corner of the slab — Esc to finish';
@@ -1521,6 +1903,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   private beginMoveOp(kind: 'move' | 'copy' | 'array') {
     if (this.selectedIds.size === 0) return;
+    this.removeWallHandles();
     this.arrayCount = Math.max(1, Math.floor(Number(this.arrayCount) || 1));
     this.isCopy  = kind === 'copy';
     this.isArray = kind === 'array';
@@ -1559,6 +1942,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.snapDot.visible = false;
     this.hideMoveMeasure();
     this.distanceLocked = false; this.distanceStr = '';
+    this.updateWallHandles();   // a moved wall keeps its handles at the new position
   }
 
   /** Cursor distance editor: the user typed → stop syncing the value from the cursor. */
@@ -1569,7 +1953,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (this.mode !== 'move-to') return;
     const d = parseFloat(this.distanceStr);
     if (!isFinite(d) || d <= 0 || this.moveDir.lengthSq() < 1e-9) return;
-    this.finishMoveTo(this.moveFrom.clone().addScaledVector(this.moveDir, d));
+    const pos = this.moveFrom.clone().addScaledVector(this.moveDir, d);
+    if (this.wallEdit) this.finishWallEdit(pos);
+    else this.finishMoveTo(pos);
   }
 
   private clearCopyGhosts() {
@@ -1587,6 +1973,19 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         if (inst && obj) { inst.x = origin.x; inst.y = origin.y; inst.z = origin.z; obj.position.copy(origin); }
       });
     }
+    // Cancelling a wall vertex/segment edit restores the original polyline.
+    if (this.wallEdit && this.wallEditOrig) {
+      const inst = this.instances.find(i => i.id === this.wallEdit!.instId);
+      if (inst) {
+        inst.path = this.wallEditOrig;
+        const old = this.objectMap.get(inst.id);
+        if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
+        this.spawnObject(inst);
+        const obj = this.objectMap.get(inst.id);
+        if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+      }
+      this.wallEdit = null; this.wallEditOrig = null;
+    }
     // Finishing a polyline tool keeps its result and selects it: walls already have a
     // live instance; a slab is finalised here from its committed polygon.
     const finishedWallId = (this.mode === 'wall-from' || this.mode === 'wall-to') ? this.wallInstanceId : null;
@@ -1603,6 +2002,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.distanceLocked = false; this.distanceStr = '';
     this.isMarqueeing = false;
     this.marqueeRect  = null;
+    this.orbiting = false;
     this.snapDot.visible = false;
     this.hideMoveMeasure();
     this.hideMeasure();
@@ -1610,6 +2010,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.controls.enabled = true;
     const finishedId = finishedWallId !== null ? finishedWallId : finishedSlabId;
     if (finishedId !== null) this.applySelect([finishedId]);
+    this.updateWallHandles();
   }
 
   // ── Move plane helpers ─────────────────────────────────────────────────────
@@ -1621,6 +2022,122 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       case 'XY': return new THREE.Plane(new THREE.Vector3(0, 0, 1),  -anchor.z);
       case 'YZ': return new THREE.Plane(new THREE.Vector3(1, 0, 0),  -anchor.x);
     }
+  }
+
+  /**
+   * Shift-constrained measuring: lock the second point onto the X, Y or Z axis line
+   * through the first point, so the measured segment is always parallel to 0x, 0y or 0z
+   * — including the vertical (Y) axis, i.e. NOT confined to the XZ plane.
+   *
+   * The cursor is projected onto the view-facing plane through the first point (a stable
+   * 3D point at the same depth), then we lock to whichever axis the drag deviates along
+   * most. So dragging mostly upward measures along 0y, sideways along 0x / 0z — pick the
+   * view (orbit mid-measure) that shows the axis you want.
+   */
+  private axisLockedMeasurePoint(e: MouseEvent): THREE.Vector3 | null {
+    this.raycaster.setFromCamera(this.ndc(e), this.camera);
+    const from = this.measureFrom;
+    const n = new THREE.Vector3();
+    this.camera.getWorldDirection(n);
+    const viewPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, from);
+    const raw = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(viewPlane, raw)) return null;
+
+    const dx = raw.x - from.x, dy = raw.y - from.y, dz = raw.z - from.z;
+    const ax = Math.abs(dx), ay = Math.abs(dy), az = Math.abs(dz);
+    const pos = from.clone();                       // the other two coords stay on `from`
+    if (ax >= ay && ax >= az)       pos.x = Math.round(from.x + dx);
+    else if (ay >= ax && ay >= az)  pos.y = Math.round(from.y + dy);
+    else                            pos.z = Math.round(from.z + dz);
+    return pos;
+  }
+
+  /**
+   * Closest point on the infinite line (through `from`, unit direction `dir`) to the view
+   * `ray` — closest approach of two skew lines. Null when the line is ~parallel to the ray.
+   */
+  private closestPointOnAxisToRay(from: THREE.Vector3, dir: THREE.Vector3, ray: THREE.Ray): THREE.Vector3 | null {
+    const d2 = ray.direction;
+    const b = dir.dot(d2);
+    const denom = 1 - b * b;
+    if (Math.abs(denom) < 1e-4) return null;
+    const w0 = new THREE.Vector3().subVectors(from, ray.origin);
+    const s = (b * d2.dot(w0) - dir.dot(w0)) / denom;
+    return from.clone().addScaledVector(dir, s);
+  }
+
+  /**
+   * Snap the cursor onto a world axis line — 0x, 0y OR 0z — when its screen projection
+   * passes within a few pixels of the cursor. Unlike the ground-plane grid snap (which is
+   * pinned to y = 0 and so only reaches 0x / 0z), this can land a point anywhere on the
+   * vertical 0y axis. Returns null when no axis is close enough.
+   */
+  private worldAxisSnap(e: MouseEvent): { pos: THREE.Vector3; type: 'axis' } | null {
+    this.raycaster.setFromCamera(this.ndc(e), this.camera);
+    const ray = this.raycaster.ray;
+    const rect = this.canvasRef.nativeElement.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const O = new THREE.Vector3(0, 0, 0);
+    const axes = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
+    const AXIS_PX = 10;
+    let best: THREE.Vector3 | null = null, bestDist = AXIS_PX;
+    for (const dir of axes) {
+      const p = this.closestPointOnAxisToRay(O, dir, ray);
+      if (!p) continue;
+      const px = this.worldToPx(p);
+      const d = Math.hypot(px.x - cx, px.y - cy);
+      if (d < bestDist) { bestDist = d; best = p; }
+    }
+    if (!best) return null;
+    best.x = Math.round(best.x); best.y = Math.round(best.y); best.z = Math.round(best.z);
+    return { pos: best, type: 'axis' };
+  }
+
+  /**
+   * Free measure-cursor snap: object endpoints/midpoints first, then the world axes
+   * (incl. the vertical 0y), then the ground grid. Lets a measurement start or end on a
+   * point of the Y axis, which the ground-plane snap alone can't reach.
+   */
+  private measureSnap(e: MouseEvent): { pos: THREE.Vector3; type: 'endpoint' | 'midpoint' | 'origin' | 'axis' | 'grid' } | null {
+    const obj = this.findObjectSnap(e, null);
+    if (obj) return { pos: obj.world.clone(), type: obj.type };
+    return this.worldAxisSnap(e) ?? this.getSnap(e, null, null);
+  }
+
+  /**
+   * Orbit the camera around the OrbitControls target by a screen-pixel delta — used to
+   * let the user rotate the view (Shift + middle/scroll drag) WHILE a two-click tool has
+   * the controls disabled. Matches OrbitControls' default rotate speed; the per-frame
+   * controls.update() re-reads the camera position, so there's no jump when the tool ends.
+   */
+  private orbitCamera(dx: number, dy: number) {
+    const h = this.canvasRef.nativeElement.clientHeight || 1;
+    const target = this.controls.target;
+    const offset = this.camera.position.clone().sub(target);
+    const sph = new THREE.Spherical().setFromVector3(offset);
+    sph.theta -= 2 * Math.PI * dx / h;
+    sph.phi   -= 2 * Math.PI * dy / h;
+    const EPS = 1e-4;
+    sph.phi = Math.max(EPS, Math.min(Math.PI - EPS, sph.phi));
+    sph.makeSafe();
+    offset.setFromSpherical(sph);
+    this.camera.position.copy(target).add(offset);
+    this.camera.lookAt(target);
+  }
+
+  /**
+   * Dolly the camera toward / away from the OrbitControls target by a wheel delta —
+   * keeps scroll-zoom working while a two-click tool has the controls disabled. Matches
+   * OrbitControls' zoom step and respects its min/max distance clamps.
+   */
+  private dollyCamera(deltaY: number) {
+    const target = this.controls.target;
+    const offset = this.camera.position.clone().sub(target);
+    const step = Math.pow(0.95, this.controls.zoomSpeed);
+    offset.multiplyScalar(deltaY < 0 ? step : 1 / step);   // wheel up (deltaY<0) → zoom in
+    const r = Math.max(this.controls.minDistance, Math.min(this.controls.maxDistance, offset.length()));
+    offset.setLength(r);
+    this.camera.position.copy(target).add(offset);
   }
 
   /**
@@ -1688,7 +2205,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const nid = this.nextId++;
     const inst: SceneInstance = {
       id: nid, familyId: src.familyId, label: `МОДУЛ ${nid}`,
-      params: { ...src.params }, material: src.material, x, y, z, rotY: src.rotY,
+      params: { ...src.params }, material: src.material, materials: src.materials ? { ...src.materials } : undefined, x, y, z, rotY: src.rotY,
       anchor: src.anchor ? { ...src.anchor } : { ...CENTRE_ANCHOR },
       path: src.path ? src.path.map(p => ({ ...p })) : undefined,
     };
@@ -1975,7 +2492,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+    this.scene.add(this.ambientLight);
     const key = new THREE.DirectionalLight(0xffffff, 1.4);
     key.position.set(3000, 5000, 3000);
     key.castShadow = true;
@@ -1983,18 +2501,24 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     key.shadow.camera.near = 10; key.shadow.camera.far = 30000;
     key.shadow.camera.left = key.shadow.camera.bottom = -8000;
     key.shadow.camera.right = key.shadow.camera.top   =  8000;
+    this.keyLight = key;
     this.scene.add(key);
     const fill = new THREE.DirectionalLight(0x8899ff, 0.3);
     fill.position.set(-3000, -2000, -3000);
+    this.fillLight = fill;
     this.scene.add(fill);
+    this.applyLighting();
+    this.applyViewportBackground();
 
-    this.scene.add(new THREE.GridHelper(5000, 500, 0x2a2a2a, 0x1a1a1a));
+    const grid = new THREE.GridHelper(5000, 500, 0x2a2a2a, 0x1a1a1a);
     const axisLen = 500;
-    this.scene.add(new THREE.AxesHelper(axisLen));
+    const axes = new THREE.AxesHelper(axisLen);
     // X/Y/Z labels at the tip of each axis arrow
-    this.scene.add(this.makeAxisLabel('X', 0xff5555, new THREE.Vector3(axisLen + 70, 0, 0)));
-    this.scene.add(this.makeAxisLabel('Y', 0x55ff55, new THREE.Vector3(0, axisLen + 70, 0)));
-    this.scene.add(this.makeAxisLabel('Z', 0x5588ff, new THREE.Vector3(0, 0, axisLen + 70)));
+    const lblX = this.makeAxisLabel('X', 0xff5555, new THREE.Vector3(axisLen + 70, 0, 0));
+    const lblY = this.makeAxisLabel('Y', 0x55ff55, new THREE.Vector3(0, axisLen + 70, 0));
+    const lblZ = this.makeAxisLabel('Z', 0x5588ff, new THREE.Vector3(0, 0, axisLen + 70));
+    this.viewHelpers = [grid, axes, lblX, lblY, lblZ];
+    this.viewHelpers.forEach(h => this.scene.add(h));
 
     this.snapDot = new THREE.Mesh(
       new THREE.SphereGeometry(8, 8, 8),
@@ -2030,10 +2554,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.boundClick = (e) => this.onCanvasClick(e);
     this.boundMove  = (e) => this.onCanvasMove(e);
     this.boundUp    = (e) => this.onCanvasUp(e);
+    this.boundWheel = (e) => this.onCanvasWheel(e);
     canvas.addEventListener('mousedown', this.boundDown);
     canvas.addEventListener('click',     this.boundClick);
     canvas.addEventListener('mousemove', this.boundMove);
     canvas.addEventListener('mouseup',   this.boundUp);
+    canvas.addEventListener('wheel',     this.boundWheel, { passive: false });
 
     this.resizeObserver = new ResizeObserver(() => {
       const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -2041,6 +2567,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w, h);
+      this.composer?.setSize(w, h);
     });
     this.resizeObserver.observe(canvas.parentElement!);
 
@@ -2050,7 +2577,253 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private animate() {
     this.animFrameId = requestAnimationFrame(() => this.animate());
     this.controls.update();
-    this.renderer.render(this.scene, this.camera);
+    if (this.photoMode && this.composer) {
+      this.composer.render();                       // PBR + GTAO + TAA accumulation to canvas
+      const s = Math.min(this.photoSamples + 1, 999);
+      this.photoSamples = s;
+      if (s !== this.lastPhotoSamples) {
+        this.lastPhotoSamples = s;
+        this.ngZone.run(() => { /* refresh the overlay counter */ });
+      }
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
+  }
+
+  // ── Render (photoreal preview) mode ──────────────────────────────────────────
+
+  /**
+   * Toggle a "lane 1" realistic preview: PBR materials lit by an image-based studio
+   * environment (RoomEnvironment → PMREM), ACES filmic tone mapping and a shadow-
+   * catching floor; CAD helpers and edge lines are hidden. No third-party library —
+   * everything is Three.js core + examples. Toggling rebuilds all objects from data,
+   * so the standard viewport is restored exactly on exit.
+   */
+  toggleRender() {
+    const on = !this.renderMode;
+    if (on && this.photoMode) this.stopPhoto();   // the two realistic modes are mutually exclusive
+    this.renderMode = on;
+    if (on) {
+      this.cancelMode();
+      this.applySelect([]);                       // clean, unhighlighted view
+      this.enterRealisticScene();
+      this.scene.environment = this.envTexture!;
+    } else {
+      this.exitRealisticScene();
+    }
+    this.applyLighting();             // mode-dependent base intensities × brightness
+    this.applyViewportBackground();   // theme- and mode-dependent 3D background
+    this.refreshAllObjects();
+  }
+
+  /** Shared "realistic look" setup (env + tone mapping + shadow floor, helpers hidden). */
+  private enterRealisticScene() {
+    if (!this.envTexture) {                        // build the IBL environment once
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      this.envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmrem.dispose();
+    }
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.viewHelpers.forEach(h => h.visible = false);
+    if (!this.renderFloor) {
+      const geo = new THREE.PlaneGeometry(200000, 200000);
+      geo.rotateX(-Math.PI / 2);
+      this.renderFloor = new THREE.Mesh(
+        geo, new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.95, metalness: 0 }),
+      );
+      this.renderFloor.position.y = -0.2;          // just under y=0 so slabs/walls aren't z-fought
+      this.renderFloor.receiveShadow = true;
+    }
+    this.scene.add(this.renderFloor);
+  }
+
+  private exitRealisticScene() {
+    this.scene.environment = null;
+    this.renderer.toneMapping = THREE.NoToneMapping;
+    this.viewHelpers.forEach(h => h.visible = true);
+    if (this.renderFloor) this.scene.remove(this.renderFloor);
+  }
+
+  /**
+   * Toggle Photo mode: a high-quality post-processed raster render (three.js core only,
+   * lazy-loaded so it never bloats the public bundle). Builds on the same PBR/realistic
+   * scene as Render and adds ground-truth-style **ambient occlusion (GTAO)** plus
+   * **temporal anti-aliasing/accumulation (TAA)** — the image keeps refining while the
+   * camera is still and reframes when you orbit. Reliable on every GPU (incl. Intel).
+   */
+  async togglePhoto() {
+    this.visMenuOpen = false;
+    if (this.photoMode) { this.stopPhoto(); return; }
+    if (this.renderMode) this.renderMode = false;   // keep the realistic scene; re-enter below
+    this.cancelMode();
+    this.applySelect([]);
+    this.enterRealisticScene();
+    this.scene.environment = this.envTexture!;
+    this.photoMode = true;                           // realistic getter → PBR materials on rebuild
+    this.photoLoading = true;
+    this.photoSamples = 0; this.lastPhotoSamples = -1;
+    this.applyLighting();
+    this.applyViewportBackground();
+    this.refreshAllObjects();                        // PBR materials (realistic = true)
+
+    let EC, RP, TAA, GTAO, OUT;
+    try {
+      [EC, RP, TAA, GTAO, OUT] = await Promise.all([
+        import('three/examples/jsm/postprocessing/EffectComposer.js'),
+        import('three/examples/jsm/postprocessing/RenderPass.js'),
+        import('three/examples/jsm/postprocessing/TAARenderPass.js'),
+        import('three/examples/jsm/postprocessing/GTAOPass.js'),
+        import('three/examples/jsm/postprocessing/OutputPass.js'),
+      ]);
+    } catch (err) {
+      console.error('[WebCAD] Photo modules failed to load:', err);
+      this.ngZone.run(() => { this.stopPhoto(); alert('Неуспешно зареждане на Photo визуализацията.'); });
+      return;
+    }
+    if (!this.photoMode) { this.photoLoading = false; return; }   // toggled off during load
+
+    const canvas = this.canvasRef.nativeElement;
+    const w = canvas.clientWidth || 800, h = canvas.clientHeight || 600;
+    const composer = new EC.EffectComposer(this.renderer);
+    composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    composer.setSize(w, h);
+
+    // TAA renders the scene with jittered sub-pixel samples and accumulates them while
+    // the view is static → clean anti-aliasing and smooth soft shadows.
+    const taa = new TAA.TAARenderPass(this.scene, this.camera);
+    taa.sampleLevel = 3;     // up to 2^3 = 8 jittered samples
+    taa.unbiased = true;
+    taa.accumulate = true;
+    composer.addPass(taa);
+    this.taaPass = taa;
+
+    // Ground-truth ambient occlusion for soft contact shadows / corner darkening.
+    const gtao = new GTAO.GTAOPass(this.scene, this.camera, w, h);
+    gtao.output = GTAO.GTAOPass.OUTPUT.Default;
+    composer.addPass(gtao);
+
+    composer.addPass(new OUT.OutputPass());          // ACES tone mapping + sRGB
+    void RP;                                          // RenderPass imported for type parity (TAA covers it)
+
+    this.composer = composer;
+    if (!this.boundPhotoReset) {
+      this.boundPhotoReset = () => { if (this.photoMode) { this.taaPass?.accumulate && (this.taaPass.accumulate = true); this.photoSamples = 0; this.lastPhotoSamples = -1; } };
+      this.controls.addEventListener('change', this.boundPhotoReset);
+    }
+    this.photoLoading = false;
+    this.ngZone.run(() => {});   // reflect overlay state
+  }
+
+  /** Leave Photo mode and restore the standard viewport. */
+  private stopPhoto() {
+    if (!this.photoMode) return;
+    this.photoMode = false;
+    this.photoLoading = false;
+    this.composer?.dispose?.();
+    this.composer = null;
+    this.taaPass = null;
+    this.exitRealisticScene();
+    this.applyLighting();
+    this.applyViewportBackground();
+    this.refreshAllObjects();
+  }
+
+  // ── Visualisation menu / theme / camera settings ──────────────────────────────
+
+  toggleVisMenu() { this.visMenuOpen = !this.visMenuOpen; }
+  openSettings() { this.visMenuOpen = false; this.settingsDialogOpen = true; }
+  closeSettings() { this.settingsDialogOpen = false; }
+
+  /** Flip the UI between dark and light; the 3D background follows the theme too. */
+  toggleTheme() { this.lightTheme = !this.lightTheme; this.applyViewportBackground(); }
+
+  /** Camera brightness slider changed — re-apply the lighting multiplier live. */
+  onBrightnessChange() { this.applyLighting(); }
+
+  /** The 3D background: white-ish in light theme, dark otherwise (a touch lighter in Render). */
+  private applyViewportBackground() {
+    if (!this.scene || this.photoMode) return;   // Photo mode manages its own (environment) background
+    const hex = this.lightTheme ? 0xeef1f5 : (this.renderMode ? 0x20242a : 0x0e0e0e);
+    this.scene.background = new THREE.Color(hex);
+  }
+
+  /** Scale the scene lights (and Render exposure) by the camera-brightness multiplier. */
+  private applyLighting() {
+    if (!this.ambientLight) return;
+    const b = this.cameraBrightness;
+    if (this.realistic) {
+      this.ambientLight.intensity = 0.12 * b;   // env does the soft lighting
+      this.keyLight.intensity = 1.1 * b;
+      this.fillLight.intensity = 0.3 * b;
+      this.renderer.toneMappingExposure = b;
+    } else {
+      this.ambientLight.intensity = 0.45 * b;
+      this.keyLight.intensity = 1.4 * b;
+      this.fillLight.intensity = 0.3 * b;
+      this.renderer.toneMappingExposure = 1.0;  // NoToneMapping ignores it anyway
+    }
+  }
+
+  /** Dispose and respawn every object from the data model (re-applies the active look). */
+  private refreshAllObjects() {
+    const sel = [...this.selectedIds];
+    this.objectMap.forEach(o => { this.scene.remove(o); disposeObj(o); });
+    this.objectMap.clear();
+    this.instances.forEach(inst => this.spawnObject(inst));
+    this.applySelect(sel);
+  }
+
+  /**
+   * Convert an object's flat MeshPhong materials to MeshStandard (PBR) so they react to
+   * the environment, and hide its CAD edge lines. Each panel's chosen МАТЕРИАЛИ drive
+   * the look: the board face takes its panel material, PVC bands take the matching
+   * `*_КАНТ_МАТЕРИАЛ`, and the exposed chipboard edge keeps its texture. Where no library
+   * material is assigned, falls back to sensible roughness per material role.
+   */
+  private applyRenderMaterials(obj: THREE.Object3D, inst: SceneInstance) {
+    const toKey = (panelName: string) => panelName.replace(/ /g, '_') + '_МАТЕРИАЛ';
+    const toKantKey = (panelName: string) => panelName.replace(/ /g, '_') + '_КАНТ_МАТЕРИАЛ';
+    obj.traverse(child => {
+      if (child instanceof THREE.LineSegments && child.userData['isEdge']) { child.visible = false; return; }
+      if (!(child instanceof THREE.Mesh) || child.userData['isEdge']) return;
+
+      // Which panel (if any) does this mesh belong to? Walk up to the panel-tagged node.
+      let n: THREE.Object3D | null = child, panelName: string | undefined;
+      while (n && n !== obj) {
+        if (n.userData['panel']) { panelName = n.userData['panel'].name as string; break; }
+        n = n.parent;
+      }
+      const boardDef = panelName
+        ? this.materialDef(inst.materials?.[toKey(panelName)])
+        : this.materialDef(inst.material);
+      const kantDef = panelName
+        ? this.materialDef(inst.materials?.[toKantKey(panelName)])
+        : boardDef;
+
+      const conv = (m: THREE.MeshPhongMaterial): THREE.MeshStandardMaterial => {
+        const isBand = !!m.userData['edgeBand'];
+        const def = isBand ? kantDef : boardDef;
+        const std = new THREE.MeshStandardMaterial({
+          // A textured face (the chipboard edge) keeps its map; a flat face takes the def colour.
+          color: def && !m.map ? new THREE.Color(def.color) : (m.color ? m.color.clone() : new THREE.Color(0xffffff)),
+          map: m.map ?? null,
+          transparent: def ? def.transparency > 0 : m.transparent,
+          opacity: def ? 1 - def.transparency / 100 : m.opacity,
+          side: m.side,
+          metalness: def ? def.reflection / 100 : 0,
+          // clamp roughness away from 0 — a perfect mirror makes the path tracer emit NaNs
+          // (which poison the running average → black) on some GPUs (e.g. Intel/ANGLE).
+          roughness: Math.max(0.06, def ? 1 - def.glossiness / 100 : (m.userData['edgeBand'] ? (m.map ? 0.85 : 0.3) : 0.5)),
+          envMapIntensity: def ? 0.4 + def.reflection / 100 : 1,
+        });
+        std.userData = { ...m.userData };   // keep edgeBand tag so colorObj still skips bands
+        m.dispose();
+        return std;
+      };
+      child.material = Array.isArray(child.material)
+        ? (child.material as THREE.MeshPhongMaterial[]).map(conv)
+        : conv(child.material as THREE.MeshPhongMaterial);
+    });
   }
 
   // ── Input helpers ──────────────────────────────────────────────────────────
@@ -2078,13 +2851,40 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   // ── Canvas event handlers ──────────────────────────────────────────────────
 
+  /**
+   * Scroll-zoom while a command is in progress. OrbitControls handles the wheel when
+   * idle (controls enabled); when a tool has disabled them, we dolly the camera
+   * ourselves so zoom keeps working between clicks.
+   */
+  private onCanvasWheel(e: WheelEvent) {
+    if (this.controls.enabled) return;   // idle → let OrbitControls do the zoom
+    e.preventDefault();
+    this.dollyCamera(e.deltaY);
+  }
+
   private onCanvasDown(e: MouseEvent) {
+    // Shift + middle (scroll-wheel) drag orbits the camera even while the Measure tool
+    // has the OrbitControls disabled, so you can look around between the two clicks.
+    if (e.button === 1 && e.shiftKey && (this.mode === 'measure-from' || this.mode === 'measure-to')) {
+      e.preventDefault();   // suppress the browser's middle-click autoscroll
+      this.orbiting = true;
+      this.orbitPrev = { x: e.clientX, y: e.clientY };
+      return;
+    }
     this.mouseDownAt  = { x: e.clientX, y: e.clientY };
     this.marqueeStart = { x: e.clientX, y: e.clientY };
     this.isMarqueeing = false;
   }
 
   private onCanvasMove(e: MouseEvent) {
+    // Active orbit (Shift + middle drag) takes precedence over any tool preview.
+    if (this.orbiting) {
+      if (!(e.buttons & 4)) { this.orbiting = false; return; }   // middle button released elsewhere
+      this.orbitCamera(e.clientX - this.orbitPrev.x, e.clientY - this.orbitPrev.y);
+      this.orbitPrev = { x: e.clientX, y: e.clientY };
+      return;
+    }
+
     if (this.mode === 'placing') {
       const snap = this.getSnap(e, null, null);
       if (!snap) return;
@@ -2093,7 +2893,14 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       return;
     }
 
-    if (this.mode === 'move-from' || this.mode === 'measure-from') {
+    if (this.mode === 'measure-from') {
+      const snap = this.measureSnap(e);
+      if (!snap) return;
+      this.showSnap(snap.pos, snap.type);
+      return;
+    }
+
+    if (this.mode === 'move-from') {
       const snap = this.getSnap(e, null, null);
       if (!snap) return;
       this.showSnap(snap.pos, snap.type);
@@ -2135,9 +2942,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     }
 
     if (this.mode === 'measure-to') {
-      // Shift constrains the second point to the active plane through the first point.
-      const plane = e.shiftKey ? this.getActivePlane(this.measureFrom) : null;
-      const snap = this.getSnap(e, plane, null);
+      // Shift locks the segment parallel to an axis (0x / 0y / 0z) through the first point.
+      if (e.shiftKey) {
+        const pos = this.axisLockedMeasurePoint(e);
+        if (!pos) return;
+        this.showSnap(pos, 'axis');
+        this.showMeasure(pos);
+        return;
+      }
+      const snap = this.measureSnap(e);
       if (!snap) return;
       this.showSnap(snap.pos, snap.type);
       this.showMeasure(snap.pos);
@@ -2145,6 +2958,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     }
 
     if (this.mode === 'move-to') {
+      if (this.wallEdit) { this.wallEditMove(e); return; }
       const snap = this.getSnap(e, this.getActivePlane(), this.selectedIds);
       if (!snap) return;
       const pos = e.shiftKey ? this.applyAxisLock(snap.pos) : snap.pos;
@@ -2178,6 +2992,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   }
 
   private onCanvasUp(e: MouseEvent) {
+    if (this.orbiting && e.button === 1) { this.orbiting = false; return; }
     if (e.button !== 0) return;
     if (this.isMarqueeing && this.mode === 'idle') {
       this.isMarqueeing = false;
@@ -2367,26 +3182,25 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     }
 
     if (this.mode === 'measure-from') {
-      const snap = this.getSnap(e, null, null);
+      const snap = this.measureSnap(e);
       if (snap) {
         this.measureFrom.copy(snap.pos);
         this.hideMeasure();   // clear any previous frozen measurement
         this.ngZone.run(() => {
           this.mode = 'measure-to';
-          this.modeLabel = 'Click the second point — hold Shift to measure in a plane — Esc to finish';
+          this.modeLabel = 'Click the second point — Shift locks to an axis · Shift+scroll-drag orbits — Esc to finish';
         });
       }
       return;
     }
 
     if (this.mode === 'measure-to') {
-      const plane = e.shiftKey ? this.getActivePlane(this.measureFrom) : null;
-      const snap = this.getSnap(e, plane, null);
-      if (snap) {
-        this.showMeasure(snap.pos);   // freeze the dimension at the clicked point
+      const pos = e.shiftKey ? this.axisLockedMeasurePoint(e) : this.measureSnap(e)?.pos;
+      if (pos) {
+        this.showMeasure(pos);   // freeze the dimension at the clicked point
         this.ngZone.run(() => {
           this.mode = 'measure-from';   // ready for the next measurement (a new first click clears this one)
-          this.modeLabel = 'Click the first point — Esc to finish';
+          this.modeLabel = 'Click the first point — Shift+scroll-drag orbits — Esc to finish';
         });
       }
       return;
@@ -2406,6 +3220,18 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     }
 
     if (this.mode === 'move-to') {
+      if (this.wallEdit) {
+        const snap = this.getSnap(e, this.groundPlane, new Set([this.wallEdit.instId]));
+        if (snap) {
+          let pos = e.shiftKey ? this.lockAxisXZ(snap.pos, this.moveFrom) : snap.pos;
+          const typed = parseFloat(this.distanceStr);
+          if (this.distanceLocked && isFinite(typed) && typed > 0 && this.moveDir.lengthSq() > 1e-9) {
+            pos = this.moveFrom.clone().addScaledVector(this.moveDir, typed);
+          }
+          this.ngZone.run(() => this.finishWallEdit(pos));
+        }
+        return;
+      }
       const snap = this.getSnap(e, this.getActivePlane(), this.selectedIds);
       if (snap) {
         let pos = e.shiftKey ? this.applyAxisLock(snap.pos) : snap.pos;
@@ -2426,12 +3252,34 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       return;
     }
 
+    // ── idle: clicking a wall handle picks up that vertex / segment for editing ──
+    // (skipped while Shift is held, which is reserved for additive selection.)
+    if (this.wallHandleGroup && !e.shiftKey) {
+      const h = this.pickWallHandle(e);
+      if (h) { this.ngZone.run(() => this.startWallEdit(h.kind, h.index)); return; }
+    }
+
     // ── idle: select a sub-panel (TAB-focused) or the whole instance ────────
     const hitId = this.pickInstance(e);
     // Capture the TAB-focused panel before clearing the hover state.
     const panelNode = this.tabIndex >= 1 ? this.hoverPanels[this.tabIndex - 1] : null;
     const panelInstanceId = this.hoverId;
     this.clearHover();   // selection takes over the edge colours
+
+    // Shift-click is additive: add the clicked instance to the selection, or toggle it
+    // out if it is already selected. (Multi-select works on whole instances, so Shift
+    // ignores TAB panel focus; clicking empty space keeps the current selection.)
+    if (e.shiftKey) {
+      if (hitId === null) return;
+      this.ngZone.run(() => {
+        this.clearSubSelection();
+        const ids = new Set(this.selectedIds);
+        if (ids.has(hitId)) ids.delete(hitId); else ids.add(hitId);
+        this.applySelect([...ids]);
+      });
+      return;
+    }
+
     this.ngZone.run(() => {
       this.clearSubSelection();
       if (panelNode && panelInstanceId !== null) {

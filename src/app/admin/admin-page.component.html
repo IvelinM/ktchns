@@ -84,6 +84,23 @@
           </ng-container>
         </div>
       </details>
+      <details class="param-sec" *ngIf="selectedFamily.materialParams?.length">
+        <summary>МАТЕРИАЛИ</summary>
+        <div class="param-grid">
+          <ng-container *ngFor="let mp of selectedFamily.materialParams">
+            <label class="param-label">{{ mp.label }}</label>
+            <div class="select-wrap">
+              <select [(ngModel)]="currentMaterials[mp.key]">
+                <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
+              </select>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+          </ng-container>
+        </div>
+      </details>
 
       <button class="place-btn" (click)="startPlacing()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
@@ -202,6 +219,25 @@
           <div class="param-grid">
             <ng-container *ngFor="let p of sec.params">
               <ng-container *ngTemplateOutlet="selParam; context: { $implicit: p }"></ng-container>
+            </ng-container>
+          </div>
+        </details>
+        <details class="param-sec" *ngIf="selectedFamilyDef!.materialParams?.length">
+          <summary>МАТЕРИАЛИ</summary>
+          <div class="param-grid">
+            <ng-container *ngFor="let mp of selectedFamilyDef!.materialParams">
+              <label class="param-label">{{ mp.label }}</label>
+              <div class="select-wrap">
+                <select [ngModel]="materialOf(selectedInstance!, mp.key)"
+                        (focus)="beginEdit()"
+                        (ngModelChange)="setMaterial(mp.key, $event)">
+                  <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
+                </select>
+                <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </div>
             </ng-container>
           </div>
         </details>
@@ -358,6 +394,63 @@
         </svg>
         Measure
       </button>
+      <span class="tool-sep"></span>
+
+      <!-- Visualisation dropdown: Render · Photo · Materials · Settings -->
+      <div #visMenu class="tool-menu" [class.open]="visMenuOpen">
+        <button class="tool-btn" [class.active]="renderMode || photoMode || materialsDialogOpen || settingsDialogOpen || visMenuOpen"
+                title="Visualisation" (click)="toggleVisMenu()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
+          </svg>
+          Visualisation
+          <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="tool-dropdown" *ngIf="visMenuOpen">
+          <button class="menu-item" [class.on]="renderMode" (click)="visMenuOpen = false; toggleRender()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18"/><circle cx="12" cy="12" r="3.2"/>
+            </svg>
+            Render
+            <span class="menu-state" *ngIf="renderMode">●</span>
+          </button>
+          <button class="menu-item" [class.on]="photoMode" (click)="togglePhoto()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+            Photo
+            <span class="menu-state" *ngIf="photoMode">●</span>
+          </button>
+          <button class="menu-item" [class.on]="materialsDialogOpen" (click)="visMenuOpen = false; toggleMaterials()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="13.5" cy="6.5" r="2.5"/><circle cx="6.5" cy="11.5" r="2.5"/><circle cx="16.5" cy="13.5" r="2.5"/>
+              <path d="M12 2a10 10 0 1 0 0 20 2 2 0 0 0 1.7-3 2 2 0 0 1 1.6-3H19a3 3 0 0 0 3-3 10 10 0 0 0-10-8z"/>
+            </svg>
+            Materials
+          </button>
+          <button class="menu-item" [class.on]="settingsDialogOpen" (click)="openSettings()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            Settings
+          </button>
+        </div>
+      </div>
+
+      <!-- Dark / light theme toggle -->
+      <button class="tool-btn" [class.active]="lightTheme"
+              [title]="lightTheme ? 'Светла тема — превключи към тъмна' : 'Тъмна тема — превключи към светла'" (click)="toggleTheme()">
+        <svg *ngIf="!lightTheme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+        <svg *ngIf="lightTheme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+        </svg>
+        {{ lightTheme ? 'Light' : 'Dark' }}
+      </button>
     </div>
 
     <!-- Mode overlay -->
@@ -386,8 +479,8 @@
         <label>Дебелина<input type="number" min="1" step="1" [(ngModel)]="slabThickness"></label>
       </div>
 
-      <!-- Plane selector — during move, and during measure where Shift constrains to it -->
-      <div class="plane-btns" *ngIf="mode === 'move-from' || mode === 'move-to' || mode === 'measure-to'">
+      <!-- Plane selector — during a move (measure auto-picks the camera-facing plane on Shift) -->
+      <div class="plane-btns" *ngIf="(mode === 'move-from' || mode === 'move-to') && !wallVertexEditing">
         <button class="plane-btn" [class.active]="movePlane === 'XZ'" (click)="movePlane = 'XZ'">XZ</button>
         <button class="plane-btn" [class.active]="movePlane === 'XY'" (click)="movePlane = 'XY'">XY</button>
         <button class="plane-btn" [class.active]="movePlane === 'YZ'" (click)="movePlane = 'YZ'">YZ</button>
@@ -445,9 +538,99 @@
          [style.height.px]="marqueeRect.height">
     </div>
 
+    <!-- Photo (path-tracing) status -->
+    <div class="photo-status" *ngIf="photoMode">
+      <span class="photo-dot" [class.refining]="!photoLoading"></span>
+      <ng-container *ngIf="photoLoading; else tracing">Подготовка на Photo…</ng-container>
+      <ng-template #tracing>Photo · изглаждане {{ photoSamples }} — задръж неподвижно за по-чисто</ng-template>
+    </div>
+
     <div class="controls-hint">
       Click · select &nbsp;|&nbsp; Drag · box select &nbsp;|&nbsp;
       Right-drag · orbit &nbsp;|&nbsp; Mid-drag · pan &nbsp;|&nbsp; Scroll · zoom
+    </div>
+
+    <!-- ── Materials dialog ── -->
+    <div class="dialog-backdrop" *ngIf="materialsDialogOpen" (click)="closeMaterials()">
+      <div class="mat-dialog" (click)="$event.stopPropagation()">
+        <div class="mat-dialog-head">
+          <h3>МАТЕРИАЛИ</h3>
+          <button class="dialog-close" title="Затвори" (click)="closeMaterials()">✕</button>
+        </div>
+
+        <div class="mat-dialog-body">
+          <!-- material list -->
+          <div class="mat-list">
+            <button type="button" class="mat-list-item"
+                    *ngFor="let m of materialDefs; let i = index"
+                    [class.active]="i === editingMaterialIndex"
+                    (click)="selectEditingMaterial(i)">
+              <span class="mat-swatch" [style.background]="m.color"></span>
+              <span class="mat-name">{{ m.name }}</span>
+            </button>
+            <button type="button" class="mat-add" (click)="addMaterial()">+ Нов материал</button>
+          </div>
+
+          <!-- editor for the selected material -->
+          <div class="mat-editor" *ngIf="editingMaterial as m">
+            <label class="mat-field">
+              <span>Име</span>
+              <input type="text" [(ngModel)]="m.name" (ngModelChange)="onMaterialEdited()">
+            </label>
+
+            <label class="mat-field">
+              <span>Цвят</span>
+              <div class="mat-color-row">
+                <input type="color" [(ngModel)]="m.color" (ngModelChange)="onMaterialEdited()">
+                <input type="text" class="mat-hex" [(ngModel)]="m.color" (ngModelChange)="onMaterialEdited()">
+              </div>
+            </label>
+
+            <label class="mat-field">
+              <span>Прозрачност <em>{{ m.transparency }}%</em></span>
+              <input type="range" min="0" max="100" step="1" [(ngModel)]="m.transparency" (ngModelChange)="onMaterialEdited()">
+            </label>
+
+            <label class="mat-field">
+              <span>Отражение <em>{{ m.reflection }}%</em></span>
+              <input type="range" min="0" max="100" step="1" [(ngModel)]="m.reflection" (ngModelChange)="onMaterialEdited()">
+            </label>
+
+            <label class="mat-field">
+              <span>Гланц <em>{{ m.glossiness }}%</em></span>
+              <input type="range" min="0" max="100" step="1" [(ngModel)]="m.glossiness" (ngModelChange)="onMaterialEdited()">
+            </label>
+
+            <div class="mat-actions">
+              <button type="button" class="mat-del" [disabled]="materialDefs.length <= 1"
+                      (click)="deleteMaterial(editingMaterialIndex)">Изтрий</button>
+            </div>
+
+            <p class="mat-hint" [class.on]="renderMode">
+              {{ renderMode ? 'Промените се виждат веднага в Render.' : 'Включи Render, за да видиш материалите.' }}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Settings dialog ── -->
+    <div class="dialog-backdrop" *ngIf="settingsDialogOpen" (click)="closeSettings()">
+      <div class="mat-dialog settings-dialog" (click)="$event.stopPropagation()">
+        <div class="mat-dialog-head">
+          <h3>SETTINGS</h3>
+          <button class="dialog-close" title="Затвори" (click)="closeSettings()">✕</button>
+        </div>
+        <div class="settings-body">
+          <label class="mat-field">
+            <span>Яркост на камерата <em>{{ cameraBrightness.toFixed(2) }}×</em></span>
+            <input type="range" min="0.2" max="2" step="0.05"
+                   [ngModel]="cameraBrightness"
+                   (ngModelChange)="cameraBrightness = +$event; onBrightnessChange()">
+          </label>
+          <p class="mat-hint">Регулира осветлението на сцената (и експозицията в Render).</p>
+        </div>
+      </div>
     </div>
   </main>
 
