@@ -7,678 +7,24 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-export interface ParamDef {
-  key: string;
-  label: string;
-  defaultValue: number;
-  min: number;
-  step: number;
-  unit: string;
-  type?: 'number' | 'toggle';
-}
-
-/** A per-panel material choice (a string picked from the scene's material list). */
-export interface MaterialParamDef {
-  key: string;
-  label: string;
-  default: string;
-}
-
-/**
- * A named material in the scene's library, editable from the Materials dialog. The
- * visual properties drive the photoreal Render mode (PBR): `color` is the base hex,
- * `transparency`/`reflection`/`glossiness` are 0–100 % and map to MeshStandard
- * opacity (1 − t/100), metalness (r/100) and roughness (1 − g/100) respectively.
- */
-export interface MaterialDef {
-  name: string;
-  color: string;          // '#rrggbb'
-  transparency: number;   // 0–100 %
-  reflection: number;     // 0–100 %
-  glossiness: number;     // 0–100 %
-}
-
-export interface FamilyDef {
-  id: string;
-  name: string;
-  params: ParamDef[];
-  buildObject(p: Record<string, number>): THREE.Object3D;
-  hidden?: boolean;   // not offered in the FAMILY picker — created by a dedicated tool (e.g. СТЕНА)
-  materialParams?: MaterialParamDef[];   // shown in the МАТЕРИАЛИ section (string selects)
-}
-
-/**
- * The base (insertion) point of an instance, as a bounding-box anchor. Each axis is
- * -1 / 0 / +1 = the min face / centre / max face of the object's local bounding box.
- * The instance's stored x/y/z is the world location of THIS point (default centre).
- */
-export interface BasePoint { x: number; y: number; z: number; }
-
-/** A ground-plane vertex of a wall polyline, in the instance's LOCAL frame (mm). */
-export interface WallPoint { x: number; z: number; }
-
-export interface SceneInstance {
-  id: number;
-  familyId: string;
-  label: string;
-  params: Record<string, number>;
-  material: string;   // laminate spec for this module's chipboard, e.g. "ГЛАДКО БЯЛО КОРПУС"
-  x: number;
-  y: number;
-  z: number;
-  rotY: number;
-  anchor?: BasePoint;  // which bbox point x/y/z refers to; absent ⇒ centre {0,0,0}
-  path?: WallPoint[];  // СТЕНА only: the polyline (local coords, first vertex at origin)
-  materials?: Record<string, string>;  // per-panel material choices (МАТЕРИАЛИ section)
-}
-
-/** A restorable copy of the scene's data model for the undo history. */
-interface SceneSnapshot { instances: SceneInstance[]; nextId: number; }
-
-/** Read-only info shown when a single panel of a family instance is sub-selected. */
-interface PanelInfo {
-  instanceId: number; name: string; material: string;
-  size1: number; size2: number;          // С КАНТ — built/nominal size
-  core1: number; core2: number;          // БЕЗ КАНТ — cut size (band thickness removed per banded edge)
-  thickness: number; pvc: boolean[]; kant: number;
-}
-
-export type InteractionMode = 'idle' | 'placing' | 'move-from' | 'move-to' | 'measure-from' | 'measure-to' | 'match' | 'wall-from' | 'wall-to' | 'slab-from' | 'slab-to';
-export type MovePlane      = 'XZ' | 'XY' | 'YZ';
-
-// ── Colors ────────────────────────────────────────────────────────────────────
-
-const COLOR_NORMAL   = 0xc8a87a;
-const COLOR_SELECTED = 0x4a9cd4;
-const EDGE_NORMAL    = 0x333333;
-const EDGE_SELECTED  = 0xffffff;
-const EDGE_HOVER     = 0xffaa00;   // TAB hover-cycle highlight (orange)
-const EDGE_PVC       = 0x888888;   // slightly lighter edge for PVC faces
-
-// Enable Three.js asset cache so the same URL is only fetched once even when
-// each material loads the texture independently.
-THREE.Cache.enabled = true;
-
-const CHIPBOARD_URL = 'assets/images/3D/chipboard-texture.jpg';
-
-// ── Geometry helpers ──────────────────────────────────────────────────────────
-
-/** Intersection of line (p1, dir d1) with line (p2, dir d2); falls back to p2 if parallel. */
-function lineIntersect(p1: THREE.Vector2, d1: THREE.Vector2, p2: THREE.Vector2, d2: THREE.Vector2): THREE.Vector2 {
-  const denom = d1.x * d2.y - d1.y * d2.x;
-  if (Math.abs(denom) < 1e-9) return p2.clone();
-  const t = ((p2.x - p1.x) * d2.y - (p2.y - p1.y) * d2.x) / denom;
-  return new THREE.Vector2(p1.x + d1.x * t, p1.y + d1.y * t);
-}
-
-/** Extrude a closed 2D outline by `thickness`, centred in Z, and shifted by (-cx,-cy) in plane. */
-function extrudePanel(pts: THREE.Vector2[], thickness: number, cx: number, cy: number): THREE.BufferGeometry {
-  const shape = new THREE.Shape();
-  shape.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, pts[i].y);
-  shape.closePath();
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false });
-  geo.translate(-cx, -cy, -thickness / 2);
-  return geo;
-}
-
-/** Chipboard cross-section texture material (the JPEG image itself is cached). */
-function makeChipboardEdgeMat(): THREE.MeshPhongMaterial {
-  const tex = new THREE.TextureLoader().load(CHIPBOARD_URL);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  // ExtrudeGeometry emits side-wall UVs in MODEL-SPACE MILLIMETRES (one axis runs
-  // along the perimeter, the other across the thickness), not normalised 0–1. So a
-  // repeat of 1/TILE_MM makes one tile span TILE_MM of real material — identical
-  // scale on both axes, so the speckle stays proportional.
-  const TILE_MM = 220;
-  tex.repeat.set(1 / TILE_MM, 1 / TILE_MM);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = new THREE.MeshPhongMaterial({ map: tex, shininess: 5 });
-  mat.userData['edgeBand'] = true;
-  return mat;
-}
-
-/** Smooth bright PVC banding material; shininess scales subtly with band thickness. */
-function makePvcEdgeMat(pvcThickness: number): THREE.MeshPhongMaterial {
-  const s = Math.min(120, 60 + pvcThickness * 20);
-  const mat = new THREE.MeshPhongMaterial({ color: 0xfcf9f5, shininess: s, specular: new THREE.Color(0x333333) });
-  mat.userData['edgeBand'] = true;
-  return mat;
-}
-
-/**
- * A ploskost as 1–5 solids: the chipboard mass plus one PVC band solid per checked
- * edge in `pvcSides` ([AB, BC, CD, DA]). Bands are INSET — the mass is shrunk by the
- * band thickness on each banded edge (offsetting that edge inward) and the band fills
- * the outer strip, so the band's outer face sits flush with the panel's nominal edge
- * and never protrudes beyond it. Returns a bare Mesh when no edge is banded, else a Group.
- */
-function makeMesh(
-  AB: number, BC: number, angleDeg: number, thickness: number,
-  pvcSides: boolean[] = [false, false, false, false], pvcThickness = 0.5,
-  plainEdges = false,   // skip the chipboard image on the extruded perimeter (e.g. walls)
-): THREE.Object3D {
-  const a = angleDeg * (Math.PI / 180);
-  const corners = [
-    new THREE.Vector2(0, 0),
-    new THREE.Vector2(AB, 0),
-    new THREE.Vector2(AB + BC * Math.cos(a), BC * Math.sin(a)),
-    new THREE.Vector2(BC * Math.cos(a), BC * Math.sin(a)),
-  ];
-  const xs = corners.map(c => c.x), ys = corners.map(c => c.y);
-  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
-  const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-
-  // Offset each banded edge inward by the band thickness; the core corners are the
-  // intersections of consecutive (possibly offset) edge lines.
-  const dir: THREE.Vector2[] = [];
-  const offPt: THREE.Vector2[] = [];
-  for (let i = 0; i < 4; i++) {
-    const ci = corners[i], cn = corners[(i + 1) % 4];
-    const d = new THREE.Vector2().subVectors(cn, ci).normalize();
-    dir.push(d);
-    const inN = new THREE.Vector2(-d.y, d.x); // inward normal (CCW winding)
-    offPt.push(pvcSides[i]
-      ? new THREE.Vector2(ci.x + inN.x * pvcThickness, ci.y + inN.y * pvcThickness)
-      : ci.clone());
-  }
-  const core: THREE.Vector2[] = [];
-  for (let i = 0; i < 4; i++) {
-    const j = (i + 3) % 4; // previous edge shares corner i
-    core.push(lineIntersect(offPt[j], dir[j], offPt[i], dir[i]));
-  }
-
-  const faceMat = new THREE.MeshPhongMaterial({
-    color: COLOR_NORMAL, shininess: 30, specular: new THREE.Color(0x111111),
-  });
-  // Group 0 = the two flat faces (solid colour); group 1 = the extruded perimeter. A
-  // plain-edge mesh uses the face colour for both, so there is no chipboard image.
-  const mass = new THREE.Mesh(
-    extrudePanel(core, thickness, cx, cy),
-    plainEdges ? faceMat : [faceMat, makeChipboardEdgeMat()],
-  );
-  mass.castShadow = mass.receiveShadow = true;
-
-  const bands: THREE.Mesh[] = [];
-  for (let i = 0; i < 4; i++) {
-    if (!pvcSides[i]) continue;
-    // Strip filling between the nominal edge (corners i→i+1) and the inset core edge.
-    const strip = [corners[i], corners[(i + 1) % 4], core[(i + 1) % 4], core[i]];
-    const band = new THREE.Mesh(extrudePanel(strip, thickness, cx, cy), makePvcEdgeMat(pvcThickness));
-    band.castShadow = band.receiveShadow = true;
-    bands.push(band);
-  }
-
-  if (bands.length === 0) return mass;
-  const group = new THREE.Group();
-  group.add(mass, ...bands);
-  return group;
-}
-
-/**
- * A КОРПУС carcass: left/right sides, bottom (ДЪНО), top (ТАВАН) and (optionally) a
- * back (ГРЪБ), with an optional front door (ВРАТА). Shared by the КОРПУС and
- * КОРПУС С ВРАТА families.
- *
- * `БЕЗ_*` toggles omit a panel entirely.
- *
- * `*_ВИДИМ_КАНТ_*` flags pick which panel covers the other at a shared edge ("which
- * banded edge is visible"). For each side of the back / top / bottom: true → that
- * panel's edge runs to the outer face and *covers* the neighbouring side panel
- * (its own edge stays visible); false → it is inset by one thickness so the side
- * panel covers it instead. A top/bottom flag also controls the matching side
- * panel's height: when the top/bottom covers the side, the side is shortened to
- * sit under it; otherwise the side runs full height and covers the top/bottom.
- */
-/** One chipboard panel of a КОРПУС: part name, cut size (AB×BC), placement, per-side PVC. */
-interface KorpusPanel {
-  name: string;     // role, e.g. ТАВАН / ДЪНО / ЛЯВА СТРАНИЦА …
-  AB: number; BC: number;
-  rx: number; ry: number; rz: number;
-  px: number; py: number; pz: number;
-  pvc: boolean[];   // [AB, BC, CD, DA]
-  t: number;        // this panel's thickness (mm) — the back may differ (ГРЪБ ДЕБЕЛИНА)
-}
-
-/** PVC band thickness (mm) used on КОРПУС door edges (matches makeMesh's default). */
-const KORPUS_KANT = 1;
-
-/**
- * Decompose a КОРПУС into its panels. This is the single source of the carcass
- * layout, consumed both by buildKorpus (to build the 3D group) and by the
- * schedule export (to list every panel).
- */
-function korpusPanels(p: Record<string, number>, withDoor: boolean): KorpusPanel[] {
-  const W = p['ШИРИНА']    ?? 800;
-  const H = p['ВИСОЧИНА']  ?? 720;
-  const D = p['ДЪЛБОЧИНА'] ?? 550;
-  const t = p['ПЛОСКОСТ_ДЕБЕЛИНА'] ?? 18;
-  const backT = p['ГРЪБ_ДЕБЕЛИНА'] ?? t;   // the back may have its own thickness
-  const b = (k: string) => Boolean(p[k]);
-
-  const hasBack = b('С_ГРЪБ'), hasLeft = b('С_ЛЯВА_СТРАНИЦА'), hasRight = b('С_ДЯСНА_СТРАНИЦА');
-  const hasTop  = b('С_ТАВАН'), hasBottom = b('С_ДЪНО'), hasDoor = b('С_ВРАТИЧКА');
-
-  const grbL = b('ГРЪБ_ВИДИМ_КАНТ_ОТЛЯВО'), grbR = b('ГРЪБ_ВИДИМ_КАНТ_ОТДЯСНО');
-  const grbT = b('ГРЪБ_ВИДИМ_КАНТ_ОТГОРЕ'), grbB = b('ГРЪБ_ВИДИМ_КАНТ_ОТДОЛУ');
-  const tavL = b('ТАВАН_ВИДИМ_КАНТ_ОТЛЯВО'), tavR = b('ТАВАН_ВИДИМ_КАНТ_ОТДЯСНО');
-  const dunL = b('ДЪНО_ВИДИМ_КАНТ_ОТЛЯВО'),  dunR = b('ДЪНО_ВИДИМ_КАНТ_ОТДЯСНО');
-
-  const mid = (a: number, c: number) => (a + c) / 2;
-  const panels: KorpusPanel[] = [];
-  const add = (name: string, AB: number, BC: number, rx: number, ry: number, rz: number,
-               px: number, py: number, pz: number,
-               pvc: boolean[] = [false, false, false, false], pt: number = t) =>
-    panels.push({ name, AB, BC, rx, ry, rz, px, py, pz, pvc, t: pt });
-
-  // ДЪЛБОЧИНА is the OUTER depth: the back occupies the rear backT and the door the
-  // front t (when present). The sides, top and bottom fit BETWEEN them, so their
-  // depth shrinks accordingly, e.g. with both present the top is
-  // ДЪЛБОЧИНА − ГРЪБ_ДЕБЕЛИНА − t(ВРАТИЧКА) deep.
-  const tBack = hasBack ? backT : 0;
-  const tDoor = (withDoor && hasDoor) ? t : 0;
-  const innerD = D - tBack - tDoor;     // depth of sides/top/bottom
-  const innerZ = (tBack - tDoor) / 2;   // their depth-centre (rear bound + front bound)/2
-
-  // Sides span the inner depth; their height is trimmed only where a present top /
-  // bottom covers them (that side's *_ВИДИМ flag = true).
-  const lTop = (hasTop && tavL) ? H / 2 - t : H / 2;
-  const lBot = (hasBottom && dunL) ? -(H / 2 - t) : -H / 2;
-  const rTop = (hasTop && tavR) ? H / 2 - t : H / 2;
-  const rBot = (hasBottom && dunR) ? -(H / 2 - t) : -H / 2;
-  // PVC banding per panel, edge order [AB, BC, CD, DA]. The world-facing direction of
-  // each local edge depends on the panel's rotation:
-  //   Sides  (rot about Y): AB=ОТДОЛУ, BC=back, CD=ОТГОРЕ, DA=ОТПРЕД (meets ВРАТИЧКА).
-  //   Top/bot(rot about X): AB=ОТПРЕД, BC=ОТДЯСНО, CD=back, DA=ОТЛЯВО.
-  //   Back   (no rotation): AB=ОТДОЛУ, BC=ОТДЯСНО, CD=ОТГОРЕ, DA=ОТЛЯВО.
-  const leftPvc  = [b('ЛЯВА_СТРАНИЦА_С_КАНТ_ОТДОЛУ'),  false, b('ЛЯВА_СТРАНИЦА_С_КАНТ_ОТГОРЕ'),  b('ЛЯВА_СТРАНИЦА_С_КАНТ_ОТПРЕД')];
-  const rightPvc = [b('ДЯСНА_СТРАНИЦА_С_КАНТ_ОТДОЛУ'), false, b('ДЯСНА_СТРАНИЦА_С_КАНТ_ОТГОРЕ'), b('ДЯСНА_СТРАНИЦА_С_КАНТ_ОТПРЕД')];
-  if (hasLeft)  add('ЛЯВА СТРАНИЦА',  innerD, lTop - lBot, 0, Math.PI / 2, 0, -(W / 2 - t / 2), mid(lTop, lBot), innerZ, leftPvc);
-  if (hasRight) add('ДЯСНА СТРАНИЦА', innerD, rTop - rBot, 0, Math.PI / 2, 0,  (W / 2 - t / 2), mid(rTop, rBot), innerZ, rightPvc);
-
-  // Bottom / top: width runs to the outer face on a side whose flag = true, else inset;
-  // depth is the inner depth (between back and door).
-  if (hasBottom) {
-    const xl = dunL ? -W / 2 : -(W / 2 - t), xr = dunR ? W / 2 : W / 2 - t;
-    const bottomPvc = [b('ДЪНО_С_КАНТ_ОТПРЕД'), b('ДЪНО_С_КАНТ_ОТДЯСНО'), false, b('ДЪНО_С_КАНТ_ОТЛЯВО')];
-    add('ДЪНО', xr - xl, innerD, -Math.PI / 2, 0, 0, mid(xl, xr), -(H / 2 - t / 2), innerZ, bottomPvc);
-  }
-  if (hasTop) {
-    const xl = tavL ? -W / 2 : -(W / 2 - t), xr = tavR ? W / 2 : W / 2 - t;
-    const topPvc = [b('ТАВАН_С_КАНТ_ОТПРЕД'), b('ТАВАН_С_КАНТ_ОТДЯСНО'), false, b('ТАВАН_С_КАНТ_ОТЛЯВО')];
-    add('ТАВАН', xr - xl, innerD, -Math.PI / 2, 0, 0, mid(xl, xr),  (H / 2 - t / 2), innerZ, topPvc);
-  }
-
-  // Back occupies the rear thickness of the envelope (its own ГРЪБ ДЕБЕЛИНА); each edge
-  // runs to the outer face (covers) or is inset per its ГРЪБ_ВИДИМ flag, and is banded
-  // per its ГРЪБ_С_КАНТ flag.
-  if (hasBack) {
-    const xl = grbL ? -W / 2 : -(W / 2 - t), xr = grbR ? W / 2 : W / 2 - t;
-    const yb = grbB ? -H / 2 : -(H / 2 - t), yt = grbT ? H / 2 : H / 2 - t;
-    const backPvc = [b('ГРЪБ_С_КАНТ_ОТДОЛУ'), b('ГРЪБ_С_КАНТ_ОТДЯСНО'), b('ГРЪБ_С_КАНТ_ОТГОРЕ'), b('ГРЪБ_С_КАНТ_ОТЛЯВО')];
-    add('ГРЪБ', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), -(D / 2 - backT / 2), backPvc, backT);
-  }
-
-  // Front door occupies the front thickness of the envelope; all four edges PVC-banded.
-  // ВРАТИЧКА ФУГА values inset the door by that reveal gap (mm) on each side.
-  if (withDoor && hasDoor) {
-    const xl = -W / 2 + (p['ВРАТИЧКА_ФУГА_ОТЛЯВО'] ?? 0);
-    const xr =  W / 2 - (p['ВРАТИЧКА_ФУГА_ОТДЯСНО'] ?? 0);
-    const yb = -H / 2 + (p['ВРАТИЧКА_ФУГА_ОТДОЛУ'] ?? 0);
-    const yt =  H / 2 - (p['ВРАТИЧКА_ФУГА_ОТГОРЕ'] ?? 0);
-    add('ВРАТИЧКА', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), (D / 2 - t / 2), [true, true, true, true]);
-  }
-  return panels;
-}
-
-function buildKorpus(p: Record<string, number>, withDoor: boolean): THREE.Group {
-  const kant = p['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
-  const group = new THREE.Group();
-  for (const pan of korpusPanels(p, withDoor)) {
-    const mesh = makeMesh(pan.AB, pan.BC, 90, pan.t, pan.pvc, kant);
-    mesh.rotation.set(pan.rx, pan.ry, pan.rz);
-    mesh.position.set(pan.px, pan.py, pan.pz);
-    // Tag the panel node so it can be sub-selected (TAB) and shown read-only.
-    mesh.userData['panel'] = {
-      name: pan.name, size1: Math.round(pan.AB), size2: Math.round(pan.BC),
-      thickness: pan.t, pvc: pan.pvc, kant,
-    };
-    group.add(mesh);
-  }
-  return group;
-}
-
-/** Shared parameter list for the КОРПУС and КОРПУС С ВРАТА families. */
-const KORPUS_PARAMS: ParamDef[] = [
-  { key: 'ШИРИНА',             label: 'ШИРИНА',             defaultValue: 800, min: 37, step: 1, unit: 'mm' },
-  { key: 'ВИСОЧИНА',           label: 'ВИСОЧИНА',           defaultValue: 720, min: 37, step: 1, unit: 'mm' },
-  { key: 'ДЪЛБОЧИНА',          label: 'ДЪЛБОЧИНА',          defaultValue: 550, min: 19, step: 1, unit: 'mm' },
-  { key: 'ПЛОСКОСТ_ДЕБЕЛИНА',  label: 'ПЛОСКОСТ ДЕБЕЛИНА',  defaultValue: 18,  min: 1,   step: 1,   unit: 'mm' },
-  { key: 'ГРЪБ_ДЕБЕЛИНА',      label: 'ГРЪБ ДЕБЕЛИНА',      defaultValue: 18,  min: 1,   step: 1,   unit: 'mm' },
-  { key: 'КАНТ_ДЕБЕЛИНА',      label: 'КАНТ ДЕБЕЛИНА',      defaultValue: 1,   min: 0.1, step: 0.1, unit: 'mm' },
-  { key: 'С_ГРЪБ',           label: 'С ГРЪБ',           defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'С_ЛЯВА_СТРАНИЦА',  label: 'С ЛЯВА СТРАНИЦА',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'С_ДЯСНА_СТРАНИЦА', label: 'С ДЯСНА СТРАНИЦА', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'С_ТАВАН',          label: 'С ТАВАН',          defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'С_ДЪНО',           label: 'С ДЪНО',           defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'С_ВРАТИЧКА',       label: 'С ВРАТИЧКА',       defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ГРЪБ_ВИДИМ_КАНТ_ОТЛЯВО',  label: 'ГРЪБ ВИДИМ КАНТ ОТЛЯВО',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ГРЪБ_ВИДИМ_КАНТ_ОТДЯСНО', label: 'ГРЪБ ВИДИМ КАНТ ОТДЯСНО', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ГРЪБ_ВИДИМ_КАНТ_ОТГОРЕ',  label: 'ГРЪБ ВИДИМ КАНТ ОТГОРЕ',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ГРЪБ_ВИДИМ_КАНТ_ОТДОЛУ',  label: 'ГРЪБ ВИДИМ КАНТ ОТДОЛУ',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ТАВАН_ВИДИМ_КАНТ_ОТЛЯВО',  label: 'ТАВАН ВИДИМ КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ТАВАН_ВИДИМ_КАНТ_ОТДЯСНО', label: 'ТАВАН ВИДИМ КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ДЪНО_ВИДИМ_КАНТ_ОТЛЯВО',  label: 'ДЪНО ВИДИМ КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ДЪНО_ВИДИМ_КАНТ_ОТДЯСНО', label: 'ДЪНО ВИДИМ КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ВРАТИЧКА_ФУГА_ОТЛЯВО',  label: 'ВРАТИЧКА ФУГА ОТЛЯВО',  defaultValue: 1, min: 0, step: 0.5, unit: 'mm' },
-  { key: 'ВРАТИЧКА_ФУГА_ОТДЯСНО', label: 'ВРАТИЧКА ФУГА ОТДЯСНО', defaultValue: 1, min: 0, step: 0.5, unit: 'mm' },
-  { key: 'ВРАТИЧКА_ФУГА_ОТГОРЕ',  label: 'ВРАТИЧКА ФУГА ОТГОРЕ',  defaultValue: 0, min: 0, step: 0.5, unit: 'mm' },
-  { key: 'ВРАТИЧКА_ФУГА_ОТДОЛУ',  label: 'ВРАТИЧКА ФУГА ОТДОЛУ',  defaultValue: 0, min: 0, step: 0.5, unit: 'mm' },
-  { key: 'ТАВАН_С_КАНТ_ОТПРЕД',  label: 'ТАВАН С КАНТ ОТПРЕД',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ТАВАН_С_КАНТ_ОТЛЯВО',  label: 'ТАВАН С КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ТАВАН_С_КАНТ_ОТДЯСНО', label: 'ТАВАН С КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ДЪНО_С_КАНТ_ОТПРЕД',   label: 'ДЪНО С КАНТ ОТПРЕД',   defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ДЪНО_С_КАНТ_ОТЛЯВО',   label: 'ДЪНО С КАНТ ОТЛЯВО',   defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ДЪНО_С_КАНТ_ОТДЯСНО',  label: 'ДЪНО С КАНТ ОТДЯСНО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ЛЯВА_СТРАНИЦА_С_КАНТ_ОТПРЕД',  label: 'ЛЯВА СТРАНИЦА С КАНТ ОТПРЕД',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ЛЯВА_СТРАНИЦА_С_КАНТ_ОТГОРЕ',  label: 'ЛЯВА СТРАНИЦА С КАНТ ОТГОРЕ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ЛЯВА_СТРАНИЦА_С_КАНТ_ОТДОЛУ',  label: 'ЛЯВА СТРАНИЦА С КАНТ ОТДОЛУ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ДЯСНА_СТРАНИЦА_С_КАНТ_ОТПРЕД', label: 'ДЯСНА СТРАНИЦА С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ДЯСНА_СТРАНИЦА_С_КАНТ_ОТГОРЕ', label: 'ДЯСНА СТРАНИЦА С КАНТ ОТГОРЕ', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ДЯСНА_СТРАНИЦА_С_КАНТ_ОТДОЛУ', label: 'ДЯСНА СТРАНИЦА С КАНТ ОТДОЛУ', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ГРЪБ_С_КАНТ_ОТГОРЕ',  label: 'ГРЪБ С КАНТ ОТГОРЕ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ГРЪБ_С_КАНТ_ОТДОЛУ',  label: 'ГРЪБ С КАНТ ОТДОЛУ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ГРЪБ_С_КАНТ_ОТЛЯВО',  label: 'ГРЪБ С КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-  { key: 'ГРЪБ_С_КАНТ_ОТДЯСНО', label: 'ГРЪБ С КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
-];
-
-/** МАТЕРИАЛИ: board + edge-band material per panel of a КОРПУС. Defaults to ГЛАДКО БЯЛО. */
-const KORPUS_MATERIAL_PARAMS: MaterialParamDef[] = [
-  { key: 'ЛЯВА_СТРАНИЦА_МАТЕРИАЛ',       label: 'ЛЯВА СТРАНИЦА МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ЛЯВА_СТРАНИЦА_КАНТ_МАТЕРИАЛ',  label: 'ЛЯВА СТРАНИЦА КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ДЯСНА_СТРАНИЦА_МАТЕРИАЛ',      label: 'ДЯСНА СТРАНИЦА МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
-  { key: 'ДЯСНА_СТРАНИЦА_КАНТ_МАТЕРИАЛ', label: 'ДЯСНА СТРАНИЦА КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
-  { key: 'ТАВАН_МАТЕРИАЛ',              label: 'ТАВАН МАТЕРИАЛ',              default: 'ГЛАДКО БЯЛО' },
-  { key: 'ТАВАН_КАНТ_МАТЕРИАЛ',         label: 'ТАВАН КАНТ МАТЕРИАЛ',         default: 'ГЛАДКО БЯЛО' },
-  { key: 'ДЪНО_МАТЕРИАЛ',               label: 'ДЪНО МАТЕРИАЛ',               default: 'ГЛАДКО БЯЛО' },
-  { key: 'ДЪНО_КАНТ_МАТЕРИАЛ',          label: 'ДЪНО КАНТ МАТЕРИАЛ',          default: 'ГЛАДКО БЯЛО' },
-  { key: 'ГРЪБ_МАТЕРИАЛ',               label: 'ГРЪБ МАТЕРИАЛ',               default: 'ГЛАДКО БЯЛО' },
-  { key: 'ГРЪБ_КАНТ_МАТЕРИАЛ',          label: 'ГРЪБ КАНТ МАТЕРИАЛ',          default: 'ГЛАДКО БЯЛО' },
-  { key: 'ВРАТИЧКА_МАТЕРИАЛ',           label: 'ВРАТИЧКА МАТЕРИАЛ',           default: 'ГЛАДКО БЯЛО' },
-  { key: 'ВРАТИЧКА_КАНТ_МАТЕРИАЛ',      label: 'ВРАТИЧКА КАНТ МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
-];
-
-// ── Family registry ───────────────────────────────────────────────────────────
-
-export const FAMILIES: FamilyDef[] = [
-  // ── Ploskost ──────────────────────────────────────────────────────────────
-  {
-    id: 'ploskost',
-    name: 'ПЛОСКОСТ',
-    params: [
-      { key: 'AB',           label: 'AB',             defaultValue: 600, min: 1,   step: 1,   unit: 'mm' },
-      { key: 'BC',           label: 'BC',             defaultValue: 600, min: 1,   step: 1,   unit: 'mm' },
-      { key: 'angle',        label: '∠ABC',           defaultValue: 90,  min: 1,   step: 1,   unit: '°'  },
-      { key: 'thickness',    label: 'ДЕБЕЛИНА',       defaultValue: 18,  min: 1,   step: 1,   unit: 'mm' },
-      { key: 'pvcAB',        label: 'PVC Кант AB',    defaultValue: 0,   min: 0,   step: 1,   unit: '',   type: 'toggle' },
-      { key: 'pvcBC',        label: 'PVC Кант BC',    defaultValue: 0,   min: 0,   step: 1,   unit: '',   type: 'toggle' },
-      { key: 'pvcCD',        label: 'PVC Кант CD',    defaultValue: 0,   min: 0,   step: 1,   unit: '',   type: 'toggle' },
-      { key: 'pvcDA',        label: 'PVC Кант DA',    defaultValue: 0,   min: 0,   step: 1,   unit: '',   type: 'toggle' },
-      { key: 'kantThickness', label: 'КАНТ ДЕБЕЛИНА', defaultValue: 1, min: 0.1, step: 0.1, unit: 'mm' },
-    ],
-    buildObject(p) {
-      return makeMesh(
-        p['AB'], p['BC'], p['angle'] ?? 90, p['thickness'],
-        [Boolean(p['pvcAB']), Boolean(p['pvcBC']), Boolean(p['pvcCD']), Boolean(p['pvcDA'])],
-        p['kantThickness'] ?? 1,
-      );
-    },
-  },
-
-  // ── КОРПУС С ВРАТА (carcass with a front door) ────────────────────────────────
-  {
-    id: 'cabinet-door',
-    name: 'КОРПУС С ВРАТА',
-    params: KORPUS_PARAMS,
-    materialParams: KORPUS_MATERIAL_PARAMS,
-    buildObject(p) { return buildKorpus(p, true); },
-  },
-
-  // ── СТЕНА (wall) — a vertical solid drawn as a POLYLINE on the ground. The whole
-  // polyline is ONE instance: its vertices live in `inst.path` and the geometry is
-  // built by buildWallPath (not buildObject). Created by the СТЕНА toolbar tool, not
-  // the FAMILY picker, hence `hidden`. ВИСОЧИНА/ДЕБЕЛИНА are set on the tool.
-  {
-    id: 'wall',
-    name: 'СТЕНА',
-    hidden: true,
-    params: [
-      { key: 'ВИСОЧИНА', label: 'ВИСОЧИНА', defaultValue: 2600, min: 1, step: 1, unit: 'mm' },
-      { key: 'ДЕБЕЛИНА', label: 'ДЕБЕЛИНА', defaultValue: 100,  min: 1, step: 1, unit: 'mm' },
-    ],
-    // Degenerate fallback (path-less wall): a single 1 m segment. Real walls go through
-    // buildWallPath; this only fires if an instance somehow lacks a path.
-    buildObject(p) { return buildWallPath([{ x: 0, z: 0 }, { x: 1000, z: 0 }], p['ВИСОЧИНА'], p['ДЕБЕЛИНА']); },
-  },
-
-  // ── ПЛОЧА (slab) — a flat solid of ДЕБЕЛИНА drawn as a CLOSED polygon on the ground.
-  // The whole polygon is ONE instance: its vertices live in `inst.path` and the geometry
-  // is built by buildSlabPath. Created by the ПЛОЧА toolbar tool, hence `hidden`.
-  {
-    id: 'slab',
-    name: 'ПЛОЧА',
-    hidden: true,
-    params: [
-      { key: 'ДЕБЕЛИНА', label: 'ДЕБЕЛИНА', defaultValue: 40, min: 1, step: 1, unit: 'mm' },
-    ],
-    // Degenerate fallback (path-less slab): a 600×600 square. Real slabs go through buildSlabPath.
-    buildObject(p) { return buildSlabPath([{ x: 0, z: 0 }, { x: 600, z: 0 }, { x: 600, z: 600 }, { x: 0, z: 600 }], p['ДЕБЕЛИНА']); },
-  },
-];
-
-/**
- * The closed footprint outline of a wall centreline `pts`, offset by `half` on each
- * side with MITRED corners (so adjacent segments share one continuous boundary, no
- * gaps/overlaps). Returns the outline as ground points (XZ): the left side forward
- * then the right side back. Uses 2D (x, z) vectors.
- */
-function wallOutline(pts: WallPoint[], half: number): WallPoint[] {
-  const n = pts.length;
-  const P = pts.map(p => new THREE.Vector2(p.x, p.z));
-  const dir: THREE.Vector2[] = [];
-  const nrm: THREE.Vector2[] = [];   // left normal of each edge
-  for (let i = 0; i < n - 1; i++) {
-    const d = new THREE.Vector2().subVectors(P[i + 1], P[i]).normalize();
-    dir.push(d);
-    nrm.push(new THREE.Vector2(-d.y, d.x));
-  }
-  // Offset every vertex to one side (s = +1 left, −1 right); interior vertices are the
-  // intersection of the two adjacent offset edge lines (the mitre joint).
-  const side = (s: number): THREE.Vector2[] => {
-    const out: THREE.Vector2[] = [];
-    for (let i = 0; i < n; i++) {
-      if (i === 0)            out.push(P[0].clone().addScaledVector(nrm[0], s * half));
-      else if (i === n - 1)   out.push(P[n - 1].clone().addScaledVector(nrm[n - 2], s * half));
-      else {
-        const a = P[i].clone().addScaledVector(nrm[i - 1], s * half);
-        const b = P[i].clone().addScaledVector(nrm[i],     s * half);
-        out.push(lineIntersect(a, dir[i - 1], b, dir[i]));
-      }
-    }
-    return out;
-  };
-  const left = side(1), right = side(-1);
-  const outline: WallPoint[] = [];
-  for (const p of left) outline.push({ x: p.x, z: p.y });
-  for (let i = right.length - 1; i >= 0; i--) outline.push({ x: right[i].x, z: right[i].y });
-  return outline;
-}
-
-/**
- * Build a wall polyline as ONE continuous solid: extrude the mitred footprint outline
- * (ДЕБЕЛИНА wide, centred on the centreline) vertically from the ground (y = 0) to
- * ВИСОЧИНА. `pts` are local ground vertices (XZ); the local origin is the first one.
- * Plain (untextured) material; edges are added later by addEdges and stay connected.
- */
-function buildWallPath(pts: WallPoint[], height: number, thickness: number): THREE.Object3D {
-  const group = new THREE.Group();
-  if (pts.length < 2) return group;
-  const outline = wallOutline(pts, thickness / 2);
-  if (outline.length < 3) return group;
-  // Build the footprint in the shape plane as (x, −z); extrude along +Z by the height,
-  // then tip it up so the extrusion axis becomes world +Y (and z maps back correctly).
-  const shape = new THREE.Shape();
-  shape.moveTo(outline[0].x, -outline[0].z);
-  for (let i = 1; i < outline.length; i++) shape.lineTo(outline[i].x, -outline[i].z);
-  shape.closePath();
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
-  geo.rotateX(-Math.PI / 2);
-  const mat = new THREE.MeshPhongMaterial({
-    color: COLOR_NORMAL, shininess: 30, specular: new THREE.Color(0x111111), side: THREE.DoubleSide,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.castShadow = mesh.receiveShadow = true;
-  group.add(mesh);
-  return group;
-}
-
-/**
- * Build a ПЛОЧА (slab) as ONE solid: extrude the filled closed polygon `pts` upward by
- * `thickness` from the ground (y = 0). `pts` are local ground vertices (XZ); the local
- * origin is the first one. Plain (untextured) material; edges added later by addEdges.
- */
-function buildSlabPath(pts: WallPoint[], thickness: number): THREE.Object3D {
-  const group = new THREE.Group();
-  if (pts.length < 3) return group;
-  const shape = new THREE.Shape();
-  shape.moveTo(pts[0].x, -pts[0].z);
-  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, -pts[i].z);
-  shape.closePath();
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false });
-  geo.rotateX(-Math.PI / 2);
-  const mat = new THREE.MeshPhongMaterial({
-    color: COLOR_NORMAL, shininess: 30, specular: new THREE.Color(0x111111), side: THREE.DoubleSide,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.castShadow = mesh.receiveShadow = true;
-  group.add(mesh);
-  return group;
-}
-
-// ── Object3D helpers ──────────────────────────────────────────────────────────
-
-function disposeObj(obj: THREE.Object3D) {
-  obj.traverse(child => {
-    if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments) {
-      child.geometry.dispose();
-      const m = child.material;
-      Array.isArray(m) ? m.forEach(x => x.dispose()) : (m as THREE.Material).dispose();
-    }
-  });
-}
-
-/** The centre {0,0,0} base point — used when an instance has no anchor set. */
-const CENTRE_ANCHOR: BasePoint = { x: 0, y: 0, z: 0 };
-const WALL_Y = new THREE.Vector3(0, 1, 0);   // axis for wall local↔world rotation
-
-/** Coerce an axis component from loaded JSON into a clamped -1 / 0 / +1. */
-function clampAxis(v: unknown): number {
-  const n = Math.round(Number(v));
-  return Number.isFinite(n) ? Math.max(-1, Math.min(1, n)) : 0;
-}
-
-/** Validate/clamp an anchor from untrusted JSON; falls back to the centre point. */
-function normAnchor(a: unknown): BasePoint {
-  if (!a || typeof a !== 'object') return { ...CENTRE_ANCHOR };
-  const o = a as Record<string, unknown>;
-  return { x: clampAxis(o['x']), y: clampAxis(o['y']), z: clampAxis(o['z']) };
-}
-
-/**
- * World-axis vector from the centre of the object's ROTATED axis-aligned bounding
- * box to the bbox point picked by `a`. The box is measured with `rotYDeg` applied,
- * so the base point is aligned to the WORLD X/Y/Z directions (not the object's local
- * axes) — e.g. a.x = −1 is always the world-min-X face regardless of rotation.
- */
-function worldAnchorOffset(obj: THREE.Object3D, a: BasePoint, rotYDeg: number): THREE.Vector3 {
-  const prevRot = obj.rotation.y;
-  obj.rotation.y = rotYDeg * (Math.PI / 180);
-  obj.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(obj);
-  obj.rotation.y = prevRot;
-  obj.updateMatrixWorld(true);
-  if (box.isEmpty()) return new THREE.Vector3();
-  const c = box.getCenter(new THREE.Vector3());
-  const s = box.getSize(new THREE.Vector3());
-  return new THREE.Vector3(c.x + a.x * s.x / 2, c.y + a.y * s.y / 2, c.z + a.z * s.z / 2);
-}
-
-/**
- * Wrap a freshly-built object so its chosen (world-axis) base point lands on the
- * wrapper origin — which is where `obj.position` then places it. Because the anchor
- * is world-aligned, the geometry must be shifted by the INVERSE-rotated world offset
- * (`R⁻¹·(−worldOffset)`): once the wrapper re-applies `rotYDeg`, the world AABB point
- * picked by `anchor` sits exactly at `obj.position`. The centre anchor needs no shift.
- */
-function anchorWrap(built: THREE.Object3D, anchor: BasePoint | undefined, rotYDeg: number): THREE.Object3D {
-  const a = anchor ?? CENTRE_ANCHOR;
-  if (a.x === 0 && a.y === 0 && a.z === 0) return built;
-  const off = worldAnchorOffset(built, a, rotYDeg);
-  built.position.copy(off.multiplyScalar(-1).applyEuler(new THREE.Euler(0, -rotYDeg * (Math.PI / 180), 0)));
-  const wrap = new THREE.Group();
-  wrap.add(built);
-  return wrap;
-}
-
-function addEdges(obj: THREE.Object3D): void {
-  obj.traverse(child => {
-    if (child instanceof THREE.Mesh && !child.userData['isEdge']) {
-      const lines = new THREE.LineSegments(
-        new THREE.EdgesGeometry(child.geometry, 10),
-        new THREE.LineBasicMaterial({ color: EDGE_NORMAL }),
-      );
-      lines.userData['isEdge'] = true;
-      child.add(lines);
-    }
-  });
-}
-
-function colorObj(obj: THREE.Object3D, hex: number, transparent = false, opacity = 1) {
-  obj.traverse(child => {
-    if (child instanceof THREE.Mesh && !child.userData['isEdge']) {
-      const mats = Array.isArray(child.material) ? child.material : [child.material];
-      (mats as THREE.MeshPhongMaterial[]).forEach(mat => {
-        // Recolour only the laminate faces — never an edge band (chipboard has a
-        // .map; PVC bands are tagged) so selecting/deselecting can't repaint them.
-        if (!mat.map && !mat.userData['edgeBand']) mat.color.setHex(hex);
-        mat.transparent = transparent;
-        mat.opacity = opacity;
-      });
-    }
-  });
-}
-
-function setEdgeColor(obj: THREE.Object3D, hex: number): void {
-  obj.traverse(child => {
-    if (child instanceof THREE.LineSegments && child.userData['isEdge']) {
-      (child.material as THREE.LineBasicMaterial).color.setHex(hex);
-    }
-  });
-}
-
-function ghostify(obj: THREE.Object3D) {
-  obj.traverse(child => {
-    if (child instanceof THREE.Mesh && !child.userData['isEdge']) {
-      const origMats = Array.isArray(child.material) ? child.material : [child.material];
-      const ghostMats = (origMats as THREE.MeshPhongMaterial[]).map(m => {
-        const g = m.clone(); g.color.setHex(0x4488ff); g.transparent = true; g.opacity = 0.35; return g;
-      });
-      child.material = ghostMats.length === 1 ? ghostMats[0] : ghostMats;
-    }
-  });
-}
+// The CAD engine is split into focused modules (see each file's header):
+//   webcad.model     — data model & shared constants (the vocabulary; read first)
+//   webcad-geometry  — pure solid builders (ploskost, korpus, wall, slab)
+//   webcad-families  — the catalog of parametric object types (FAMILIES)
+//   webcad-object3d  — Three.js object utilities (dispose, anchor, edges, colours, ghost)
+//   webcad-schedule  — cut-list (Спецификация) text generation
+// This component is the Angular *interaction controller*: it owns the viewport, the
+// scene<->data sync, the toolbar/panel UI, and every mouse/keyboard tool.
+import {
+  ParamDef, MaterialDef, FamilyDef, BasePoint, WallPoint,
+  SceneInstance, SceneSnapshot, PanelInfo, InteractionMode, MovePlane,
+  COLOR_NORMAL, COLOR_SELECTED, EDGE_NORMAL, EDGE_SELECTED, EDGE_HOVER,
+  CENTRE_ANCHOR, WALL_Y,
+} from './webcad.model';
+import { makeMesh, buildWallPath, buildSlabPath } from './webcad-geometry';
+import { FAMILIES } from './webcad-families';
+import { disposeObj, normAnchor, anchorWrap, addEdges, colorObj, setEdgeColor, ghostify } from './webcad-object3d';
+import { buildScheduleText } from './webcad-schedule';
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -801,17 +147,6 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private fillLight!: THREE.DirectionalLight;
   private envTexture: THREE.Texture | null = null;  // cached PMREM environment (lazy)
   private renderFloor: THREE.Mesh | null = null;    // shadow-catching ground, only in render mode
-
-  // ── Photo (high-quality post-processed raster) mode ───────────────────────────
-  photoMode = false;
-  photoSamples = 0;                                 // accumulated TAA frames since the last camera move
-  private composer: any = null;                     // EffectComposer (lazy-loaded three/examples passes)
-  private taaPass: any = null;                      // TAARenderPass — temporal AA + accumulation
-  photoLoading = false;                             // true while the post-processing modules load
-  private lastPhotoSamples = -1;
-  private boundPhotoReset: (() => void) | null = null;
-  /** Either realistic look is active (shared PBR materials, env, floor, hidden helpers). */
-  get realistic(): boolean { return this.renderMode || this.photoMode; }
   private objectMap = new Map<number, THREE.Object3D>();
   private nextId = 1;
   private moveFrom    = new THREE.Vector3();
@@ -857,14 +192,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     (this.measureLine?.material as THREE.Material | undefined)?.dispose();
     this.renderer?.dispose();
     this.envTexture?.dispose();
-    if (this.boundPhotoReset) this.controls?.removeEventListener('change', this.boundPhotoReset);
-    this.composer?.dispose?.();
     if (this.renderFloor) { this.renderFloor.geometry.dispose(); (this.renderFloor.material as THREE.Material).dispose(); }
     this.objectMap.forEach(o => disposeObj(o));
     this.copyGhosts.forEach(g => disposeObj(g));
     this.removeWallHandles();
     this.vtxHandleGeo.dispose(); this.edgeHandleGeo.dispose();
     this.vtxHandleMat.dispose(); this.edgeHandleMat.dispose();
+    this.clearTextureCache();
   }
 
   toggleFileMenu() { this.fileMenuOpen = !this.fileMenuOpen; }
@@ -1037,6 +371,39 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     return name ? this.materialDefs.find(m => m.name === name) : undefined;
   }
 
+  // Cache the loaded THREE.Texture per (image + tile size) so all faces using a material
+  // share one GPU texture; cleared (and disposed) whenever a material is edited.
+  private textureCache = new Map<string, THREE.Texture>();
+
+  /**
+   * The repeating THREE.Texture for a material, scaled so one image tile spans
+   * `textureW × textureH` mm (panel UVs from ExtrudeGeometry are in model-space mm).
+   * Returns null when the material has no texture.
+   */
+  private materialTexture(def: MaterialDef | undefined): THREE.Texture | null {
+    if (!def?.texture) return null;
+    const w = def.textureW && def.textureW > 0 ? def.textureW : 1000;
+    const h = def.textureH && def.textureH > 0 ? def.textureH : 1000;
+    const rot = ((def.textureRotation ?? 0) * Math.PI) / 180;
+    const key = `${w}x${h}@${rot}|${def.texture}`;
+    let tex = this.textureCache.get(key);
+    if (!tex) {
+      tex = new THREE.TextureLoader().load(def.texture);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.repeat.set(1 / w, 1 / h);
+      tex.center.set(0.5, 0.5);   // rotate about the tile centre, not the corner
+      tex.rotation = rot;
+      this.textureCache.set(key, tex);
+    }
+    return tex;
+  }
+
+  private clearTextureCache() {
+    this.textureCache.forEach(t => t.dispose());
+    this.textureCache.clear();
+  }
+
   // ── Materials dialog ──────────────────────────────────────────────────────────
 
   toggleMaterials() { this.materialsDialogOpen = !this.materialsDialogOpen; }
@@ -1047,9 +414,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   /** Re-skin the scene live while editing a material (only matters in Render mode). */
   onMaterialEdited() {
-    if (!this.realistic) return;
-    this.refreshAllObjects();
-    this.photoSamples = 0; this.lastPhotoSamples = -1;   // restart Photo accumulation
+    this.clearTextureCache();   // a texture/tile change must rebuild the GPU texture
+    if (this.renderMode) this.refreshAllObjects();
   }
 
   /** Add a fresh material to the library (unique name) and select it for editing. */
@@ -1059,6 +425,33 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     while (names.has(name)) name = `НОВ МАТЕРИАЛ ${++n}`;
     this.materialDefs.push({ name, color: '#cccccc', transparency: 0, reflection: 10, glossiness: 50 });
     this.editingMaterialIndex = this.materialDefs.length - 1;
+  }
+
+  /** Load a chosen image file as the editing material's texture (read as a data URL). */
+  onTextureFile(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    const def = this.editingMaterial;
+    if (!file || !def) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      this.ngZone.run(() => {
+        def.texture = String(reader.result);
+        if (!def.textureW) def.textureW = 1000;   // sensible default tile size (mm)
+        if (!def.textureH) def.textureH = 1000;
+        this.onMaterialEdited();
+      });
+    };
+    reader.readAsDataURL(file);
+    input.value = '';   // allow re-picking the same file
+  }
+
+  /** Remove the editing material's texture (back to a plain colour). */
+  clearMaterialTexture() {
+    const def = this.editingMaterial;
+    if (!def) return;
+    def.texture = undefined;
+    this.onMaterialEdited();
   }
 
   /** Remove a material from the library (keeps at least one); instances keep their name. */
@@ -1145,7 +538,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const obj = anchorWrap(built, inst.anchor, inst.rotY);
     obj.position.set(inst.x, inst.y, inst.z);
     obj.rotation.y = inst.rotY * (Math.PI / 180);
-    if (this.realistic) this.applyRenderMaterials(obj, inst);
+    if (this.renderMode) this.applyRenderMaterials(obj, inst);
     this.objectMap.set(inst.id, obj);
     this.scene.add(obj);
   }
@@ -1323,8 +716,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         transparency: Number(m.transparency) || 0,
         reflection: Number(m.reflection) || 0,
         glossiness: Number.isFinite(m.glossiness as number) ? Number(m.glossiness) : 50,
+        texture: typeof m.texture === 'string' ? m.texture : undefined,
+        textureW: Number(m.textureW) > 0 ? Number(m.textureW) : undefined,
+        textureH: Number(m.textureH) > 0 ? Number(m.textureH) : undefined,
+        textureRotation: Number.isFinite(m.textureRotation as number) ? Number(m.textureRotation) : undefined,
       }));
     if (!clean.length) return;
+    this.clearTextureCache();
     this.materialDefs = clean;
     this.editingMaterialIndex = 0;
   }
@@ -1465,83 +863,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   // ── Schedule export ──────────────────────────────────────────────────────────
 
-  /**
-   * Export a cut-list (schedule of quantities) as a tab-separated .txt, ready to
-   * import into Excel. It lists every ploskost panel in the project — standalone
-   * Ploskost objects AND each panel that composes a КОРПУС / КОРПУС С ВРАТА. The
-   * ЕЛЕМЕНТ column names the source module each panel belongs to.
-   *
-   * Default: identical panels of the same ЕЛЕМЕНТ (same material, both sizes, all
-   * four edge bands) collapse to one row, with БРОЙ as the quantity.
-   * `itemize` on: every panel is listed on its own row and the БРОЙ column is
-   * dropped (each row is a single piece).
-   *
-   * Column → edge mapping for a panel (sides AB, BC, CD, DA):
-   *   РАЗМЕР 1 = AB,  its two parallel edges are AB (ОТПРЕД) and CD (ОТЗАД)
-   *   РАЗМЕР 2 = BC,  its two parallel edges are BC (ОТПРЕД) and DA (ОТЗАД)
-   * An edge cell holds the band thickness (mm) when banded, else blank.
-   */
+  /** Generate the cut-list (see webcad-schedule) and download it as a .txt for the shop. */
   exportSchedule() {
-    interface Panel {
-      element: string; material: string; size1: number; size2: number;
-      pvc: boolean[]; kant: number;
-    }
-    const panels: Panel[] = [];
-    // The cut (core) size is the nominal size minus the band thickness on each edge
-    // PERPENDICULAR to that dimension: РАЗМЕР 1 (AB) shrinks for the BC/DA bands
-    // (pvc[1], pvc[3]), РАЗМЕР 2 (BC) for the AB/CD bands (pvc[0], pvc[2]).
-    const addPanel = (element: string, material: string, AB: number, BC: number, pvc: boolean[], kant: number) => {
-      const r1 = kant * ((pvc[1] ? 1 : 0) + (pvc[3] ? 1 : 0));
-      const r2 = kant * ((pvc[0] ? 1 : 0) + (pvc[2] ? 1 : 0));
-      panels.push({ element, material, size1: Math.round(AB - r1), size2: Math.round(BC - r2), pvc, kant });
-    };
-
-    for (const inst of this.instances) {
-      const material = inst.material.trim();
-      if (inst.familyId === 'ploskost') {
-        const p = inst.params;
-        addPanel(inst.label, material, p['AB'], p['BC'],
-          [!!p['pvcAB'], !!p['pvcBC'], !!p['pvcCD'], !!p['pvcDA']], p['kantThickness'] || 0);
-      } else if (inst.familyId === 'cabinet-door') {
-        const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
-        for (const pan of korpusPanels(inst.params, true)) {
-          addPanel(pan.name, material, pan.AB, pan.BC, pan.pvc, kant);
-        }
-      }
-    }
-
-    // Edge cells in column order: РАЗМЕР 1 ОТПРЕД/ОТЗАД (AB, CD), РАЗМЕР 2 ОТПРЕД/ОТЗАД (BC, DA).
-    const band = (on: boolean, kant: number) => (on ? String(kant) : '');
-    const edges = (p: Panel) =>
-      [band(p.pvc[0], p.kant), band(p.pvc[2], p.kant), band(p.pvc[1], p.kant), band(p.pvc[3], p.kant)];
-
-    const edgeHeaders = ['КАНТ РАЗМЕР 1 ОТПРЕД', 'КАНТ РАЗМЕР 1 ОТЗАД', 'КАНТ РАЗМЕР 2 ОТПРЕД', 'КАНТ РАЗМЕР 2 ОТЗАД'];
-    const lines: string[] = [];
-
-    if (this.itemize) {
-      // One row per physical panel: ЕЛЕМЕНТ column present, no БРОЙ.
-      lines.push(['ЕЛЕМЕНТ', 'МАТЕРИАЛ', 'РАЗМЕР 1', 'РАЗМЕР 2', ...edgeHeaders].join('\t'));
-      for (const p of panels) {
-        lines.push([p.element, p.material, p.size1, p.size2, ...edges(p)].join('\t'));
-      }
-    } else {
-      // Merge identical panels across the whole project: БРОЙ column present, no ЕЛЕМЕНТ.
-      lines.push(['МАТЕРИАЛ', 'РАЗМЕР 1', 'РАЗМЕР 2', 'БРОЙ', ...edgeHeaders].join('\t'));
-      const rows = new Map<string, { p: Panel; count: number }>();
-      for (const p of panels) {
-        const key = [p.material, p.size1, p.size2, ...edges(p)].join('|');
-        const ex = rows.get(key);
-        if (ex) ex.count++;
-        else rows.set(key, { p, count: 1 });
-      }
-      for (const { p, count } of rows.values()) {
-        lines.push([p.material, p.size1, p.size2, count, ...edges(p)].join('\t'));
-      }
-    }
-
-    // Prepend a UTF-8 BOM so Excel reads the Cyrillic headers correctly.
-    const BOM = String.fromCharCode(0xFEFF);
-    const blob = new Blob([BOM + lines.join('\r\n')], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob([buildScheduleText(this.instances, this.itemize)], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -1683,7 +1007,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       const inst: SceneInstance = {
         id, familyId: 'wall', label: `СТЕНА ${id}`,
         params: { 'ВИСОЧИНА': this.wallHeight, 'ДЕБЕЛИНА': this.wallThickness },
-        material: '', path: localPath,
+        material: 'БЯЛО МАТ', path: localPath,
         x: p0.x, y: 0, z: p0.z, rotY: 0, anchor: { ...CENTRE_ANCHOR },
       };
       this.instances.push(inst);
@@ -1884,7 +1208,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const inst: SceneInstance = {
       id, familyId: 'slab', label: `ПЛОЧА ${id}`,
       params: { 'ДЕБЕЛИНА': this.slabThickness },
-      material: '', path: localPath,
+      material: 'БЯЛО МАТ', path: localPath,
       x: p0.x, y: 0, z: p0.z, rotY: 0, anchor: { ...CENTRE_ANCHOR },
     };
     this.instances.push(inst);
@@ -2567,7 +1891,6 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w, h);
-      this.composer?.setSize(w, h);
     });
     this.resizeObserver.observe(canvas.parentElement!);
 
@@ -2577,47 +1900,34 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private animate() {
     this.animFrameId = requestAnimationFrame(() => this.animate());
     this.controls.update();
-    if (this.photoMode && this.composer) {
-      this.composer.render();                       // PBR + GTAO + TAA accumulation to canvas
-      const s = Math.min(this.photoSamples + 1, 999);
-      this.photoSamples = s;
-      if (s !== this.lastPhotoSamples) {
-        this.lastPhotoSamples = s;
-        this.ngZone.run(() => { /* refresh the overlay counter */ });
-      }
-    } else {
-      this.renderer.render(this.scene, this.camera);
-    }
+    this.renderer.render(this.scene, this.camera);
   }
 
   // ── Render (photoreal preview) mode ──────────────────────────────────────────
 
   /**
-   * Toggle a "lane 1" realistic preview: PBR materials lit by an image-based studio
+   * Toggle the photoreal Render preview: PBR materials lit by an image-based studio
    * environment (RoomEnvironment → PMREM), ACES filmic tone mapping and a shadow-
-   * catching floor; CAD helpers and edge lines are hidden. No third-party library —
-   * everything is Three.js core + examples. Toggling rebuilds all objects from data,
-   * so the standard viewport is restored exactly on exit.
+   * catching floor; CAD helpers and edge lines are hidden. Pure Three.js core + examples.
+   * Toggling rebuilds all objects from data, so the standard viewport is restored on exit.
    */
   toggleRender() {
-    const on = !this.renderMode;
-    if (on && this.photoMode) this.stopPhoto();   // the two realistic modes are mutually exclusive
-    this.renderMode = on;
-    if (on) {
+    this.renderMode = !this.renderMode;
+    if (this.renderMode) {
       this.cancelMode();
       this.applySelect([]);                       // clean, unhighlighted view
-      this.enterRealisticScene();
+      this.enterRenderScene();
       this.scene.environment = this.envTexture!;
     } else {
-      this.exitRealisticScene();
+      this.exitRenderScene();
     }
     this.applyLighting();             // mode-dependent base intensities × brightness
     this.applyViewportBackground();   // theme- and mode-dependent 3D background
     this.refreshAllObjects();
   }
 
-  /** Shared "realistic look" setup (env + tone mapping + shadow floor, helpers hidden). */
-  private enterRealisticScene() {
+  /** Render-look setup (env + tone mapping + shadow floor, CAD helpers hidden). */
+  private enterRenderScene() {
     if (!this.envTexture) {                        // build the IBL environment once
       const pmrem = new THREE.PMREMGenerator(this.renderer);
       this.envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -2637,95 +1947,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.scene.add(this.renderFloor);
   }
 
-  private exitRealisticScene() {
+  private exitRenderScene() {
     this.scene.environment = null;
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.viewHelpers.forEach(h => h.visible = true);
     if (this.renderFloor) this.scene.remove(this.renderFloor);
-  }
-
-  /**
-   * Toggle Photo mode: a high-quality post-processed raster render (three.js core only,
-   * lazy-loaded so it never bloats the public bundle). Builds on the same PBR/realistic
-   * scene as Render and adds ground-truth-style **ambient occlusion (GTAO)** plus
-   * **temporal anti-aliasing/accumulation (TAA)** — the image keeps refining while the
-   * camera is still and reframes when you orbit. Reliable on every GPU (incl. Intel).
-   */
-  async togglePhoto() {
-    this.visMenuOpen = false;
-    if (this.photoMode) { this.stopPhoto(); return; }
-    if (this.renderMode) this.renderMode = false;   // keep the realistic scene; re-enter below
-    this.cancelMode();
-    this.applySelect([]);
-    this.enterRealisticScene();
-    this.scene.environment = this.envTexture!;
-    this.photoMode = true;                           // realistic getter → PBR materials on rebuild
-    this.photoLoading = true;
-    this.photoSamples = 0; this.lastPhotoSamples = -1;
-    this.applyLighting();
-    this.applyViewportBackground();
-    this.refreshAllObjects();                        // PBR materials (realistic = true)
-
-    let EC, RP, TAA, GTAO, OUT;
-    try {
-      [EC, RP, TAA, GTAO, OUT] = await Promise.all([
-        import('three/examples/jsm/postprocessing/EffectComposer.js'),
-        import('three/examples/jsm/postprocessing/RenderPass.js'),
-        import('three/examples/jsm/postprocessing/TAARenderPass.js'),
-        import('three/examples/jsm/postprocessing/GTAOPass.js'),
-        import('three/examples/jsm/postprocessing/OutputPass.js'),
-      ]);
-    } catch (err) {
-      console.error('[WebCAD] Photo modules failed to load:', err);
-      this.ngZone.run(() => { this.stopPhoto(); alert('Неуспешно зареждане на Photo визуализацията.'); });
-      return;
-    }
-    if (!this.photoMode) { this.photoLoading = false; return; }   // toggled off during load
-
-    const canvas = this.canvasRef.nativeElement;
-    const w = canvas.clientWidth || 800, h = canvas.clientHeight || 600;
-    const composer = new EC.EffectComposer(this.renderer);
-    composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    composer.setSize(w, h);
-
-    // TAA renders the scene with jittered sub-pixel samples and accumulates them while
-    // the view is static → clean anti-aliasing and smooth soft shadows.
-    const taa = new TAA.TAARenderPass(this.scene, this.camera);
-    taa.sampleLevel = 3;     // up to 2^3 = 8 jittered samples
-    taa.unbiased = true;
-    taa.accumulate = true;
-    composer.addPass(taa);
-    this.taaPass = taa;
-
-    // Ground-truth ambient occlusion for soft contact shadows / corner darkening.
-    const gtao = new GTAO.GTAOPass(this.scene, this.camera, w, h);
-    gtao.output = GTAO.GTAOPass.OUTPUT.Default;
-    composer.addPass(gtao);
-
-    composer.addPass(new OUT.OutputPass());          // ACES tone mapping + sRGB
-    void RP;                                          // RenderPass imported for type parity (TAA covers it)
-
-    this.composer = composer;
-    if (!this.boundPhotoReset) {
-      this.boundPhotoReset = () => { if (this.photoMode) { this.taaPass?.accumulate && (this.taaPass.accumulate = true); this.photoSamples = 0; this.lastPhotoSamples = -1; } };
-      this.controls.addEventListener('change', this.boundPhotoReset);
-    }
-    this.photoLoading = false;
-    this.ngZone.run(() => {});   // reflect overlay state
-  }
-
-  /** Leave Photo mode and restore the standard viewport. */
-  private stopPhoto() {
-    if (!this.photoMode) return;
-    this.photoMode = false;
-    this.photoLoading = false;
-    this.composer?.dispose?.();
-    this.composer = null;
-    this.taaPass = null;
-    this.exitRealisticScene();
-    this.applyLighting();
-    this.applyViewportBackground();
-    this.refreshAllObjects();
   }
 
   // ── Visualisation menu / theme / camera settings ──────────────────────────────
@@ -2742,7 +1968,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   /** The 3D background: white-ish in light theme, dark otherwise (a touch lighter in Render). */
   private applyViewportBackground() {
-    if (!this.scene || this.photoMode) return;   // Photo mode manages its own (environment) background
+    if (!this.scene) return;
     const hex = this.lightTheme ? 0xeef1f5 : (this.renderMode ? 0x20242a : 0x0e0e0e);
     this.scene.background = new THREE.Color(hex);
   }
@@ -2751,7 +1977,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private applyLighting() {
     if (!this.ambientLight) return;
     const b = this.cameraBrightness;
-    if (this.realistic) {
+    if (this.renderMode) {
       this.ambientLight.intensity = 0.12 * b;   // env does the soft lighting
       this.keyLight.intensity = 1.1 * b;
       this.fillLight.intensity = 0.3 * b;
@@ -2803,10 +2029,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       const conv = (m: THREE.MeshPhongMaterial): THREE.MeshStandardMaterial => {
         const isBand = !!m.userData['edgeBand'];
         const def = isBand ? kantDef : boardDef;
+        // A flat board face (no .map) may take the material's JPG texture; the chipboard
+        // edge (which already has m.map) keeps its own look.
+        const defTex = !m.map ? this.materialTexture(def) : null;
         const std = new THREE.MeshStandardMaterial({
-          // A textured face (the chipboard edge) keeps its map; a flat face takes the def colour.
-          color: def && !m.map ? new THREE.Color(def.color) : (m.color ? m.color.clone() : new THREE.Color(0xffffff)),
-          map: m.map ?? null,
+          // With a texture the colour is white (show the image faithfully); otherwise a
+          // flat face takes the def colour, and a textured edge keeps its own colour.
+          color: defTex ? new THREE.Color(0xffffff)
+               : def && !m.map ? new THREE.Color(def.color)
+               : (m.color ? m.color.clone() : new THREE.Color(0xffffff)),
+          map: defTex ?? m.map ?? null,
           transparent: def ? def.transparency > 0 : m.transparent,
           opacity: def ? 1 - def.transparency / 100 : m.opacity,
           side: m.side,

@@ -39,7 +39,8 @@ it** afterward (`git checkout --`). Prefer the **`webcad-verify`** skill (dev se
 
 1. **Bands are separate inset/flush solids** ([geometry](geometry.md)) — nominal AB×BC
    is the finished outer size. Not material groups.
-2. **Texture repeat is mm-reciprocal**, equal on both axes (`1/TILE_MM`).
+2. **Texture repeat is mm-reciprocal**: `1/TILE_MM` for the chipboard edge; user material
+   JPGs use per-axis `(1/textureW, 1/textureH)` for a real-world tile size ([visualisation](visualisation.md)).
 3. **`colorObj` skips `.map` and `edgeBand` materials** — tag new band materials `edgeBand`.
 4. **Edges tagged `isEdge`** are the snap source — no edges, no snap/pick.
 5. **Don't `cancelMode()` after a successful move/copy/array commit** — use `finishMoveTo`.
@@ -49,4 +50,9 @@ it** afterward (`git checkout --`). Prefer the **`webcad-verify`** skill (dev se
 9. **Run UI-affecting handler code in `ngZone.run`.**
 10. **`С_*` КОРПУС toggles are positive** (checked = present).
 11. **`ДЪЛБОЧИНА` is outer depth** — sides/top/bottom fit between back & door.
-12. **`backfillParams` migrates** older in-memory instances when you add a family param.
+12. **`backfillParams`/`backfillMaterials` migrate** older in-memory instances on a new param/material.
+13. **Material visuals appear only in Render mode** (`renderMode` → `applyRenderMaterials`),
+    never in flat CAD mode. Render is the only realistic mode — there is no path tracer
+    ([visualisation](visualisation.md)).
+14. **Verify the 3D viewport with `gl.readPixels`, not screenshots** —
+    `preserveDrawingBuffer:false` makes off-screen captures stale/black.

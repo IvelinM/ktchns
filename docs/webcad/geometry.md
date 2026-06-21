@@ -1,6 +1,6 @@
 # WebCAD — ploskost geometry, texture, edges
 
-[← index](../webcad.md)
+[← index](../webcad.md) · code: `webcad-geometry.ts` (edge/colour/ghost utils: `webcad-object3d.ts`)
 
 ## A ploskost = 1–5 solids (mass + inset band per edge)
 

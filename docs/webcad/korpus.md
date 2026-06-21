@@ -1,6 +1,6 @@
 # WebCAD — the КОРПУС С ВРАТА carcass
 
-[← index](../webcad.md) · panel-level geometry: [geometry.md](geometry.md)
+[← index](../webcad.md) · panel-level geometry: [geometry.md](geometry.md) · code: `webcad-geometry.ts` (`korpusPanels`/`buildKorpus`)
 
 `korpusPanels(p, withDoor)` is the **single source** of the carcass layout — used both
 to build the 3D group (`buildKorpus`) and to generate the schedule. It returns

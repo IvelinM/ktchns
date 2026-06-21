@@ -1,24 +1,36 @@
 ---
 name: webcad-family
-description: Add or edit a parametric family (Ploskost, КОРПУС С ВРАТА, or a new one) in the WebCAD /admin tool — params, buildObject, the panel/band-solid conventions, the КОРПУС carcass model, and the param-migration rule. Use when changing what objects can be modelled or their parameters in src/app/admin/admin-page.component.ts.
+description: Add or edit a parametric family (Ploskost, КОРПУС С ВРАТА, or a new one) in the WebCAD /admin tool — params, buildObject, the panel/band-solid conventions, the КОРПУС carcass model, and the param-migration rule. Use when changing what objects can be modelled or their parameters; families live in src/app/admin/webcad-families.ts (geometry in webcad-geometry.ts).
 ---
 
 # Add or edit a WebCAD family
 
-Families are parametric object templates in the module-level `FAMILIES` array of
-`src/app/admin/admin-page.component.ts`. Reference docs (short, focused):
-`docs/webcad/families.md`, `geometry.md`, `korpus.md`, `data-model.md`
-(index: `docs/webcad.md`). Verify every change with the **`webcad-verify`** skill.
+The WebCAD engine is split into modules under `src/app/admin/`: families are the
+`FAMILIES` array in **`webcad-families.ts`**, geometry builders (`makeMesh`,
+`korpusPanels`, `buildKorpus`, `buildWallPath`, `buildSlabPath`) in
+**`webcad-geometry.ts`**, types in **`webcad.model.ts`**; the cut-list is
+**`webcad-schedule.ts`**; `admin-page.component.ts` is the Angular controller. Reference
+docs (short, focused): `docs/webcad/families.md`, `geometry.md`, `korpus.md`,
+`data-model.md` (index: `docs/webcad.md`). Verify every change with the
+**`webcad-verify`** skill.
 
 ```ts
 interface ParamDef { key; label; defaultValue; min; step; unit; type?: 'number'|'toggle'; }
-interface FamilyDef { id; name; params: ParamDef[]; buildObject(p: Record<string,number>): THREE.Object3D; }
+interface MaterialParamDef { key; label; default: string; }   // a per-panel material pick
+interface FamilyDef {
+  id; name; params: ParamDef[];
+  buildObject(p: Record<string,number>): THREE.Object3D;
+  hidden?: boolean;                 // not in the FAMILY picker — made by a toolbar tool
+  materialParams?: MaterialParamDef[];   // shows a МАТЕРИАЛИ section of material selects
+}
 ```
 
 The placement, selection, move/copy/array, undo, and schedule flows are
 **family-agnostic** — they only need `buildObject` to return a `Mesh`/`Group` made
 from `makeMesh()` panels (so edges, texture, bands, and selection highlighting all
-work). Two families exist: `ploskost` and `cabinet-door` (КОРПУС С ВРАТА).
+work). **Four families exist:** `ploskost` and `cabinet-door` (КОРПУС С ВРАТА, picker)
+plus **hidden** `wall` (СТЕНА) and `slab` (ПЛОЧА), which are made by their toolbar tools
+and build from `inst.path` (a polyline) rather than `buildObject`.
 
 ## Build panels with `makeMesh`, never raw geometry
 
@@ -44,8 +56,9 @@ makeMesh(AB, BC, angleDeg, thickness, pvcSides=[AB,BC,CD,DA], pvcThickness=0.5):
 
 ## The КОРПУС model (reuse `korpusPanels` if extending cabinets)
 
-`korpusPanels(p, withDoor)` is the **single source** of the carcass layout — used by
-both `buildKorpus` (3D) and `exportSchedule` (cut-list). It returns `KorpusPanel[]`
+`korpusPanels(p, withDoor)` (in `webcad-geometry.ts`) is the **single source** of the
+carcass layout — used by both `buildKorpus` (3D) and `buildScheduleText` (cut-list). It
+returns `KorpusPanel[]`
 with a `name` (Bulgarian role → the schedule's ЕЛЕМЕНТ) and per-panel `pvc`. Rules:
 - `ДЪЛБОЧИНА` is the **outer** depth; sides/top/bottom fit **between** back & door
   (`innerD = D − t_back − t_door`, centred at `innerZ`).
@@ -73,10 +86,10 @@ from `defaultValue`, so older instances self-heal when spawned or re-selected �
 on it, and choose a sensible `defaultValue`. (This was a real bug: a renamed/added
 toggle did nothing on existing instances until backfill was added.)
 
-## Schedule (`exportSchedule`) integration
+## Schedule integration (`buildScheduleText` in `webcad-schedule.ts`)
 
 If a new family produces ploskost panels you want in the cut-list, add a branch in
-`exportSchedule` mapping the instance to `addPanel(element, material, AB, BC, pvc, kant)`.
+`buildScheduleText` mapping the instance to `addPanel(element, material, AB, BC, pvc, kant)`.
 Column mapping: РАЗМЕР 1 = AB (banded edges AB=`pvc[0]`/CD=`pvc[2]`), РАЗМЕР 2 = BC
 (BC=`pvc[1]`/DA=`pvc[3]`); the reported size subtracts `kant` per banded edge of that
 dimension.

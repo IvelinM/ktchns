@@ -5,7 +5,8 @@ description: Verify WebCAD (/admin) changes by driving the running Angular dev s
 
 # Verify WebCAD changes against the live component
 
-The WebCAD tool at `/admin` is a single Three.js component whose data model is the
+The WebCAD tool at `/admin` is one Angular component (`AdminPageComponent`) on top of a
+few pure engine modules (`src/app/admin/webcad*.ts`); its data model is the
 `instances[]` array (the 3D scene is derived from it). The reliable way to test logic
 is to grab the live component instance via Angular's debug API and call its methods /
 inspect its state directly — **not** to click the 3D canvas (raycasting a `<canvas>`
@@ -22,6 +23,30 @@ Architecture reference: `docs/webcad.md` (index) and the short topic files in `d
 - Builds run with `ng` in **dev** mode behind the scenes; `window.ng` debug API is
   available (dev build). `window.ng.getComponent(el)` and `window.ng.applyChanges(cmp)`
   are the two you need.
+- The engine is split across `src/app/admin/webcad*.ts` (model/geometry/families/
+  object3d/schedule) + the component — but you still drive it all through the one
+  `app-admin-page` component instance; the split doesn't change verification.
+
+### Connecting a browser
+The Playwright **MCP** attaches over CDP on **port 9222** — it needs a Chrome already
+launched with remote debugging. If nothing is on 9222, start one:
+```bash
+"/c/Program Files/Google/Chrome/Application/chrome.exe" --remote-debugging-port=9222 \
+  --user-data-dir=/c/Users/MATEV/AppData/Local/Temp/webcad-verify-profile \
+  --no-first-run --no-default-browser-check http://localhost:4200/admin &
+```
+**Fallback when the MCP is down/disconnected** (used heavily — very reliable): drive the
+*same* CDP Chrome from a throwaway Node script.
+```bash
+npm install --no-save playwright-core          # note: `npm uninstall` later prunes it
+```
+```js
+import { chromium } from 'playwright-core';
+const b = await chromium.connectOverCDP('http://localhost:9222');
+const page = b.contexts()[0].pages().find(p => p.url().includes('localhost:4200'));
+const r = await page.evaluate(() => { /* … window.ng … */ });
+```
+Run with `node diag.mjs`, then **delete the script** in cleanup.
 
 ## 1. Navigate
 
@@ -120,10 +145,24 @@ async () => {
 Assert headers (БРОЙ vs ЕЛЕМЕНТ swap with `itemize`), row dimensions, and the kant
 subtraction (banded РАЗМЕР = nominal − kant per banded edge of that dimension).
 
-## 5. Screenshots (optional)
+## 5. Screenshots & visual checks (Render / materials / textures)
 
-`mcp__playwright__browser_take_screenshot` after selecting an object shows the 3D
-result. Verifying numbers via `browser_evaluate` is usually more decisive.
+Verifying **numbers** via `browser_evaluate` is almost always more decisive than a
+screenshot — toggle Render (`cmp.toggleRender()`) then assert material props directly,
+e.g. `mesh.material.type` (`MeshStandardMaterial` in Render), `mesh.material.map`,
+`.metalness`/`.roughness`, `.color.getHexString()`, `map.repeat` (a 1200×800 mm tile →
+`1/map.repeat.x ≈ 1200`), `renderer.toneMapping` (4 = ACESFilmic in Render), or
+`cmp.instances[i].materials[...]`.
+
+> ⚠️ **WebGL screenshots are unreliable here.** The renderer uses
+> `preserveDrawingBuffer:false`, so off-screen captures grab a **stale/black** frame —
+> this fooled checks repeatedly. For ground truth on background colour / render output,
+> read the framebuffer: `const p=new Uint8Array(4); gl.readPixels(x,y,1,1,gl.RGBA,
+> gl.UNSIGNED_BYTE,p);` (force a render first: `renderer.render(scene,camera)`).
+
+> **Render is the only realistic mode.** A GPU path tracer (`three-gpu-pathtracer`) and a
+> raster "Photo" mode were both tried and removed — don't re-add them (the path tracer
+> renders black on Intel iGPUs).
 
 ## 6. Build check (separate from runtime verify)
 
@@ -140,9 +179,10 @@ as `error TS…` / `error NG…` above them. The build's `prebuild` hook regener
 
 ## 7. Cleanup (do this every time)
 
-- `reset()` the scene inside your last evaluate.
-- Remove Playwright artifacts and the regenerated data file:
+- `reset()` the scene inside your last evaluate (and exit Render, restore the default
+  material library / theme / brightness if a test changed them).
+- Remove Playwright artifacts, any throwaway diag script, and the regenerated data file:
   ```bash
-  rm -rf .playwright-mcp ; git checkout -- src/app/projects/projects.data.ts
+  rm -rf .playwright-mcp *.mjs ; git checkout -- src/app/projects/projects.data.ts
   ```
 - Leave `git status` showing only the files you intended to change.

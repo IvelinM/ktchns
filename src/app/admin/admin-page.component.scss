@@ -1008,6 +1008,58 @@
   }
   .mat-hex { flex: 1; text-transform: uppercase; }
 }
+.mat-tex-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.mat-tex-preview {
+  width: 44px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  border: 1px solid var(--c-border);
+  background-size: cover;
+  background-position: center;
+  &.empty {
+    background: repeating-conic-gradient(var(--c-raised) 0% 25%, var(--c-input) 0% 50%) 50% / 12px 12px;
+  }
+}
+.mat-tex-btn {
+  padding: 7px 10px;
+  background: var(--c-raised);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  color: var(--c-text-2);
+  font-size: 12px;
+  cursor: pointer;
+  &:hover { border-color: #d4a96a; color: #d4a96a; }
+  &.danger:hover { border-color: #e05555; color: #e05555; }
+}
+.mat-tile-row {
+  display: flex;
+  gap: 8px;
+  label {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--c-text-3);
+    input {
+      flex: 1;
+      min-width: 0;
+      background: var(--c-input);
+      border: 1px solid var(--c-border);
+      border-radius: 6px;
+      color: var(--c-text);
+      padding: 7px 8px;
+      font-size: 13px;
+      outline: none;
+      &:focus { border-color: #d4a96a; }
+    }
+  }
+}
 .mat-actions {
   display: flex;
   justify-content: flex-end;
@@ -1069,34 +1121,6 @@
 // ── Settings dialog ─────────────────────────────────────────────────────────────
 
 .settings-dialog { width: 380px; }
-
-// ── Photo (path-tracing) status badge ───────────────────────────────────────────
-.photo-status {
-  position: absolute;
-  top: 64px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
-  background: var(--c-overlay);
-  border: 1px solid var(--c-border);
-  border-radius: 14px;
-  font-size: 11px;
-  color: var(--c-text-2);
-  z-index: 11;
-  pointer-events: none;
-  backdrop-filter: blur(4px);
-}
-.photo-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #d4a96a;
-  &.refining { animation: photo-pulse 1.1s ease-in-out infinite; }
-}
-@keyframes photo-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 
 .settings-body {
   padding: 18px 18px 20px;

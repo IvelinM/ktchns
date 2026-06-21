@@ -2,9 +2,11 @@
 
 [← index](../webcad.md)
 
-`exportSchedule()` writes a **tab-separated `.txt`** (UTF-8 **with BOM**, CRLF) so
-Excel reads the Cyrillic headers; downloads as `schedule.txt`. Button at the bottom of
-the SCENE panel.
+The cut-list text is built by **`buildScheduleText(instances, itemize)`** in
+**`src/app/admin/webcad-schedule.ts`** (pure); the component's `exportSchedule()` just
+wraps it in a Blob and downloads `schedule.txt`. It's a **tab-separated `.txt`** (UTF-8
+**with BOM**, CRLF) so Excel reads the Cyrillic headers. Button at the bottom of the
+SCENE panel.
 
 It lists **every ploskost panel in the project** — standalone Ploskost objects **and**
 each panel composing every КОРПУС С ВРАТА (via [`korpusPanels`](korpus.md), using the
@@ -34,5 +36,5 @@ The `itemize` checkbox toggles the two **mutually-exclusive** columns:
 
 ## Extending
 
-To add a new family's panels to the cut-list, add a branch in `exportSchedule` calling
-`addPanel(element, material, AB, BC, pvc, kant)` per panel.
+To add a new family's panels to the cut-list, add a branch in `buildScheduleText`
+(webcad-schedule.ts) calling `addPanel(element, material, AB, BC, pvc, kant)` per panel.

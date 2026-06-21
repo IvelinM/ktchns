@@ -396,9 +396,9 @@
       </button>
       <span class="tool-sep"></span>
 
-      <!-- Visualisation dropdown: Render · Photo · Materials · Settings -->
+      <!-- Visualisation dropdown: Render · Materials · Settings -->
       <div #visMenu class="tool-menu" [class.open]="visMenuOpen">
-        <button class="tool-btn" [class.active]="renderMode || photoMode || materialsDialogOpen || settingsDialogOpen || visMenuOpen"
+        <button class="tool-btn" [class.active]="renderMode || materialsDialogOpen || settingsDialogOpen || visMenuOpen"
                 title="Visualisation" (click)="toggleVisMenu()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
@@ -413,14 +413,6 @@
             </svg>
             Render
             <span class="menu-state" *ngIf="renderMode">●</span>
-          </button>
-          <button class="menu-item" [class.on]="photoMode" (click)="togglePhoto()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-              <circle cx="12" cy="13" r="4"/>
-            </svg>
-            Photo
-            <span class="menu-state" *ngIf="photoMode">●</span>
           </button>
           <button class="menu-item" [class.on]="materialsDialogOpen" (click)="visMenuOpen = false; toggleMaterials()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -538,13 +530,6 @@
          [style.height.px]="marqueeRect.height">
     </div>
 
-    <!-- Photo (path-tracing) status -->
-    <div class="photo-status" *ngIf="photoMode">
-      <span class="photo-dot" [class.refining]="!photoLoading"></span>
-      <ng-container *ngIf="photoLoading; else tracing">Подготовка на Photo…</ng-container>
-      <ng-template #tracing>Photo · изглаждане {{ photoSamples }} — задръж неподвижно за по-чисто</ng-template>
-    </div>
-
     <div class="controls-hint">
       Click · select &nbsp;|&nbsp; Drag · box select &nbsp;|&nbsp;
       Right-drag · orbit &nbsp;|&nbsp; Mid-drag · pan &nbsp;|&nbsp; Scroll · zoom
@@ -565,7 +550,7 @@
                     *ngFor="let m of materialDefs; let i = index"
                     [class.active]="i === editingMaterialIndex"
                     (click)="selectEditingMaterial(i)">
-              <span class="mat-swatch" [style.background]="m.color"></span>
+              <span class="mat-swatch" [style.background]="m.texture ? 'url(' + m.texture + ') center/cover' : m.color"></span>
               <span class="mat-name">{{ m.name }}</span>
             </button>
             <button type="button" class="mat-add" (click)="addMaterial()">+ Нов материал</button>
@@ -584,6 +569,31 @@
                 <input type="color" [(ngModel)]="m.color" (ngModelChange)="onMaterialEdited()">
                 <input type="text" class="mat-hex" [(ngModel)]="m.color" (ngModelChange)="onMaterialEdited()">
               </div>
+            </label>
+
+            <!-- JPG texture + its real-world tile size (mm) -->
+            <div class="mat-field">
+              <span>Текстура (JPG)</span>
+              <div class="mat-tex-row">
+                <span class="mat-tex-preview" [class.empty]="!m.texture"
+                      [style.backgroundImage]="m.texture ? 'url(' + m.texture + ')' : ''"></span>
+                <input #texFile type="file" accept="image/*" hidden (change)="onTextureFile($event)">
+                <button type="button" class="mat-tex-btn" (click)="texFile.click()">{{ m.texture ? 'Смени…' : 'Добави…' }}</button>
+                <button type="button" class="mat-tex-btn danger" *ngIf="m.texture" (click)="clearMaterialTexture()">Премахни</button>
+              </div>
+            </div>
+            <div class="mat-field" *ngIf="m.texture">
+              <span>Размер на плочка (mm)</span>
+              <div class="mat-tile-row">
+                <label>Ш<input type="number" min="1" step="1" [(ngModel)]="m.textureW" (ngModelChange)="onMaterialEdited()"></label>
+                <label>В<input type="number" min="1" step="1" [(ngModel)]="m.textureH" (ngModelChange)="onMaterialEdited()"></label>
+              </div>
+            </div>
+            <label class="mat-field" *ngIf="m.texture">
+              <span>Завъртане на текстурата <em>{{ m.textureRotation || 0 }}°</em></span>
+              <input type="range" min="0" max="360" step="1"
+                     [ngModel]="m.textureRotation || 0"
+                     (ngModelChange)="m.textureRotation = +$event; onMaterialEdited()">
             </label>
 
             <label class="mat-field">

@@ -2,15 +2,37 @@
 
 [← index](../webcad.md) · see also [geometry](geometry.md), [korpus](korpus.md)
 
+Defined in **`src/app/admin/webcad-families.ts`**; types in `webcad.model.ts`; builders
+in `webcad-geometry.ts`.
+
 ```ts
 interface ParamDef { key; label; defaultValue; min; step; unit; type?: 'number'|'toggle'; }
-interface FamilyDef { id; name; params: ParamDef[]; buildObject(p: Record<string,number>): THREE.Object3D; }
+interface MaterialParamDef { key; label; default: string; }   // a per-panel material pick
+interface FamilyDef {
+  id; name; params: ParamDef[];
+  buildObject(p: Record<string,number>): THREE.Object3D;
+  hidden?: boolean;                 // not in the FAMILY picker — created by a toolbar tool
+  materialParams?: MaterialParamDef[];   // shows a МАТЕРИАЛИ section of material selects
+}
 ```
 
-Families live in the module-level `FAMILIES` array. Cyrillic keys/labels are fine
-(e.g. `'С_ГРЪБ'`). The placement, selection, move/copy/array, undo, and schedule flows
-are **family-agnostic** — they only need `buildObject` to return a `Mesh`/`Group` made
-from `makeMesh()` panels. **Two families exist:** `ploskost` and `cabinet-door`.
+Families live in the `FAMILIES` array. Cyrillic keys/labels are fine (e.g. `'С_ГРЪБ'`).
+The placement, selection, move/copy/array, undo, and schedule flows are
+**family-agnostic** — they only need `buildObject` to return a `Mesh`/`Group` of
+`makeMesh()` panels. **Four families exist:**
+
+| id | name | picker? | geometry |
+|----|------|---------|----------|
+| `ploskost` | ПЛОСКОСТ | yes | `makeMesh(...)` — one board + inset PVC bands |
+| `cabinet-door` | КОРПУС С ВРАТА | yes | `buildKorpus(p, true)` — carcass + door; has `materialParams` |
+| `wall` | СТЕНА | **hidden** | `buildWallPath(inst.path, …)` — vertical extruded polyline |
+| `slab` | ПЛОЧА | **hidden** | `buildSlabPath(inst.path, …)` — flat extruded polygon |
+
+`hidden` families are made by their toolbar tool (СТЕНА/ПЛОЧА), not the picker, and build
+from `inst.path` (a polyline) rather than `buildObject` — see [tools.md](tools.md).
+`materialParams` (КОРПУС only) drive the МАТЕРИАЛИ section — per-panel material names
+stored in `inst.materials` and applied only in Render mode (see
+[visualisation.md](visualisation.md)).
 *(A plain `cabinet`/КОРПУС family existed earlier and was removed — only the door version remains.)*
 
 ## `ploskost` — a single panel/slab, optionally PVC-banded
