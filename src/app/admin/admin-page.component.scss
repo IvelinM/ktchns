@@ -139,6 +139,17 @@
   &.mt { margin-top: 12px; }
 }
 
+// МАТЕРИАЛИ rows: the long material labels would starve a two-column row, so stack each
+// label above its own full-width select.
+.material-grid {
+  grid-template-columns: 1fr;
+  gap: 2px;
+
+  .param-label { margin-top: 6px; }
+  .param-label:first-child { margin-top: 0; }
+  .select-wrap { width: 100%; }
+}
+
 // Collapsible parameter sections
 .param-sec {
   margin-top: 8px;
@@ -1013,17 +1024,29 @@
   gap: 8px;
   align-items: center;
 }
+// Static frame: size set inline to the Ш×В tile aspect ratio; clips the rotating image.
 .mat-tex-preview {
-  width: 44px;
-  height: 34px;
+  display: block;
+  position: relative;
+  margin-top: 8px;
   flex-shrink: 0;
   border-radius: 6px;
   border: 1px solid var(--c-border);
+  overflow: hidden;
+  &.empty {
+    background: repeating-conic-gradient(var(--c-raised) 0% 25%, var(--c-input) 0% 50%) 50% / 18px 18px;
+  }
+}
+// The image itself — only this rotates. Sized inline to a square ≥ the frame diagonal and
+// centred, so it always covers the frame at any angle.
+.mat-tex-img {
+  position: absolute;
+  top: 50%;
+  left: 50%;
   background-size: cover;
   background-position: center;
-  &.empty {
-    background: repeating-conic-gradient(var(--c-raised) 0% 25%, var(--c-input) 0% 50%) 50% / 12px 12px;
-  }
+  transform-origin: center;
+  transition: transform 0.12s;   // smooth spin as ЗАВЪРТАНЕ changes
 }
 .mat-tex-btn {
   padding: 7px 10px;
@@ -1036,14 +1059,14 @@
   &:hover { border-color: #d4a96a; color: #d4a96a; }
   &.danger:hover { border-color: #e05555; color: #e05555; }
 }
-.mat-tile-row {
+.mat-tile-col {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   label {
-    flex: 1;
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 8px;
     font-size: 12px;
     color: var(--c-text-3);
     input {

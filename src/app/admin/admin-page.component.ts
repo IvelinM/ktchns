@@ -26,6 +26,13 @@ import { FAMILIES } from './webcad-families';
 import { disposeObj, normAnchor, anchorWrap, addEdges, colorObj, setEdgeColor, ghostify } from './webcad-object3d';
 import { buildScheduleText } from './webcad-schedule';
 
+/**
+ * Default base point (БАЗОВА ТОЧКА) for a newly placed family instance: ПЛАН centred
+ * (x/z = 0) and РАЗРЕЗ at the **bottom** (y = -1). With the instance placed at y = 0 the
+ * object therefore rests on the ground rather than being half-buried.
+ */
+const PLACE_ANCHOR: BasePoint = { x: 0, y: -1, z: 0 };
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 @Component({
@@ -454,6 +461,33 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.onMaterialEdited();
   }
 
+  /** Snap the texture-rotation slider to the nearest 45° increment when within 6°. */
+  snapTextureRotation(deg: number): number {
+    const nearest = Math.round(deg / 45) * 45;
+    return Math.abs(deg - nearest) <= 6 ? nearest : deg;
+  }
+
+  /**
+   * Pixel size of the texture preview frame, matching the Ш×В tile aspect ratio and
+   * fitted inside a fixed max box so it never overflows the dialog. The rotating inner
+   * image is sized to the box diagonal (`texPreviewInner`) so it always covers the frame.
+   */
+  private readonly TEX_PREVIEW_MAX = { w: 200, h: 150 };
+  texPreviewSize(def: MaterialDef): { w: number; h: number } {
+    const tw = def.textureW && def.textureW > 0 ? def.textureW : 1000;
+    const th = def.textureH && def.textureH > 0 ? def.textureH : 1000;
+    const { w: maxW, h: maxH } = this.TEX_PREVIEW_MAX;
+    const ratio = tw / th;
+    let w = maxW, h = maxW / ratio;
+    if (h > maxH) { h = maxH; w = maxH * ratio; }
+    return { w: Math.round(w), h: Math.round(h) };
+  }
+  /** Inner-image side ≥ the max frame diagonal, so it covers the frame at any rotation. */
+  get texPreviewInner(): number {
+    const { w, h } = this.TEX_PREVIEW_MAX;
+    return Math.ceil(Math.hypot(w, h));
+  }
+
   /** Remove a material from the library (keeps at least one); instances keep their name. */
   deleteMaterial(i: number) {
     if (this.materialDefs.length <= 1) return;
@@ -509,7 +543,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       material: '',
       materials: { ...this.currentMaterials },
       x: pos.x, y: 0, z: pos.z, rotY: 0,
-      anchor: { ...CENTRE_ANCHOR },
+      anchor: { ...PLACE_ANCHOR },   // РАЗРЕЗ = bottom → the object rests on the ground at y=0
     };
     this.instances.push(inst);
     this.spawnObject(inst);

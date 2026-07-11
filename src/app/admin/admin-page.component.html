@@ -86,7 +86,7 @@
       </details>
       <details class="param-sec" *ngIf="selectedFamily.materialParams?.length">
         <summary>МАТЕРИАЛИ</summary>
-        <div class="param-grid">
+        <div class="param-grid material-grid">
           <ng-container *ngFor="let mp of selectedFamily.materialParams">
             <label class="param-label">{{ mp.label }}</label>
             <div class="select-wrap">
@@ -224,7 +224,7 @@
         </details>
         <details class="param-sec" *ngIf="selectedFamilyDef!.materialParams?.length">
           <summary>МАТЕРИАЛИ</summary>
-          <div class="param-grid">
+          <div class="param-grid material-grid">
             <ng-container *ngFor="let mp of selectedFamilyDef!.materialParams">
               <label class="param-label">{{ mp.label }}</label>
               <div class="select-wrap">
@@ -575,16 +575,21 @@
             <div class="mat-field">
               <span>Текстура (JPG)</span>
               <div class="mat-tex-row">
-                <span class="mat-tex-preview" [class.empty]="!m.texture"
-                      [style.backgroundImage]="m.texture ? 'url(' + m.texture + ')' : ''"></span>
                 <input #texFile type="file" accept="image/*" hidden (change)="onTextureFile($event)">
                 <button type="button" class="mat-tex-btn" (click)="texFile.click()">{{ m.texture ? 'Смени…' : 'Добави…' }}</button>
                 <button type="button" class="mat-tex-btn danger" *ngIf="m.texture" (click)="clearMaterialTexture()">Премахни</button>
               </div>
+              <span class="mat-tex-preview" [class.empty]="!m.texture"
+                    [style.width.px]="texPreviewSize(m).w" [style.height.px]="texPreviewSize(m).h">
+                <span class="mat-tex-img" *ngIf="m.texture"
+                      [style.width.px]="texPreviewInner" [style.height.px]="texPreviewInner"
+                      [style.backgroundImage]="'url(' + m.texture + ')'"
+                      [style.transform]="'translate(-50%, -50%) rotate(' + (m.textureRotation || 0) + 'deg)'"></span>
+              </span>
             </div>
             <div class="mat-field" *ngIf="m.texture">
               <span>Размер на плочка (mm)</span>
-              <div class="mat-tile-row">
+              <div class="mat-tile-col">
                 <label>Ш<input type="number" min="1" step="1" [(ngModel)]="m.textureW" (ngModelChange)="onMaterialEdited()"></label>
                 <label>В<input type="number" min="1" step="1" [(ngModel)]="m.textureH" (ngModelChange)="onMaterialEdited()"></label>
               </div>
@@ -593,7 +598,7 @@
               <span>Завъртане на текстурата <em>{{ m.textureRotation || 0 }}°</em></span>
               <input type="range" min="0" max="360" step="1"
                      [ngModel]="m.textureRotation || 0"
-                     (ngModelChange)="m.textureRotation = +$event; onMaterialEdited()">
+                     (ngModelChange)="m.textureRotation = snapTextureRotation(+$event); onMaterialEdited()">
             </label>
 
             <label class="mat-field">

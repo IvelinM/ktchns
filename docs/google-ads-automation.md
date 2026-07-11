@@ -155,6 +155,21 @@ Lessons from actually driving this account — they save a lot of dead ends:
   locators: `getByRole`, `getByText`, `getByPlaceholder`.
 - **Read tables as text, not images.** `page.evaluate` over `[role="row"]` /
   `[role="gridcell"]` extracts metrics and search-term rows reliably and cheaply.
+- **⚠️ Tables hydrate asynchronously — `extract.js` right after `nav.js` reads an
+  EMPTY/partial table.** `nav.js` returns on `domcontentloaded`, seconds before the
+  grid renders, so a fully-populated table can come back as the header row only
+  (`ROWS:1`). This once produced a false "the call asset is missing" diagnosis when
+  it was live all along. **Always `sleep 6-9` (or `waitForTimeout(8000)`) before
+  extracting**, and treat `ROWS:1` / `hits: 0` from a fresh nav as "re-check," not
+  "absent." The conversion **Goals** page is a card UI (always `ROWS:0`) — read its
+  `innerText` instead.
+- **Screenshot path mangling inside heredoc scripts:** `page.screenshot({path:'C:\\Users\\…\\x.png'})`
+  writes a literal-named junk file in cwd. Use a **relative** name (`'x.png'`) or
+  `path.resolve('x.png')`.
+- **Read an asset's hidden state from the row, without opening it:** the row's
+  `aria-label^="Edit this Asset, currently"` control leaks the full resource JSON
+  (e.g. `callAsset {phoneNumber, callConversionReportingState, callConversionTypeId}`,
+  `policyInfo {approvalStatus}`). Invaluable for checking call-asset config/approval.
 - **URL quirks** (all need `ocid` + `campaignId`):
   - Positive keywords: `/aw/keywords` — `/aw/keywords/positive` **404s**.
   - Negative keywords: `/aw/keywords/negative` (singular) — `/negatives` **404s**.
@@ -184,17 +199,40 @@ detail lives in `ads-automation/NOTES.md` (machine-local); the durable lessons:
 - **Direct settings URLs 404** (`/aw/campaigns/settings`). Open settings by clicking
   the **"Campaign settings"** gear from any campaign sub-page. The drawer is "open"
   when a `material-expansionpanel:has-text("Bidding")` is visible.
+- **The settings drawer is a *virtualized* list** (`.slidealog-body`): panels far
+  down (Locations…) aren't in the DOM until scrolled in, and **`scrollTop` won't
+  render them — only real `mouse.wheel` events do.** Position the cursor over the
+  drawer centre and wheel in **small ~200px steps**, stopping the instant the target
+  panel appears; big steps overshoot and it virtualizes back out (you land on the
+  bottom "Other settings" skeletons). The verified end-to-end flow is
+  `loc-sofia-final2.js`.
 - **Location targeting** lives in that drawer's **Locations** panel
   (summary `Locations Bulgaria (country)`). Expanding it makes the summary text
   vanish, so detect success via the `"Enter another location"` radio, not the panel
-  text. The **Advanced search → Radius** sub-modal (place + value + `mi`/`km` unit)
-  is the most brittle thing to automate — prefer targeting a named city/region over
-  a radius when reliability matters. Set Location options to **Presence** (not
-  "…or interest") for a strictly-local business.
+  text. **Prefer Including a named city** (the autocomplete row "Sofia, Sofia City
+  Province, Bulgaria municipality" → its **`Include`** sub-button = the Sofia *city*;
+  avoid "Sofia Province" the oblast) over the brittle Advanced-search → Radius modal.
+  Set Location options to **"Presence: People in or regularly in your included
+  locations"** (not "…or interest"). **Saving pops a "You're removing some locations.
+  Continue?" dialog — you must click `Continue` in the same script** or the edit
+  reverts on detach.
 - **Negative keywords recipe:** click `material-fab[aria-label="Add negative
   keywords"]`, poll for the `aria-label^="Enter or paste"` textarea, `.fill()` one
   term per line (quotes = phrase, `[brackets]` = exact), Save, then verify against
-  the live table.
+  the live table (updates immediately).
+- **Positive keywords recipe** (`add-kw-exact.js`): button `[aria-label="Create
+  keywords"]` → a **"Select an ad group"** dialog first (click the ad group *scoped
+  to the dialog*, not the table link behind it) → fill `textarea[aria-label^="Enter"]`
+  → Save. New keywords are **"Under review" and hidden by the table's default
+  Enabled/Paused filter**, so verify via the post-save screenshot, not `extract.js`.
+- **Call assets:** the **"Edit call" form has only Country + Phone + ad schedule —
+  no conversion-counting toggle.** A call asset can serve and get taps yet carry
+  `callConversionReportingState: DISABLED` (calls reported as metrics but **not
+  counted** as "Calls from ads" conversions); **recreating the asset does NOT clear
+  this** (confirmed). Account-level **Call reporting** is at `/aw/settings/account`
+  ("Account settings"), separate from `/aw/settings` (Campaign settings). The
+  "Create → Call" menu item is flaky — it often resolves to the asset-type filter
+  chip instead of the create form.
 
 ## Hygiene
 
