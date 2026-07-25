@@ -60,7 +60,7 @@ The site is served from the custom domain **viaminima.design**, so `baseHref` is
 
 ## Contact details & the phone-number guardrail
 
-⚠️ **Only the business number `+359 2 4374685` (`tel:+35924374685`) may ever appear publicly** — on the site, in structured data (`index.html` JSON-LD), or in Google Ads. The owner's **personal mobile must never be exposed**: a personal-number Google Ads *call asset* once leaked it and caused misdirected calls. Never add a non-business phone number to the site, schema, or ads, and **never write a personal number into this repo** (it is **public** on GitHub) — keep such details in local Claude memory only.
+⚠️ **Only the business number `+359 888 152 776` (`tel:+359888152776`) may ever appear publicly** — on the site, in structured data (`index.html` JSON-LD), or in Google Ads. The owner's **personal mobile must never be exposed**: a personal-number Google Ads *call asset* once leaked it and caused misdirected calls. Never add a non-business phone number to the site, schema, or ads, and **never write a personal number into this repo** (it is **public** on GitHub) — keep such details in local Claude memory only.
 
 The studio address (Sofia, Vitosha district) lives in `AppComponent`'s `translations.*.contactAddress` and the `index.html` JSON-LD `PostalAddress`.
 

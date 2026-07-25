@@ -18,7 +18,7 @@ changes. Account `ocid=8261308789`, `campaignId=23874236561`. Scripts in
 - **One change at a time**, and **verify each** against the live UI after saving.
 - The owner's business is **Sofia-only, whole-kitchen orders** (no single
   cabinets/modular, no other cities). Personal phone `0885272317` must never appear;
-  only business `024374685` / `+359 2 4374685`.
+  only business `0888152776` / `+359 888 152 776`.
 
 ## Critical automation fact
 

@@ -28,7 +28,7 @@ Use `nav.js <url> <out.png>` to load, then `extract.js` to dump the table as tex
    queries → spot competitor brands, single-item/modular searches, and browsing
    intent to negate.
 6. **Call assets** — `.../aw/assetreport/associations?assetType=CALL&ocid=...`.
-   Confirm only the business number `024374685` serves (see google-ads-phone
+   Confirm only the business number `0888152776` serves (see google-ads-phone
    guidance in `docs/google-ads-campaign-notes.md`).
 
 ## Output

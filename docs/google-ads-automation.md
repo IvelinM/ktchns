@@ -115,7 +115,7 @@ Apply only with the user's go-ahead, ideally one change at a time:
 1. **Call conversion tracking (highest leverage).** Conversions → New → Phone calls:
    "Calls from ads" (call asset, count calls ≥ ~30–60s) and/or website-number calls.
    Without this nothing else can optimise for calls.
-2. **Call assets** — add the business number (`+359 2 4374685`) so ads show a call
+2. **Call assets** — add the business number (`+359 888 152 776`) so ads show a call
    button (drives mobile taps-to-call). ⚠️ **Only the business number may be used.**
    Audit existing call assets / ad copy and remove any personal/non-business number
    (a personal-number call asset previously leaked the owner's mobile and caused

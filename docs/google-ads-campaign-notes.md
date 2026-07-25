@@ -4,7 +4,7 @@ Working notes on the Via Minima Google Ads account: current state, diagnosis,
 what's been changed, and the prioritized next steps. For *how* to drive/inspect
 the account, see `google-ads-automation.md`.
 
-> Last reviewed: **2026-06-15**.
+> Last reviewed: **2026-07-26**.
 
 ## Account & campaign
 
@@ -66,6 +66,21 @@ All **Broad match** in Ad group 1. Spend concentrated on generic furniture terms
   (single-cabinet / modular parts), `зора`, `ирим` (competitor brands),
   `идеи`, `снимки`, `безплатно` (low-intent browsing). Note: `шкаф` is broad — it
   also blocks legit "кухненски шкафове"; remove if it over-restricts.
+
+## Changes made (2026-07-26)
+
+- **Business phone number changed** from the old landline `+359 2 4374685`
+  (`024374685`) to the new business number `+359 888 152 776` (`0888152776`),
+  both on the site (see `CLAUDE.md` guardrail) and in the Google Ads account.
+- **Edited the existing account-level Call asset in place** (via the "Edit call"
+  form — Country + Phone number are the only editable fields) rather than
+  remove+recreate. Verified via `find-phone.js`: zero hits for the old number
+  afterward, and the Assets → Call associations table shows a single asset with
+  the new number, `Pending / Under review` (expected for any freshly edited call
+  asset — see the 2026-06-23 notes on `callConversionReportingState`).
+- The leaked personal number is still pre-filled in the same abandoned
+  Performance Max draft noted 2026-06-15 — unaffected by this change, still not
+  a saved draft.
 
 ## Diagnosis confirmed (2026-06-15)
 
