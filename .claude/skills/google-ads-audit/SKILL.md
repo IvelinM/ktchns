@@ -13,6 +13,13 @@ All commands run from `C:\Users\MATEV\ads-automation\`.
 
 Use `nav.js <url> <out.png>` to load, then `extract.js` to dump the table as text.
 
+> ⚠️ **`extract.js`/`find-phone.js` race the async table render** — run them
+> immediately after `nav.js` and a *fully-populated* table returns the header row
+> only (`ROWS:1`) or `hits: 0`, which **looks empty**. This once caused a false "no
+> call asset" diagnosis. **`sleep 6-9` after `nav.js` before extracting**, and treat
+> an empty result from a fresh nav as "re-check," never "absent." Details in
+> `ads-automation/NOTES.md`.
+
 1. **Conversion tracking** — `https://ads.google.com/aw/conversions?ocid=8261308789`.
    A persistent "Set up conversion tracking" banner or an empty Summary = **not
    tracked**. This is almost always the #1 issue: with `Maximize clicks` and no
@@ -29,7 +36,16 @@ Use `nav.js <url> <out.png>` to load, then `extract.js` to dump the table as tex
    intent to negate.
 6. **Call assets** — `.../aw/assetreport/associations?assetType=CALL&ocid=...`.
    Confirm only the business number `024374685` serves (see google-ads-phone
-   guidance in `docs/google-ads-campaign-notes.md`).
+   guidance in `docs/google-ads-campaign-notes.md`). **Read the asset's hidden
+   state** without opening it: hover the row and read the
+   `aria-label^="Edit this Asset, currently"` control — it leaks
+   `callAsset {phoneNumber, callConversionReportingState, callConversionTypeId}` +
+   `approvalStatus` (use `check-callstate.js`). **A call asset can be approved and
+   getting taps yet have `callConversionReportingState: DISABLED`** → calls are
+   *reported as metrics but not counted* as "Calls from ads" conversions. So "0
+   conversions" can mean (a) this DISABLED flag, **or** (b) genuinely no tap became a
+   ≥60s call — don't assume a tracking bug; taps ≠ connected calls. Account-level
+   **Call reporting** lives at `/aw/settings/account` (separate from the asset).
 
 ## Output
 

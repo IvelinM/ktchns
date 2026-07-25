@@ -102,6 +102,75 @@ broad → phrase), and set up call-conversion tracking. **Location, keyword
 tightening, and conversion tracking are still to do** — the location edit via UI
 automation is fragile (see `google-ads-automation.md` → "Editing the UI").
 
+## Changes made (2026-06-23)
+
+- **+1 negative** `"виденов"` (phrase) at campaign level → competitor brand seen in
+  search terms (`кухни виденов`, 36 impr). Now **20 negatives total**.
+- **+2 exact keywords** to Ad group 1: `[кухня по поръчка]`, `[кухни по поръчка]`
+  (were only Broad before). Added via "Create keywords"; show as **Under review**
+  initially (hidden by the table's Enabled/Paused filter until Eligible).
+- **Location tightened → Sofia, presence-only.** Was whole-country **Bulgaria**
+  (presence-or-interest). Now targets **"Sofia, Sofia City Province, Bulgaria
+  municipality"** with Location options = **"Presence: people in or regularly in your
+  included locations"**. Verified in the Locations report (targeted location now reads
+  *Sofia, Sofia City Province, Bulgaria*). Note Sofia traffic already had ~14.7% CTR vs
+  4.7% country-wide — higher intent. *(Automation note: the settings drawer is a
+  virtualized list — scroll it in small ~200px wheel steps over `.slidealog-body` and
+  stop the instant the Locations panel renders, or it virtualizes back out. Save pops a
+  "You're removing some locations — Continue?" dialog that must be confirmed **in the
+  same script** before detach. See `loc-sofia-final2.js`.)*
+
+### Call-asset recreate — owner did it manually (result: flag NOT cleared)
+
+Owner approved recreating the call asset to flip `callConversionReportingState`
+DISABLED → counting. The automation couldn't drive the add-call flow reliably (the
+"Create → Call" menu item kept resolving to the asset-type **filter chip**; page hit a
+transient "You got disconnected"), so the **owner recreated it manually**.
+
+**Outcome (verified `check-callstate.js`):** new asset `024374685` is **Account-level**,
+`Pending / Under review` (created Jun 23) — old campaign-level one gone, no duplicate.
+**BUT it STILL reads `callConversionReportingState: DISABLED`** (`callConversionTypeId:
+179`). So **recreating did NOT auto-enable call-conversion counting** — at least not
+while Under review. Account **Call reporting** is `On` (`/aw/settings/account`) with no
+conversion-action link exposed there; the asset Edit form has no toggle for it.
+
+**Two non-exclusive readings of "0 conversions":** (a) the DISABLED flag blocks
+counting — may flip to "use account-level call conversion" once the asset is
+**Approved** (~1 day); (b) it's partly **real** — call-asset "clicks" are taps, and
+few low-intent (old whole-Bulgaria) taps became ≥60s calls. **Next:** re-check the
+flag + first counted call **after approval**; if still DISABLED/0 despite a genuine
+60s+ call, the per-asset state likely needs the **Google Ads API** (UI exposes no
+toggle). Optional now: lower the "Calls from ads" threshold 60s → 30s.
+
+## Diagnosis corrected (2026-06-23) — the call asset is NOT missing
+
+⚠️ A first read of the CALL associations report looked **empty** and suggested no
+call asset — that was a **page-load timing artifact** (`extract.js`/`find-phone.js`
+raced the async table render). On a full-wait re-read the asset is live:
+
+- **Call asset `024374685`** — Campaign-level, **APPROVED / Eligible**, serving since
+  May 31. Last 30 days: **30 clicks (call-button taps), 2,049 impr, €6.32**. So the
+  ad *does* show a tap-to-call button and people *are* tapping it.
+- But the asset's internal state is **`callConversionReportingState: DISABLED`**
+  (countryCode BG, callConversionTypeId 179). Account-level **Call reporting is
+  "Turned on"** (Account settings), so calls are *reported as metrics* but **not
+  counted as conversions** for this asset.
+- Hence **"Phone call leads" conversion = 0** despite 30 taps. The conversion action
+  ("Calls from ads", exists & active) literally has nothing to count.
+- The asset **Edit** form (Bulgaria + number + ad schedule under Advanced options)
+  exposes **no call-conversion toggle** — so flipping `callConversionReportingState`
+  cleanly means **deleting + recreating** the asset (a fresh asset with account
+  reporting on + a call conversion action defaults to counting calls). Not done —
+  sensitive, confirm with owner first (re-review risk).
+- Note: the personal number `0885272317` still appears only inside the **abandoned
+  PMax draft** payload on the page — not a live asset. Leave/abandon that draft.
+
+**Net:** the dominant reason for "no calls" is now **traffic quality** — whole-country
+targeting + broad generic furniture keywords produce low-intent, out-of-area taps that
+don't become 60s+ kitchen-order calls. Location tightening (still **Bulgaria**, #3
+below) is the biggest untouched lever; the asset conversion-counting fix is secondary
+(measurement only).
+
 ## Roadmap (priority order)
 
 1. **Call-conversion tracking + a call asset** (highest leverage; native, no site

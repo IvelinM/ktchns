@@ -1,0 +1,51 @@
+focus on the webcad feature of the project available on the /admin route. Apply these improvements to: 
+1. I want when an object is selected to have it deleted not only with the delete button but as well as by pressing del on the keyboard
+2. When in a move command I want you to mark the distance between the start point of the movement and the mouse cursor until the end point of the move is selected
+2. Instead of Cabinet 1, Cabinet 2, name the models МОДУЛ 1, МОДУЛ 2, ...
+3. I should be able to snap the 3D workspace 0,0,0 point while moving
+
+
+a few more improvements:
+1. when a move is in progress and the first point of the move is selected when shift is pressed I want the move to be with unchanged value for one of the axes of the plane on which the move is being processed. e.x. if the move is in the 0x-0y plane whn shift key is pressed and the coordinates of the mouse are with obviously larger 0y deviation from the start point then the movement should have the y movement be 0
+
+introduce also the copy command which is similar to move but requires a selection first to be available, then the selection copies as a new object
+
+I want to be able to choose which side of the ploskost family should have pvc edge, so not only one checkbox should be available for this family
+
+a few more improvements:
+1. I want to be able to add material to the laminated chipboard using a single input in the МОДУЛ object which defines what material every specific ploskost inside this family is made of e.x. ГЛАДКО БЯЛО КОРПУС
+2. Rename the Cabinet family to КОРПУС and add some more parameters for it "БЕЗ_ГРЪБ" which should remove the back of this КОРПУС module, "БЕЗ_ЛЯВА_СТРАНИЦА" which should remove/hide the left ploskost, "БЕЗ_ДЯСНА_СТРАНИЦА"
+3. create one more family which should consist of the КОРПУС family but with one more ploskost for the door of this cabinet
+
+
+a few more improvements:
+1. Add these parameters to the КОРПУС family but КОРПУС С ВРАТА should have those as well: БЕЗ_ТАВАН, БЕЗ_ДЪНО, БЕЗ_ВРАТИЧКА
+2. Add these parameters: ГРЪБ_ВИДИМ_КАНТ_ОТЛЯВО = if this is checked the back of the cabinet has to have its edge overlap the ЛЯВА_СТРАНИЦА, if set to false, ЛЯВА_СТРАНИЦА should overlap the left edge of the back. Do the same for ГРЪБ_ВИДИМ_КАНТ_ОТДЯСНО, ГРЪБ_ВИДИМ_КАНТ_ОТГОРЕ, ГРЪБ_ВИДИМ_КАНТ_ОТДОЛУ, ТАВАН_ВИДИМ_КАНТ_ОТЛЯВО, КАНТ_ВИДИМ_КАНТ_ОТДЯСНО, ДЪНО_ВИДИМ_КАНТ_ОТЛЯВО, ДЪНО_ВИДИМ_КАНТ_ОТДЯСНО
+make the rotation with a slider instead of a simple input
+
+it seems now the parameters are not working. change the parameters БЕЗ_ГРЪБ, БЕЗ_ЛЯВА_СТРАНИЦА, БЕЗ_ДЯСНА_СТРАНИЦА (all БЕЗ_... parameters) to the oposite- С_ГРЪБ, С_ЛЯВА_СТРАНИЦА, С_ДЯСНА_СТРАНИЦА and make them true by default but when unchecked the elements should get hidden/removed from their family instance. 
+
+can you introduce a button which generates Schedule quantities with these columns:
+МАТЕРИАЛ, РАЗМЕР 1, РАЗМЕР 2, БРОЙ, КАНТ РАЗМЕР 1 ОТПРЕД, КАНТ РАЗМЕР 1 ОТЗАД, КАНТ РАЗМЕР 2 ОТПРЕД, КАНТ РАЗМЕР 2 ОТЗАД
+
+add a few more parameters: ДЪНО С КАНТ ОТЛЯВО, ДЪНО С КАНТ ОТДЯСНО, ЛЯВА СТРАНИЦА С КАНТ ОТПРЕД, ДЯСНА СТРАНИЦА С КАНТ ОТПРЕД, ТАВАН С КАНТ ОТПРЕД, ДЪНО С КАНТ ОТПРЕД - which should control the PVC edge for those ploskost elements
+
+add one more tool - Match - first select an instance then every other instance of an object selected should take the first selections properties and apply them to itself. Match could only be applied to similar by type families e.x. you can't match ploskost instance with КОРПУС С ВРАТА instances
+
+I want to be able to save my current 3d scene so please create a function with which I can save my current 3d scene state as a json object describing it, all objects, their coordinates and their properties. This means I need a second function which opens/imports existing json descriptions of previous 3d scenes states and recreates them, all their objects, coordinates and properties
+
+above the parameters section there should be a 3 x 3 radio button matrix which
+  will define the location of the center for the selected family. If the top
+  right radio button is selected, then when height is changed it should not move
+  the top right corner of the family but expand or shring according to the new
+  height from it. Also changed width should not
+  
+  
+is it possible to be able to select each element from a specific family instance by pressing TAB key and mouse hovered over it - first should be the family instance 
+itself but when TAB pressed the first element in front of the mouse. when an element which is part of a family instance is selected its parameters won't available for changes but should be visible for the user to check just disabled.
+
+rename the Ploskost family to ПЛОСКОСТ
+
+create a new tool called СТЕНА and it should draw vertical solids with specific thickness and specific height out of a line drawn on the 0x-0z plane
+
+remove the image texture from the wall family. also when drawing walls and the starting point is already selected and Shift is pressed then the end point should sit only in a plane parralel to the 0x-0y or 0z-0y

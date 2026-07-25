@@ -1,0 +1,652 @@
+<div class="admin-layout">
+
+  <!-- ── Control panel ── -->
+  <aside class="control-panel">
+
+    <!-- ── File menu ── -->
+    <div class="menubar">
+      <div #fileMenu class="menu" [class.open]="fileMenuOpen">
+        <button class="menu-summary" (click)="toggleFileMenu()">
+          File
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="menu-dropdown" *ngIf="fileMenuOpen">
+          <button class="menu-item" (click)="fileMenuOpen = false; saveScene()" [disabled]="instances.length === 0">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+              <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+            </svg>
+            Save scene…
+          </button>
+          <button class="menu-item" (click)="fileMenuOpen = false; sceneFileInput.click()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            Open scene…
+          </button>
+          <div class="menu-sep"></div>
+          <label class="menu-check">
+            <input type="checkbox" [(ngModel)]="itemize">
+            Itemize every instance
+          </label>
+          <button class="menu-item" (click)="fileMenuOpen = false; exportSchedule()" [disabled]="instances.length === 0">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/>
+            </svg>
+            Спецификация (.txt)
+          </button>
+        </div>
+      </div>
+      <input #sceneFileInput type="file" accept="application/json,.json" (change)="loadScene($event)" hidden>
+    </div>
+
+    <!-- ── Place new object (only when nothing is selected) ── -->
+    <section class="panel-section" *ngIf="selectedIds.size === 0 && !selectedPanel">
+      <h2>FAMILY</h2>
+      <div class="select-wrap">
+        <select [(ngModel)]="selectedFamilyId" (ngModelChange)="onFamilyChange()">
+          <option *ngFor="let f of pickableFamilies" [value]="f.id">{{ f.name }}</option>
+        </select>
+        <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </div>
+
+      <!-- one param row for the "place new" grid -->
+      <ng-template #placeParam let-p>
+        <label class="param-label">{{ p.label }}</label>
+        <ng-container *ngIf="(p.type ?? 'number') === 'toggle'; else numIn">
+          <div class="toggle-wrap">
+            <input type="checkbox"
+                   [checked]="currentParams[p.key] === 1"
+                   (change)="currentParams[p.key] = $any($event.target).checked ? 1 : 0">
+          </div>
+        </ng-container>
+        <ng-template #numIn>
+          <div class="param-input-wrap">
+            <input type="number" [(ngModel)]="currentParams[p.key]" [min]="p.min" [step]="p.step">
+            <span class="param-unit">{{ p.unit }}</span>
+          </div>
+        </ng-template>
+      </ng-template>
+
+      <div class="param-grid mt">
+        <ng-container *ngFor="let p of grouped(selectedFamily).top">
+          <ng-container *ngTemplateOutlet="placeParam; context: { $implicit: p }"></ng-container>
+        </ng-container>
+      </div>
+      <details class="param-sec" *ngFor="let sec of grouped(selectedFamily).sections">
+        <summary>{{ sec.title }}</summary>
+        <div class="param-grid">
+          <ng-container *ngFor="let p of sec.params">
+            <ng-container *ngTemplateOutlet="placeParam; context: { $implicit: p }"></ng-container>
+          </ng-container>
+        </div>
+      </details>
+      <details class="param-sec" *ngIf="selectedFamily.materialParams?.length">
+        <summary>МАТЕРИАЛИ</summary>
+        <div class="param-grid material-grid">
+          <ng-container *ngFor="let mp of selectedFamily.materialParams">
+            <label class="param-label">{{ mp.label }}</label>
+            <div class="select-wrap">
+              <select [(ngModel)]="currentMaterials[mp.key]">
+                <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
+              </select>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+          </ng-container>
+        </div>
+      </details>
+
+      <button class="place-btn" (click)="startPlacing()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" aria-hidden="true">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        Place in Scene
+      </button>
+    </section>
+
+    <!-- ── Multi-select banner ── -->
+    <section class="panel-section multi-select-section" *ngIf="selectedIds.size > 1">
+      <div class="selected-header">
+        <span class="sel-dot"></span>
+        <span class="sel-label">{{ selectedIds.size }} objects selected</span>
+      </div>
+    </section>
+
+    <!-- ── Selected family element (read-only) ── -->
+    <section class="panel-section selected-section" *ngIf="selectedPanel">
+      <div class="selected-header">
+        <span class="sel-dot"></span>
+        <span class="sel-label">{{ selectedPanel.name }}</span>
+      </div>
+      <p class="readonly-note">Елемент от модул — само за преглед</p>
+
+      <div class="detail-group">
+        <span class="detail-title">Материал</span>
+        <div class="param-input-wrap"><input type="text" [value]="selectedPanel.material" disabled></div>
+      </div>
+
+      <div class="detail-group">
+        <span class="detail-title">РАЗМЕРИ С КАНТ (mm)</span>
+        <div class="param-grid">
+          <label class="param-label">РАЗМЕР 1</label>
+          <div class="param-input-wrap"><input type="number" [value]="selectedPanel.size1" disabled><span class="param-unit">mm</span></div>
+          <label class="param-label">РАЗМЕР 2</label>
+          <div class="param-input-wrap"><input type="number" [value]="selectedPanel.size2" disabled><span class="param-unit">mm</span></div>
+          <label class="param-label">ДЕБЕЛИНА</label>
+          <div class="param-input-wrap"><input type="number" [value]="selectedPanel.thickness" disabled><span class="param-unit">mm</span></div>
+          <label class="param-label">КАНТ</label>
+          <div class="param-input-wrap"><input type="number" [value]="selectedPanel.kant" disabled><span class="param-unit">mm</span></div>
+        </div>
+      </div>
+
+      <div class="detail-group">
+        <span class="detail-title">РАЗМЕРИ БЕЗ КАНТ (mm)</span>
+        <div class="param-grid">
+          <label class="param-label">РАЗМЕР 1</label>
+          <div class="param-input-wrap"><input type="number" [value]="selectedPanel.core1" disabled><span class="param-unit">mm</span></div>
+          <label class="param-label">РАЗМЕР 2</label>
+          <div class="param-input-wrap"><input type="number" [value]="selectedPanel.core2" disabled><span class="param-unit">mm</span></div>
+        </div>
+      </div>
+
+      <div class="detail-group">
+        <span class="detail-title">PVC Кант</span>
+        <div class="param-grid">
+          <label class="param-label">AB</label><div class="toggle-wrap"><input type="checkbox" [checked]="selectedPanel.pvc[0]" disabled></div>
+          <label class="param-label">BC</label><div class="toggle-wrap"><input type="checkbox" [checked]="selectedPanel.pvc[1]" disabled></div>
+          <label class="param-label">CD</label><div class="toggle-wrap"><input type="checkbox" [checked]="selectedPanel.pvc[2]" disabled></div>
+          <label class="param-label">DA</label><div class="toggle-wrap"><input type="checkbox" [checked]="selectedPanel.pvc[3]" disabled></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Selected object ── -->
+    <section class="panel-section selected-section" *ngIf="selectedInstance && selectedFamilyDef">
+      <div class="selected-header">
+        <span class="sel-dot"></span>
+        <span class="sel-label">{{ selectedInstance.label }}</span>
+      </div>
+
+      <!-- Material (laminate spec for this module) -->
+      <div class="detail-group">
+        <span class="detail-title">Материал</span>
+        <div class="param-input-wrap">
+          <input type="text" [(ngModel)]="selectedInstance!.material" (focus)="beginEdit()" (ngModelChange)="commitPendingEdit()" placeholder="напр. ГЛАДКО БЯЛО КОРПУС">
+        </div>
+      </div>
+
+      <!-- Family params -->
+      <div class="detail-group">
+        <span class="detail-title">Parameters</span>
+
+        <!-- one param row for the "selected object" grid -->
+        <ng-template #selParam let-p>
+          <label class="param-label">{{ p.label }}</label>
+          <ng-container *ngIf="(p.type ?? 'number') === 'toggle'; else numInSel">
+            <div class="toggle-wrap">
+              <input type="checkbox"
+                     [checked]="selectedInstance!.params[p.key] === 1"
+                     (focus)="beginEdit()"
+                     (change)="selectedInstance!.params[p.key] = $any($event.target).checked ? 1 : 0; rebuildSelected()">
+            </div>
+          </ng-container>
+          <ng-template #numInSel>
+            <div class="param-input-wrap">
+              <input type="number"
+                     [(ngModel)]="selectedInstance!.params[p.key]"
+                     (focus)="beginEdit()"
+                     (ngModelChange)="rebuildSelected()"
+                     [min]="p.min" [step]="p.step">
+              <span class="param-unit">{{ p.unit }}</span>
+            </div>
+          </ng-template>
+        </ng-template>
+
+        <div class="param-grid">
+          <ng-container *ngFor="let p of grouped(selectedFamilyDef!).top">
+            <ng-container *ngTemplateOutlet="selParam; context: { $implicit: p }"></ng-container>
+          </ng-container>
+        </div>
+        <details class="param-sec" *ngFor="let sec of grouped(selectedFamilyDef!).sections">
+          <summary>{{ sec.title }}</summary>
+          <div class="param-grid">
+            <ng-container *ngFor="let p of sec.params">
+              <ng-container *ngTemplateOutlet="selParam; context: { $implicit: p }"></ng-container>
+            </ng-container>
+          </div>
+        </details>
+        <details class="param-sec" *ngIf="selectedFamilyDef!.materialParams?.length">
+          <summary>МАТЕРИАЛИ</summary>
+          <div class="param-grid material-grid">
+            <ng-container *ngFor="let mp of selectedFamilyDef!.materialParams">
+              <label class="param-label">{{ mp.label }}</label>
+              <div class="select-wrap">
+                <select [ngModel]="materialOf(selectedInstance!, mp.key)"
+                        (focus)="beginEdit()"
+                        (ngModelChange)="setMaterial(mp.key, $event)">
+                  <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
+                </select>
+                <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </div>
+            </ng-container>
+          </div>
+        </details>
+
+        <!-- Base point: pick which bbox point x/y/z refers to (ПЛАН = top-down, РАЗРЕЗ = front) -->
+        <div class="basepoint" *ngIf="selectedInstance && selectedInstance.familyId !== 'wall' && selectedInstance.familyId !== 'slab'">
+          <span class="bp-title">БАЗОВА ТОЧКА</span>
+          <div class="bp-grids">
+            <div class="bp-square">
+              <span class="bp-name">ПЛАН</span>
+              <div class="bp-grid">
+                <ng-container *ngFor="let r of cells">
+                  <button *ngFor="let c of cells" type="button" class="bp-cell"
+                          [class.on]="planActive(r, c)" (click)="pickPlan(r, c)"
+                          [attr.aria-label]="'ПЛАН ' + r + ',' + c"></button>
+                </ng-container>
+              </div>
+            </div>
+            <div class="bp-square">
+              <span class="bp-name">РАЗРЕЗ</span>
+              <div class="bp-grid bp-grid--col">
+                <button *ngFor="let r of cells" type="button" class="bp-cell"
+                        [class.on]="sectActive(r)" (click)="pickSect(r)"
+                        [attr.aria-label]="'РАЗРЕЗ ' + r"></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Derived cut sizes (Ploskost): without edge banding (read-only) -->
+      <div class="detail-group" *ngIf="selectedPloskostSizes as sz">
+        <span class="detail-title">РАЗМЕРИ БЕЗ КАНТ (mm)</span>
+        <div class="param-grid">
+          <label class="param-label">РАЗМЕР 1</label>
+          <div class="param-input-wrap"><input type="number" [value]="sz.core1" disabled><span class="param-unit">mm</span></div>
+          <label class="param-label">РАЗМЕР 2</label>
+          <div class="param-input-wrap"><input type="number" [value]="sz.core2" disabled><span class="param-unit">mm</span></div>
+        </div>
+      </div>
+
+      <!-- Position -->
+      <div class="detail-group">
+        <span class="detail-title">Position (mm)</span>
+        <div class="xyz-row">
+          <label>x<input type="number" [(ngModel)]="selectedInstance!.x" (focus)="beginEdit()" (ngModelChange)="updatePosition()" step="1"></label>
+          <label>y<input type="number" [(ngModel)]="selectedInstance!.y" (focus)="beginEdit()" (ngModelChange)="updatePosition()" step="1"></label>
+          <label>z<input type="number" [(ngModel)]="selectedInstance!.z" (focus)="beginEdit()" (ngModelChange)="updatePosition()" step="1"></label>
+        </div>
+      </div>
+
+      <!-- Rotation -->
+      <div class="detail-group">
+        <span class="detail-title">Rotation Y — {{ selectedInstance!.rotY }}°</span>
+        <input type="range" min="0" max="360" step="1" class="rot-slider"
+               [(ngModel)]="selectedInstance!.rotY" (focus)="beginEdit()" (ngModelChange)="updateRotation()">
+      </div>
+
+    </section>
+
+    <!-- ── Scene list ── -->
+    <section class="panel-section scene-section">
+      <div class="section-header">
+        <h2>SCENE</h2>
+        <span class="badge">{{ instances.length }}</span>
+      </div>
+
+      <div class="inst-list" *ngIf="instances.length > 0; else emptyScene">
+        <div class="inst-row"
+             *ngFor="let inst of instances; trackBy: trackById"
+             [class.active]="selectedIds.has(inst.id)"
+             (click)="clickList(inst.id)">
+          <span class="inst-dot" [class.sel]="selectedIds.has(inst.id)"></span>
+          <span class="inst-name">{{ inst.label }}</span>
+          <span class="inst-family">{{ getFamilyDef(inst.familyId).name }}</span>
+        </div>
+      </div>
+      <ng-template #emptyScene>
+        <p class="empty-hint">Set parameters and click "Place in Scene".</p>
+      </ng-template>
+    </section>
+
+  </aside>
+
+  <!-- ── Viewport ── -->
+  <main class="viewport">
+    <canvas #rendererCanvas></canvas>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <button class="tool-btn" title="Move (M)" [disabled]="!canEdit" (click)="startMove()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/>
+          <polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/>
+          <line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/>
+        </svg>
+        Move
+      </button>
+      <button class="tool-btn" title="Copy" [disabled]="!canEdit" (click)="startCopy()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <rect x="9" y="9" width="13" height="13" rx="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        Copy
+      </button>
+      <button class="tool-btn" title="Array" [disabled]="!canEdit" (click)="startArray()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/>
+          <rect x="9" y="15" width="6" height="6" rx="1"/>
+        </svg>
+        Array
+      </button>
+      <label class="tool-count" title="Array: number of copies">
+        ×<input type="number" min="1" step="1" [(ngModel)]="arrayCount">
+      </label>
+      <button class="tool-btn" [class.active]="mode === 'match'"
+              title="Match — select one object, then click others of the same type to copy its properties onto them"
+              [disabled]="!canMatch && mode !== 'match'" (click)="mode === 'match' ? cancelMode() : startMatch()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/>
+          <path d="M11 7h3a2 2 0 0 1 2 2v4"/>
+        </svg>
+        Match
+      </button>
+      <button class="tool-btn danger" title="Delete (Del)" [disabled]="!canEdit" (click)="deleteSelected()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>
+        </svg>
+        Delete
+      </button>
+      <span class="tool-sep"></span>
+      <button class="tool-btn" [class.active]="mode === 'wall-from' || mode === 'wall-to'"
+              title="Стена — нарисувай стена с две кликвания върху пода" [disabled]="!canWall && mode !== 'wall-from' && mode !== 'wall-to'"
+              (click)="(mode === 'wall-from' || mode === 'wall-to') ? cancelMode() : startWall()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="1"/>
+          <line x1="3" y1="9.3" x2="21" y2="9.3"/><line x1="3" y1="14.7" x2="21" y2="14.7"/>
+          <line x1="9" y1="4" x2="9" y2="9.3"/><line x1="15" y1="9.3" x2="15" y2="14.7"/><line x1="9" y1="14.7" x2="9" y2="20"/>
+        </svg>
+        Стена
+      </button>
+      <button class="tool-btn" [class.active]="mode === 'slab-from' || mode === 'slab-to'"
+              title="Плоча — нарисувай затворен контур върху пода за плътна плоча" [disabled]="!canSlab && mode !== 'slab-from' && mode !== 'slab-to'"
+              (click)="(mode === 'slab-from' || mode === 'slab-to') ? cancelMode() : startSlab()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polygon points="3 8 10 4 21 9 14 13 3 8"/>
+          <path d="M3 8v4l11 5 7-4V9"/>
+        </svg>
+        Плоча
+      </button>
+      <button class="tool-btn" title="Measure" [disabled]="!canMeasure" (click)="startMeasure()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M2 12 L12 2 L22 12 L12 22 Z"/><path d="M7 7l2 2"/><path d="M12 4l2 2"/><path d="M17 7l-2 2"/>
+        </svg>
+        Measure
+      </button>
+      <span class="tool-sep"></span>
+
+      <!-- Visualisation dropdown: Render · Materials · Settings -->
+      <div #visMenu class="tool-menu" [class.open]="visMenuOpen">
+        <button class="tool-btn" [class.active]="renderMode || materialsDialogOpen || settingsDialogOpen || visMenuOpen"
+                title="Visualisation" (click)="toggleVisMenu()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
+          </svg>
+          Visualisation
+          <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="tool-dropdown" *ngIf="visMenuOpen">
+          <button class="menu-item" [class.on]="renderMode" (click)="visMenuOpen = false; toggleRender()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18"/><circle cx="12" cy="12" r="3.2"/>
+            </svg>
+            Render
+            <span class="menu-state" *ngIf="renderMode">●</span>
+          </button>
+          <button class="menu-item" [class.on]="materialsDialogOpen" (click)="visMenuOpen = false; toggleMaterials()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="13.5" cy="6.5" r="2.5"/><circle cx="6.5" cy="11.5" r="2.5"/><circle cx="16.5" cy="13.5" r="2.5"/>
+              <path d="M12 2a10 10 0 1 0 0 20 2 2 0 0 0 1.7-3 2 2 0 0 1 1.6-3H19a3 3 0 0 0 3-3 10 10 0 0 0-10-8z"/>
+            </svg>
+            Materials
+          </button>
+          <button class="menu-item" [class.on]="settingsDialogOpen" (click)="openSettings()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            Settings
+          </button>
+        </div>
+      </div>
+
+      <!-- Dark / light theme toggle -->
+      <button class="tool-btn" [class.active]="lightTheme"
+              [title]="lightTheme ? 'Светла тема — превключи към тъмна' : 'Тъмна тема — превключи към светла'" (click)="toggleTheme()">
+        <svg *ngIf="!lightTheme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+        <svg *ngIf="lightTheme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+        </svg>
+        {{ lightTheme ? 'Light' : 'Dark' }}
+      </button>
+    </div>
+
+    <!-- Mode overlay -->
+    <div class="mode-overlay" *ngIf="mode !== 'idle'">
+      <span class="mode-pill"
+            [class.placing]="mode === 'placing' || mode === 'wall-from' || mode === 'wall-to' || mode === 'slab-from' || mode === 'slab-to'"
+            [class.moving]="mode === 'move-from' || mode === 'move-to'"
+            [class.measuring]="mode === 'measure-from' || mode === 'measure-to' || mode === 'match'">
+        {{ mode === 'placing' ? 'PLACE'
+           : mode === 'match' ? 'MATCH'
+           : (mode === 'wall-from' || mode === 'wall-to') ? 'СТЕНА'
+           : (mode === 'slab-from' || mode === 'slab-to') ? 'ПЛОЧА'
+           : (mode === 'measure-from' || mode === 'measure-to') ? 'MEASURE'
+           : (isArray ? 'ARRAY' : (isCopy ? 'COPY' : 'MOVE')) }}
+      </span>
+      {{ modeLabel }}
+
+      <!-- Wall dimensions (during a СТЕНА draw) -->
+      <div class="wall-dims" *ngIf="mode === 'wall-from' || mode === 'wall-to'">
+        <label>Дебелина<input type="number" min="1" step="1" [(ngModel)]="wallThickness"></label>
+        <label>Височина<input type="number" min="1" step="1" [(ngModel)]="wallHeight"></label>
+      </div>
+
+      <!-- Slab dimensions (during a ПЛОЧА draw) -->
+      <div class="wall-dims" *ngIf="mode === 'slab-from' || mode === 'slab-to'">
+        <label>Дебелина<input type="number" min="1" step="1" [(ngModel)]="slabThickness"></label>
+      </div>
+
+      <!-- Plane selector — during a move (measure auto-picks the camera-facing plane on Shift) -->
+      <div class="plane-btns" *ngIf="(mode === 'move-from' || mode === 'move-to') && !wallVertexEditing">
+        <button class="plane-btn" [class.active]="movePlane === 'XZ'" (click)="movePlane = 'XZ'">XZ</button>
+        <button class="plane-btn" [class.active]="movePlane === 'XY'" (click)="movePlane = 'XY'">XY</button>
+        <button class="plane-btn" [class.active]="movePlane === 'YZ'" (click)="movePlane = 'YZ'">YZ</button>
+      </div>
+
+      <button class="cancel-btn" (click)="cancelMode()">✕ Cancel</button>
+    </div>
+
+    <!-- Snap legend -->
+    <div class="snap-legend" *ngIf="mode !== 'idle'">
+      <span class="snap-dot-key endpoint"></span>Endpoint
+      <span class="snap-dot-key midpoint"></span>Midpoint
+      <span class="snap-dot-key origin"></span>Origin
+      <span class="snap-dot-key axis"></span>Axis
+      <span class="snap-dot-key grid"></span>Grid
+    </div>
+
+    <!-- Distance editor — follows the cursor; type a value + Enter to commit -->
+    <div class="move-measure"
+         *ngIf="moveLabel && mode === 'move-to'"
+         [style.left.px]="moveLabel.x"
+         [style.top.px]="moveLabel.y">
+      <input #distInput type="number" min="0" step="1"
+             [(ngModel)]="distanceStr"
+             (ngModelChange)="onDistanceTyped()"
+             (keydown.enter)="commitTypedDistance()"
+             (keydown.escape)="cancelMode()">
+      <span class="mm">mm</span>
+    </div>
+
+    <!-- Measure tool: distance label at the midpoint of the dimension line -->
+    <div class="measure-label"
+         *ngIf="measureLabel"
+         [style.left.px]="measureLabel.x"
+         [style.top.px]="measureLabel.y">
+      {{ measureLabel.text }}
+    </div>
+
+    <!-- Empty hint -->
+    <div class="empty-overlay" *ngIf="instances.length === 0 && mode === 'idle'">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"
+           stroke-linecap="round" aria-hidden="true">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+      </svg>
+      <p>Select a family, set its parameters,<br>then click <strong>Place in Scene</strong></p>
+    </div>
+
+    <!-- Marquee selection box -->
+    <div class="marquee-box"
+         *ngIf="marqueeRect"
+         [style.left.px]="marqueeRect.left"
+         [style.top.px]="marqueeRect.top"
+         [style.width.px]="marqueeRect.width"
+         [style.height.px]="marqueeRect.height">
+    </div>
+
+    <div class="controls-hint">
+      Click · select &nbsp;|&nbsp; Drag · box select &nbsp;|&nbsp;
+      Right-drag · orbit &nbsp;|&nbsp; Mid-drag · pan &nbsp;|&nbsp; Scroll · zoom
+    </div>
+
+    <!-- ── Materials dialog ── -->
+    <div class="dialog-backdrop" *ngIf="materialsDialogOpen" (click)="closeMaterials()">
+      <div class="mat-dialog" (click)="$event.stopPropagation()">
+        <div class="mat-dialog-head">
+          <h3>МАТЕРИАЛИ</h3>
+          <button class="dialog-close" title="Затвори" (click)="closeMaterials()">✕</button>
+        </div>
+
+        <div class="mat-dialog-body">
+          <!-- material list -->
+          <div class="mat-list">
+            <button type="button" class="mat-list-item"
+                    *ngFor="let m of materialDefs; let i = index"
+                    [class.active]="i === editingMaterialIndex"
+                    (click)="selectEditingMaterial(i)">
+              <span class="mat-swatch" [style.background]="m.texture ? 'url(' + m.texture + ') center/cover' : m.color"></span>
+              <span class="mat-name">{{ m.name }}</span>
+            </button>
+            <button type="button" class="mat-add" (click)="addMaterial()">+ Нов материал</button>
+          </div>
+
+          <!-- editor for the selected material -->
+          <div class="mat-editor" *ngIf="editingMaterial as m">
+            <label class="mat-field">
+              <span>Име</span>
+              <input type="text" [(ngModel)]="m.name" (ngModelChange)="onMaterialEdited()">
+            </label>
+
+            <label class="mat-field">
+              <span>Цвят</span>
+              <div class="mat-color-row">
+                <input type="color" [(ngModel)]="m.color" (ngModelChange)="onMaterialEdited()">
+                <input type="text" class="mat-hex" [(ngModel)]="m.color" (ngModelChange)="onMaterialEdited()">
+              </div>
+            </label>
+
+            <!-- JPG texture + its real-world tile size (mm) -->
+            <div class="mat-field">
+              <span>Текстура (JPG)</span>
+              <div class="mat-tex-row">
+                <input #texFile type="file" accept="image/*" hidden (change)="onTextureFile($event)">
+                <button type="button" class="mat-tex-btn" (click)="texFile.click()">{{ m.texture ? 'Смени…' : 'Добави…' }}</button>
+                <button type="button" class="mat-tex-btn danger" *ngIf="m.texture" (click)="clearMaterialTexture()">Премахни</button>
+              </div>
+              <span class="mat-tex-preview" [class.empty]="!m.texture"
+                    [style.width.px]="texPreviewSize(m).w" [style.height.px]="texPreviewSize(m).h">
+                <span class="mat-tex-img" *ngIf="m.texture"
+                      [style.width.px]="texPreviewInner" [style.height.px]="texPreviewInner"
+                      [style.backgroundImage]="'url(' + m.texture + ')'"
+                      [style.transform]="'translate(-50%, -50%) rotate(' + (m.textureRotation || 0) + 'deg)'"></span>
+              </span>
+            </div>
+            <div class="mat-field" *ngIf="m.texture">
+              <span>Размер на плочка (mm)</span>
+              <div class="mat-tile-col">
+                <label>Ш<input type="number" min="1" step="1" [(ngModel)]="m.textureW" (ngModelChange)="onMaterialEdited()"></label>
+                <label>В<input type="number" min="1" step="1" [(ngModel)]="m.textureH" (ngModelChange)="onMaterialEdited()"></label>
+              </div>
+            </div>
+            <label class="mat-field" *ngIf="m.texture">
+              <span>Завъртане на текстурата <em>{{ m.textureRotation || 0 }}°</em></span>
+              <input type="range" min="0" max="360" step="1"
+                     [ngModel]="m.textureRotation || 0"
+                     (ngModelChange)="m.textureRotation = snapTextureRotation(+$event); onMaterialEdited()">
+            </label>
+
+            <label class="mat-field">
+              <span>Прозрачност <em>{{ m.transparency }}%</em></span>
+              <input type="range" min="0" max="100" step="1" [(ngModel)]="m.transparency" (ngModelChange)="onMaterialEdited()">
+            </label>
+
+            <label class="mat-field">
+              <span>Отражение <em>{{ m.reflection }}%</em></span>
+              <input type="range" min="0" max="100" step="1" [(ngModel)]="m.reflection" (ngModelChange)="onMaterialEdited()">
+            </label>
+
+            <label class="mat-field">
+              <span>Гланц <em>{{ m.glossiness }}%</em></span>
+              <input type="range" min="0" max="100" step="1" [(ngModel)]="m.glossiness" (ngModelChange)="onMaterialEdited()">
+            </label>
+
+            <div class="mat-actions">
+              <button type="button" class="mat-del" [disabled]="materialDefs.length <= 1"
+                      (click)="deleteMaterial(editingMaterialIndex)">Изтрий</button>
+            </div>
+
+            <p class="mat-hint" [class.on]="renderMode">
+              {{ renderMode ? 'Промените се виждат веднага в Render.' : 'Включи Render, за да видиш материалите.' }}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Settings dialog ── -->
+    <div class="dialog-backdrop" *ngIf="settingsDialogOpen" (click)="closeSettings()">
+      <div class="mat-dialog settings-dialog" (click)="$event.stopPropagation()">
+        <div class="mat-dialog-head">
+          <h3>SETTINGS</h3>
+          <button class="dialog-close" title="Затвори" (click)="closeSettings()">✕</button>
+        </div>
+        <div class="settings-body">
+          <label class="mat-field">
+            <span>Яркост на камерата <em>{{ cameraBrightness.toFixed(2) }}×</em></span>
+            <input type="range" min="0.2" max="2" step="0.05"
+                   [ngModel]="cameraBrightness"
+                   (ngModelChange)="cameraBrightness = +$event; onBrightnessChange()">
+          </label>
+          <p class="mat-hint">Регулира осветлението на сцената (и експозицията в Render).</p>
+        </div>
+      </div>
+    </div>
+  </main>
+
+</div>
