@@ -20,6 +20,9 @@ const CHIPBOARD_URL = 'assets/images/3D/chipboard-texture.jpg';
 /** PVC band thickness (mm) used on КОРПУС door edges (matches makeMesh's default). */
 export const KORPUS_KANT = 1;
 
+/** Fixed depth (mm) of each РЕБРО ТАВАН panel in the КОРПУС С РЕБРА family. */
+export const REBRO_TAVAN_D = 100;
+
 /** Intersection of line (p1, dir d1) with line (p2, dir d2); falls back to p2 if parallel. */
 function lineIntersect(p1: THREE.Vector2, d1: THREE.Vector2, p2: THREE.Vector2, d2: THREE.Vector2): THREE.Vector2 {
   const denom = d1.x * d2.y - d1.y * d2.x;
@@ -244,6 +247,115 @@ export function buildKorpus(p: Record<string, number>, withDoor: boolean): THREE
     mesh.rotation.set(pan.rx, pan.ry, pan.rz);
     mesh.position.set(pan.px, pan.py, pan.pz);
     // Tag the panel node so it can be sub-selected (TAB) and shown read-only.
+    mesh.userData['panel'] = {
+      name: pan.name, size1: Math.round(pan.AB), size2: Math.round(pan.BC),
+      thickness: pan.t, pvc: pan.pvc, kant,
+    };
+    group.add(mesh);
+  }
+  return group;
+}
+
+/**
+ * Decompose a КОРПУС С РЕБРА into its panels. Like korpusPanels but the ТАВАН is
+ * replaced by two narrow ribs: РЕБРО ТАВАН 1 (front) and РЕБРО ТАВАН 2 (back), each
+ * REBRO_TAVAN_D deep, spanning ШИРИНА minus the side-panel thicknesses (sides always
+ * cover the ribs). The ВРАТИЧКА height is driven by ВИСОЧИНА_ВРАТИЧКА (bottom edge
+ * fixed, only the top moves).
+ */
+export function korpusRebraPanels(p: Record<string, number>, withDoor: boolean): KorpusPanel[] {
+  const W = p['ШИРИНА']    ?? 800;
+  const H = p['ВИСОЧИНА']  ?? 720;
+  const D = p['ДЪЛБОЧИНА'] ?? 550;
+  const t = p['ПЛОСКОСТ_ДЕБЕЛИНА'] ?? 18;
+  const backT = p['ГРЪБ_ДЕБЕЛИНА'] ?? t;
+  const b = (k: string) => Boolean(p[k]);
+
+  const hasBack   = b('С_ГРЪБ');
+  const hasLeft   = b('С_ЛЯВА_СТРАНИЦА');
+  const hasRight  = b('С_ДЯСНА_СТРАНИЦА');
+  const hasTop    = b('С_ТАВАН');
+  const hasBottom = b('С_ДЪНО');
+  const hasDoor   = b('С_ВРАТИЧКА');
+
+  const grbL = b('ГРЪБ_ВИДИМ_КАНТ_ОТЛЯВО'), grbR = b('ГРЪБ_ВИДИМ_КАНТ_ОТДЯСНО');
+  const grbT = b('ГРЪБ_ВИДИМ_КАНТ_ОТГОРЕ'), grbB = b('ГРЪБ_ВИДИМ_КАНТ_ОТДОЛУ');
+  const dunL = b('ДЪНО_ВИДИМ_КАНТ_ОТЛЯВО'),  dunR = b('ДЪНО_ВИДИМ_КАНТ_ОТДЯСНО');
+
+  const mid = (a: number, c: number) => (a + c) / 2;
+  const panels: KorpusPanel[] = [];
+  const add = (name: string, AB: number, BC: number, rx: number, ry: number, rz: number,
+               px: number, py: number, pz: number,
+               pvc: boolean[] = [false, false, false, false], pt: number = t) =>
+    panels.push({ name, AB, BC, rx, ry, rz, px, py, pz, pvc, t: pt });
+
+  const tBack = hasBack ? backT : 0;
+  const tDoor = (withDoor && hasDoor) ? t : 0;
+  const innerD = D - tBack - tDoor;
+  const innerZ = (tBack - tDoor) / 2;
+
+  // Sides run full height — ribs always sit between them, never trim them at the top.
+  const lTop = H / 2;
+  const lBot = (hasBottom && dunL) ? -(H / 2 - t) : -H / 2;
+  const rTop = H / 2;
+  const rBot = (hasBottom && dunR) ? -(H / 2 - t) : -H / 2;
+  const leftPvc  = [b('ЛЯВА_СТРАНИЦА_С_КАНТ_ОТДОЛУ'),  false, b('ЛЯВА_СТРАНИЦА_С_КАНТ_ОТГОРЕ'),  b('ЛЯВА_СТРАНИЦА_С_КАНТ_ОТПРЕД')];
+  const rightPvc = [b('ДЯСНА_СТРАНИЦА_С_КАНТ_ОТДОЛУ'), false, b('ДЯСНА_СТРАНИЦА_С_КАНТ_ОТГОРЕ'), b('ДЯСНА_СТРАНИЦА_С_КАНТ_ОТПРЕД')];
+  if (hasLeft)  add('ЛЯВА СТРАНИЦА',  innerD, lTop - lBot, 0, Math.PI / 2, 0, -(W / 2 - t / 2), mid(lTop, lBot), innerZ, leftPvc);
+  if (hasRight) add('ДЯСНА СТРАНИЦА', innerD, rTop - rBot, 0, Math.PI / 2, 0,  (W / 2 - t / 2), mid(rTop, rBot), innerZ, rightPvc);
+
+  if (hasBottom) {
+    const xl = dunL ? -W / 2 : -(W / 2 - t), xr = dunR ? W / 2 : W / 2 - t;
+    const bottomPvc = [b('ДЪНО_С_КАНТ_ОТПРЕД'), b('ДЪНО_С_КАНТ_ОТДЯСНО'), false, b('ДЪНО_С_КАНТ_ОТЛЯВО')];
+    add('ДЪНО', xr - xl, innerD, -Math.PI / 2, 0, 0, mid(xl, xr), -(H / 2 - t / 2), innerZ, bottomPvc);
+  }
+
+  // Two ribs at the top: width = ШИРИНА − left_t − right_t (sides always cover), depth = 100 mm.
+  // After −π/2 rotation around X, the AB edge faces ОТПРЕД (toward door). Each rib PVC toggle
+  // bands that interior-visible forward face.
+  if (hasTop) {
+    const xl = hasLeft  ? -(W / 2 - t) : -W / 2;
+    const xr = hasRight ? (W / 2 - t)  :  W / 2;
+    const ribW = xr - xl;
+    const pyRib = H / 2 - t / 2;
+    // РЕБРО ТАВАН 1 — front rib, flush with the front inner face.
+    const z1 = D / 2 - tDoor - REBRO_TAVAN_D / 2;
+    add('РЕБРО ТАВАН 1', ribW, REBRO_TAVAN_D, -Math.PI / 2, 0, 0, mid(xl, xr), pyRib, z1,
+        [b('РЕБРО_ТАВАН_1_С_КАНТ_ОТПРЕД'), false, false, false]);
+    // РЕБРО ТАВАН 2 — back rib, flush with the back inner face.
+    const z2 = -D / 2 + tBack + REBRO_TAVAN_D / 2;
+    add('РЕБРО ТАВАН 2', ribW, REBRO_TAVAN_D, -Math.PI / 2, 0, 0, mid(xl, xr), pyRib, z2,
+        [b('РЕБРО_ТАВАН_2_С_КАНТ_ОТПРЕД'), false, false, false]);
+  }
+
+  if (hasBack) {
+    const xl = grbL ? -W / 2 : -(W / 2 - t), xr = grbR ? W / 2 : W / 2 - t;
+    const yb = grbB ? -H / 2 : -(H / 2 - t), yt = grbT ? H / 2 : H / 2 - t;
+    const backPvc = [b('ГРЪБ_С_КАНТ_ОТДОЛУ'), b('ГРЪБ_С_КАНТ_ОТДЯСНО'), b('ГРЪБ_С_КАНТ_ОТГОРЕ'), b('ГРЪБ_С_КАНТ_ОТЛЯВО')];
+    add('ГРЪБ', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), -(D / 2 - backT / 2), backPvc, backT);
+  }
+
+  // Door: ВИСОЧИНА_ВРАТИЧКА fixes the height counting from the bottom edge (bottom is
+  // fixed by ФУГА_ОТДОЛУ; only the top moves when ВИСОЧИНА_ВРАТИЧКА changes).
+  if (withDoor && hasDoor) {
+    const xl = -W / 2 + (p['ВРАТИЧКА_ФУГА_ОТЛЯВО'] ?? 0);
+    const xr =  W / 2 - (p['ВРАТИЧКА_ФУГА_ОТДЯСНО'] ?? 0);
+    const yb = -H / 2 + (p['ВРАТИЧКА_ФУГА_ОТДОЛУ'] ?? 0);
+    const yt = yb + (p['ВИСОЧИНА_ВРАТИЧКА'] ?? H);
+    add('ВРАТИЧКА', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), D / 2 - t / 2, [true, true, true, true]);
+  }
+
+  return panels;
+}
+
+/** Build the КОРПУС С РЕБРА group from params, tagging each panel for sub-selection. */
+export function buildKorpusRebra(p: Record<string, number>, withDoor: boolean): THREE.Group {
+  const kant = p['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
+  const group = new THREE.Group();
+  for (const pan of korpusRebraPanels(p, withDoor)) {
+    const mesh = makeMesh(pan.AB, pan.BC, 90, pan.t, pan.pvc, kant);
+    mesh.rotation.set(pan.rx, pan.ry, pan.rz);
+    mesh.position.set(pan.px, pan.py, pan.pz);
     mesh.userData['panel'] = {
       name: pan.name, size1: Math.round(pan.AB), size2: Math.round(pan.BC),
       thickness: pan.t, pvc: pan.pvc, kant,

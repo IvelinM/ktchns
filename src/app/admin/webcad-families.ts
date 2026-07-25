@@ -7,7 +7,7 @@
  * and build their geometry from `inst.path` via buildWallPath/buildSlabPath instead.
  */
 import { FamilyDef, ParamDef, MaterialParamDef } from './webcad.model';
-import { makeMesh, buildKorpus, buildWallPath, buildSlabPath } from './webcad-geometry';
+import { makeMesh, buildKorpus, buildKorpusRebra, buildWallPath, buildSlabPath } from './webcad-geometry';
 
 /** Shared parameter list for the КОРПУС С ВРАТА family. */
 const KORPUS_PARAMS: ParamDef[] = [
@@ -69,6 +69,65 @@ const KORPUS_MATERIAL_PARAMS: MaterialParamDef[] = [
   { key: 'ВРАТИЧКА_КАНТ_МАТЕРИАЛ',      label: 'ВРАТИЧКА КАНТ МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
 ];
 
+/** Params for КОРПУС С РЕБРА — like КОРПУС С ВРАТА but with two 100 mm ribs instead
+ *  of a full ТАВАН, and ВИСОЧИНА_ВРАТИЧКА controlling door height from the bottom. */
+const KORPUS_REBRA_PARAMS: ParamDef[] = [
+  { key: 'ШИРИНА',             label: 'ШИРИНА',             defaultValue: 800, min: 37,  step: 1,   unit: 'mm' },
+  { key: 'ВИСОЧИНА',           label: 'ВИСОЧИНА',           defaultValue: 720, min: 37,  step: 1,   unit: 'mm' },
+  { key: 'ДЪЛБОЧИНА',          label: 'ДЪЛБОЧИНА',          defaultValue: 550, min: 19,  step: 1,   unit: 'mm' },
+  { key: 'ПЛОСКОСТ_ДЕБЕЛИНА',  label: 'ПЛОСКОСТ ДЕБЕЛИНА',  defaultValue: 18,  min: 1,   step: 1,   unit: 'mm' },
+  { key: 'ГРЪБ_ДЕБЕЛИНА',      label: 'ГРЪБ ДЕБЕЛИНА',      defaultValue: 18,  min: 1,   step: 1,   unit: 'mm' },
+  { key: 'КАНТ_ДЕБЕЛИНА',      label: 'КАНТ ДЕБЕЛИНА',      defaultValue: 1,   min: 0.1, step: 0.1, unit: 'mm' },
+  { key: 'ВИСОЧИНА_ВРАТИЧКА',  label: 'ВИСОЧИНА ВРАТИЧКА',  defaultValue: 720, min: 1,   step: 1,   unit: 'mm' },
+  { key: 'С_ГРЪБ',             label: 'С ГРЪБ',             defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ЛЯВА_СТРАНИЦА',    label: 'С ЛЯВА СТРАНИЦА',    defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ДЯСНА_СТРАНИЦА',   label: 'С ДЯСНА СТРАНИЦА',   defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ТАВАН',            label: 'С ТАВАН',            defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ДЪНО',             label: 'С ДЪНО',             defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ВРАТИЧКА',         label: 'С ВРАТИЧКА',         defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ГРЪБ_ВИДИМ_КАНТ_ОТЛЯВО',  label: 'ГРЪБ ВИДИМ КАНТ ОТЛЯВО',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ГРЪБ_ВИДИМ_КАНТ_ОТДЯСНО', label: 'ГРЪБ ВИДИМ КАНТ ОТДЯСНО', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ГРЪБ_ВИДИМ_КАНТ_ОТГОРЕ',  label: 'ГРЪБ ВИДИМ КАНТ ОТГОРЕ',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ГРЪБ_ВИДИМ_КАНТ_ОТДОЛУ',  label: 'ГРЪБ ВИДИМ КАНТ ОТДОЛУ',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ДЪНО_ВИДИМ_КАНТ_ОТЛЯВО',  label: 'ДЪНО ВИДИМ КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ДЪНО_ВИДИМ_КАНТ_ОТДЯСНО', label: 'ДЪНО ВИДИМ КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ВРАТИЧКА_ФУГА_ОТЛЯВО',  label: 'ВРАТИЧКА ФУГА ОТЛЯВО',  defaultValue: 1, min: 0, step: 0.5, unit: 'mm' },
+  { key: 'ВРАТИЧКА_ФУГА_ОТДЯСНО', label: 'ВРАТИЧКА ФУГА ОТДЯСНО', defaultValue: 1, min: 0, step: 0.5, unit: 'mm' },
+  { key: 'ВРАТИЧКА_ФУГА_ОТДОЛУ',  label: 'ВРАТИЧКА ФУГА ОТДОЛУ',  defaultValue: 0, min: 0, step: 0.5, unit: 'mm' },
+  { key: 'РЕБРО_ТАВАН_1_С_КАНТ_ОТПРЕД', label: 'РЕБРО ТАВАН 1 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'РЕБРО_ТАВАН_2_С_КАНТ_ОТПРЕД', label: 'РЕБРО ТАВАН 2 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ДЪНО_С_КАНТ_ОТПРЕД',  label: 'ДЪНО С КАНТ ОТПРЕД',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ДЪНО_С_КАНТ_ОТЛЯВО',  label: 'ДЪНО С КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ДЪНО_С_КАНТ_ОТДЯСНО', label: 'ДЪНО С КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ЛЯВА_СТРАНИЦА_С_КАНТ_ОТПРЕД',  label: 'ЛЯВА СТРАНИЦА С КАНТ ОТПРЕД',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ЛЯВА_СТРАНИЦА_С_КАНТ_ОТГОРЕ',  label: 'ЛЯВА СТРАНИЦА С КАНТ ОТГОРЕ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ЛЯВА_СТРАНИЦА_С_КАНТ_ОТДОЛУ',  label: 'ЛЯВА СТРАНИЦА С КАНТ ОТДОЛУ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ДЯСНА_СТРАНИЦА_С_КАНТ_ОТПРЕД', label: 'ДЯСНА СТРАНИЦА С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ДЯСНА_СТРАНИЦА_С_КАНТ_ОТГОРЕ', label: 'ДЯСНА СТРАНИЦА С КАНТ ОТГОРЕ', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ДЯСНА_СТРАНИЦА_С_КАНТ_ОТДОЛУ', label: 'ДЯСНА СТРАНИЦА С КАНТ ОТДОЛУ', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ГРЪБ_С_КАНТ_ОТГОРЕ',  label: 'ГРЪБ С КАНТ ОТГОРЕ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ГРЪБ_С_КАНТ_ОТДОЛУ',  label: 'ГРЪБ С КАНТ ОТДОЛУ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ГРЪБ_С_КАНТ_ОТЛЯВО',  label: 'ГРЪБ С КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ГРЪБ_С_КАНТ_ОТДЯСНО', label: 'ГРЪБ С КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+];
+
+const KORPUS_REBRA_MATERIAL_PARAMS: MaterialParamDef[] = [
+  { key: 'ЛЯВА_СТРАНИЦА_МАТЕРИАЛ',      label: 'ЛЯВА СТРАНИЦА МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
+  { key: 'ЛЯВА_СТРАНИЦА_КАНТ_МАТЕРИАЛ', label: 'ЛЯВА СТРАНИЦА КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
+  { key: 'ДЯСНА_СТРАНИЦА_МАТЕРИАЛ',     label: 'ДЯСНА СТРАНИЦА МАТЕРИАЛ',     default: 'ГЛАДКО БЯЛО' },
+  { key: 'ДЯСНА_СТРАНИЦА_КАНТ_МАТЕРИАЛ',label: 'ДЯСНА СТРАНИЦА КАНТ МАТЕРИАЛ',default: 'ГЛАДКО БЯЛО' },
+  { key: 'РЕБРО_ТАВАН_1_МАТЕРИАЛ',      label: 'РЕБРО ТАВАН 1 МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
+  { key: 'РЕБРО_ТАВАН_1_КАНТ_МАТЕРИАЛ', label: 'РЕБРО ТАВАН 1 КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
+  { key: 'РЕБРО_ТАВАН_2_МАТЕРИАЛ',      label: 'РЕБРО ТАВАН 2 МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
+  { key: 'РЕБРО_ТАВАН_2_КАНТ_МАТЕРИАЛ', label: 'РЕБРО ТАВАН 2 КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
+  { key: 'ДЪНО_МАТЕРИАЛ',               label: 'ДЪНО МАТЕРИАЛ',               default: 'ГЛАДКО БЯЛО' },
+  { key: 'ДЪНО_КАНТ_МАТЕРИАЛ',          label: 'ДЪНО КАНТ МАТЕРИАЛ',          default: 'ГЛАДКО БЯЛО' },
+  { key: 'ГРЪБ_МАТЕРИАЛ',               label: 'ГРЪБ МАТЕРИАЛ',               default: 'ГЛАДКО БЯЛО' },
+  { key: 'ГРЪБ_КАНТ_МАТЕРИАЛ',          label: 'ГРЪБ КАНТ МАТЕРИАЛ',          default: 'ГЛАДКО БЯЛО' },
+  { key: 'ВРАТИЧКА_МАТЕРИАЛ',           label: 'ВРАТИЧКА МАТЕРИАЛ',           default: 'ГЛАДКО БЯЛО' },
+  { key: 'ВРАТИЧКА_КАНТ_МАТЕРИАЛ',      label: 'ВРАТИЧКА КАНТ МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
+];
+
 export const FAMILIES: FamilyDef[] = [
   // ── Ploskost (a single board with optional PVC edge bands) ──────────────────
   {
@@ -101,6 +160,16 @@ export const FAMILIES: FamilyDef[] = [
     params: KORPUS_PARAMS,
     materialParams: KORPUS_MATERIAL_PARAMS,
     buildObject(p) { return buildKorpus(p, true); },
+  },
+
+  // ── КОРПУС С РЕБРА (carcass with two top ribs instead of a full ТАВАН panel, and
+  //    explicit door height via ВИСОЧИНА_ВРАТИЧКА counting from the fixed bottom edge)
+  {
+    id: 'cabinet-ribs',
+    name: 'КОРПУС С РЕБРА',
+    params: KORPUS_REBRA_PARAMS,
+    materialParams: KORPUS_REBRA_MATERIAL_PARAMS,
+    buildObject(p) { return buildKorpusRebra(p, true); },
   },
 
   // ── СТЕНА (wall) — a vertical solid drawn as a POLYLINE on the ground. The whole

@@ -7,7 +7,7 @@
  * 3D build uses, so the geometry and the cut-list can never disagree).
  */
 import { SceneInstance } from './webcad.model';
-import { korpusPanels, KORPUS_KANT } from './webcad-geometry';
+import { korpusPanels, korpusRebraPanels, KORPUS_KANT } from './webcad-geometry';
 
 interface Panel {
   element: string; material: string; size1: number; size2: number;
@@ -43,6 +43,11 @@ export function buildScheduleText(instances: SceneInstance[], itemize: boolean):
     } else if (inst.familyId === 'cabinet-door') {
       const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
       for (const pan of korpusPanels(inst.params, true)) {
+        addPanel(pan.name, material, pan.AB, pan.BC, pan.pvc, kant);
+      }
+    } else if (inst.familyId === 'cabinet-ribs') {
+      const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
+      for (const pan of korpusRebraPanels(inst.params, true)) {
         addPanel(pan.name, material, pan.AB, pan.BC, pan.pvc, kant);
       }
     }
