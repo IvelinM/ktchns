@@ -4,16 +4,53 @@ Working notes on the Via Minima Google Ads account: current state, diagnosis,
 what's been changed, and the prioritized next steps. For *how* to drive/inspect
 the account, see `google-ads-automation.md`.
 
-> Last reviewed: **2026-07-26**.
+> Last reviewed: **2026-08-08**.
 
 ## Account & campaign
 
 | | |
 |---|---|
 | Account "Via Minima" | `ocid = 8261308789` |
-| Campaign "Via Minima \| Кухни по поръчка \| Search" | `campaignId = 23874236561` |
-| Type | Search · single ad group ("Ad group 1") |
+| **Active campaign: "Via Minima \| Кухни по поръчка \| Search #2"** | pasted copy, budget `€147.60 (total) Aug 7 – Nov 5, 2026` (≈€1.64/day pace), Enabled/Eligible |
+| Original campaign "Via Minima \| Кухни по поръчка \| Search" | `campaignId = 23874236561` — **permanently Ended** (see budget-type note below), left in place as history, not deleted |
+| Type | Search · single ad group ("Ad group 1") each |
 | **Goal** | spend ≤ **€100 / month**, maximize **phone calls** |
+
+## ⚠️ Budget-type platform constraint (found 2026-08-08)
+
+This campaign's budget uses Google Ads' **"Campaign total" (flighted/dated) budget
+type** — spend €X between a start and end date — **not** a standard daily budget.
+Confirmed the hard way, across four separate UI surfaces (Campaign Settings drawer,
+the table-cell inline editor, the bulk "Change budget → Average Daily budget"
+override tool, and even on a freshly-pasted copy that had never served): **there is
+no way to convert this budget type to an ongoing Daily budget, and no way to give
+it a genuinely unlimited end date.**
+
+- The end-date calendar hard-caps the window at **90 days from the campaign's
+  (fixed, unchangeable) start date** — trying to enter anything beyond that shows
+  "Campaigns with this budget type can run for max 90 days" and is rejected.
+  The start date field itself is `aria-disabled` — it can never be moved forward.
+- This is why the campaign silently stopped on Jul 10, 2026: it was never actually
+  an "ongoing" budget, just a fixed-duration one nobody was tracking.
+- **The only way to get a true no-end-date daily budget is a brand-new campaign
+  built via the full "+ Create campaign" wizard** (not a copy/paste — paste always
+  inherits the source's budget type and re-imposes the same 90-day ceiling from
+  the new start date). Not attempted yet — judged too risky to automate blind on
+  a live account in one session; revisit if the quarterly-renewal cadence below
+  becomes too much friction.
+
+**Current mitigation:** the campaign was **copied** (Google Ads' native
+Ctrl+C/Ctrl+V "Paste campaign" flow, which preserves all keywords/ads/negatives/
+targeting/conversion-goal automatically) into **"Search #2"**, given a fresh
+`Aug 7 – Nov 5, 2026` window and `€147.60` total (≈€1.64/day, ≈€50/mo — the
+owner's requested conservative starting cap), then Enabled. Confirmed **Eligible**
+at the ad-group level post-launch.
+
+**⚠️ Action needed around 2026-11-05**: this budget will run out again. Renewal
+recipe (fast, ~5 min): select the campaign row → Ctrl+C → Ctrl+V → check "Adjust
+start and end dates" → set a fresh 90-day window → Paste → set the new copy's
+amount via its Budget table cell → Enable the new copy → optionally pause/remove
+the expired one. See `google-ads-automation.md` for the driving mechanics.
 
 ## Diagnosis — "why nobody calls"
 
@@ -81,6 +118,25 @@ All **Broad match** in Ad group 1. Spend concentrated on generic furniture terms
 - The leaked personal number is still pre-filled in the same abandoned
   Performance Max draft noted 2026-06-15 — unaffected by this change, still not
   a saved draft.
+
+## Changes made (2026-08-08)
+
+- **Diagnosed "no calls" root cause**: the account had auto-paused for billing
+  (prepaid balance hit €0.00, no backup payment method) *and*, separately, the
+  campaign's total-budget date range (May 23 – Jul 10, 2026) had expired weeks
+  earlier — it was never an ongoing budget, just a fixed-duration one. Owner paid
+  €30 to clear the billing pause.
+- **Discovered and documented the "Campaign total" budget-type 90-day/no-daily-
+  conversion platform constraint** — see the dedicated section above. This cost
+  significant back-and-forth (three different remediation plans were invalidated
+  in turn as each new constraint was discovered by testing against the live
+  form) before landing on the copy-and-renew mitigation.
+- **Copied the campaign** (native Ctrl+C/Ctrl+V paste, preserves keywords/ads/
+  negatives/targeting/conversion-goal) into **"Search #2"**, `€147.60 (total)
+  Aug 7 – Nov 5, 2026` (~€1.64/day, ~€50/mo), Enabled. Confirmed **Eligible** at
+  ad-group level. Original campaign left in place, Ended, as history.
+- Next renewal due **~2026-11-05** — see the recipe in the constraint section
+  above.
 
 ## Diagnosis confirmed (2026-06-15)
 

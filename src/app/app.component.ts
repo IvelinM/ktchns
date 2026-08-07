@@ -10,6 +10,8 @@ import { ParticlesBgComponent } from './particles-bg/particles-bg.component';
 import { ContactFormComponent, ContactTranslations } from './contact-form/contact-form.component';
 import { LoaderComponent } from './loader/loader.component';
 
+declare const gtag: (...args: any[]) => void;
+
 type Translations = Record<string, {
   home: string;
   projects: string;
@@ -141,5 +143,11 @@ export class AppComponent {
 
   scrollTo(sectionId: string) {
     document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  trackPhoneClick(source: string) {
+    if (typeof gtag === 'function') {
+      gtag('event', 'phone_click', { source });
+    }
   }
 }
