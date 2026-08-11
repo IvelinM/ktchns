@@ -40,6 +40,19 @@ export class ProjectSliderComponent implements OnInit, OnDestroy {
     else if (event.key === 'Escape') this.close();
   }
 
+  private touchStartX = 0;
+
+  onTouchStart(event: TouchEvent) {
+    this.touchStartX = event.changedTouches[0].clientX;
+  }
+
+  onTouchEnd(event: TouchEvent) {
+    const deltaX = event.changedTouches[0].clientX - this.touchStartX;
+    const SWIPE_THRESHOLD = 40;
+    if (deltaX <= -SWIPE_THRESHOLD) this.next();
+    else if (deltaX >= SWIPE_THRESHOLD) this.prev();
+  }
+
   next() {
     this.currentIndex = (this.currentIndex + 1) % this.images.length;
   }

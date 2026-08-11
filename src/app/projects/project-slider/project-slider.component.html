@@ -1,6 +1,7 @@
 <div class="slider-overlay" (click)="close()">
 
-  <div class="slider-inner" (click)="$event.stopPropagation()">
+  <div class="slider-inner" (click)="$event.stopPropagation()"
+       (touchstart)="onTouchStart($event)" (touchend)="onTouchEnd($event)">
 
     <img
       *ngFor="let img of images; let i = index"
