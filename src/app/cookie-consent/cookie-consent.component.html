@@ -1,0 +1,7 @@
+<div class="cookie-banner" *ngIf="visible" role="dialog" aria-live="polite">
+  <p class="cookie-message">{{ t.cookieMessage }}</p>
+  <div class="cookie-actions">
+    <button class="cookie-btn cookie-btn-reject" type="button" (click)="reject()">{{ t.cookieReject }}</button>
+    <button class="cookie-btn cookie-btn-accept" type="button" (click)="accept()">{{ t.cookieAccept }}</button>
+  </div>
+</div>

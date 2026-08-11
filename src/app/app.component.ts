@@ -9,6 +9,7 @@ import { HeroSliderComponent } from './hero-slider/hero-slider.component';
 import { ParticlesBgComponent } from './particles-bg/particles-bg.component';
 import { ContactFormComponent, ContactTranslations } from './contact-form/contact-form.component';
 import { LoaderComponent } from './loader/loader.component';
+import { CookieConsentComponent, CookieConsentTranslations } from './cookie-consent/cookie-consent.component';
 
 declare const gtag: (...args: any[]) => void;
 
@@ -36,7 +37,7 @@ type Translations = Record<string, {
   contactTitle: string;
   contactAddress: string;
   callUs: string;
-} & ContactTranslations>;
+} & ContactTranslations & CookieConsentTranslations>;
 
 @Component({
   selector: 'app-root',
@@ -52,6 +53,7 @@ type Translations = Record<string, {
     ParticlesBgComponent,
     ContactFormComponent,
     LoaderComponent,
+    CookieConsentComponent,
   ],
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.scss'],
@@ -95,6 +97,9 @@ export class AppComponent {
       contactSending: 'Sending…',
       contactSuccess: "Message sent! We'll be in touch.",
       contactError: 'Something went wrong. Please try again.',
+      cookieMessage: 'We use cookies for traffic analytics (Google Analytics, Google Ads, Microsoft Clarity) to improve the site. You can accept or decline their use.',
+      cookieAccept: 'Accept',
+      cookieReject: 'Reject',
     },
     bg: {
       home: 'Начало',
@@ -130,6 +135,9 @@ export class AppComponent {
       contactSending: 'Изпращане…',
       contactSuccess: 'Съобщението е изпратено! Ще се свържем с Вас.',
       contactError: 'Нещо се обърка. Опитайте отново.',
+      cookieMessage: 'Използваме бисквитки за анализ на трафика (Google Analytics, Google Ads, Microsoft Clarity), за да подобряваме сайта. Можете да приемете или откажете тяхното използване.',
+      cookieAccept: 'Приемам',
+      cookieReject: 'Отказвам',
     },
   };
 
