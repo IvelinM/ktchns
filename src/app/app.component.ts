@@ -158,4 +158,10 @@ export class AppComponent {
       gtag('event', 'phone_click', { source });
     }
   }
+
+  trackViberClick() {
+    if (typeof gtag === 'function') {
+      gtag('event', 'viber_click');
+    }
+  }
 }
