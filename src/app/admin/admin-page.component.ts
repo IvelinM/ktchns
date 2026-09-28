@@ -26,12 +26,65 @@ import { FAMILIES } from './webcad-families';
 import { disposeObj, normAnchor, anchorWrap, addEdges, colorObj, setEdgeColor, ghostify } from './webcad-object3d';
 import { buildScheduleText } from './webcad-schedule';
 
+// Minimal File System Access API typings — not yet in this project's configured TS/DOM
+// lib, and only used for Save/Save as/Open (see the "Save / Load scene" section below).
+declare global {
+  interface FileSystemFileHandle {
+    getFile(): Promise<File>;
+    createWritable(): Promise<FileSystemWritableFileStream>;
+  }
+  interface FileSystemWritableFileStream {
+    write(data: BlobPart): Promise<void>;
+    close(): Promise<void>;
+  }
+  interface FilePickerAcceptType { description?: string; accept: Record<string, string[]>; }
+  interface Window {
+    showSaveFilePicker?(options?: {
+      suggestedName?: string; types?: FilePickerAcceptType[];
+    }): Promise<FileSystemFileHandle>;
+    showOpenFilePicker?(options?: {
+      types?: FilePickerAcceptType[];
+    }): Promise<FileSystemFileHandle[]>;
+  }
+}
+
 /**
  * Default base point (БАЗОВА ТОЧКА) for a newly placed family instance: ПЛАН centred
  * (x/z = 0) and РАЗРЕЗ at the **bottom** (y = -1). With the instance placed at y = 0 the
  * object therefore rests on the ground rather than being half-buried.
  */
 const PLACE_ANCHOR: BasePoint = { x: 0, y: -1, z: 0 };
+
+/** Max search radius (mm) for the "nearest parallel wall surface" temporary dimension. */
+const WALL_DIM_MAX = 15000;
+
+/** localStorage key the in-progress scene is autosaved under, so a refresh doesn't lose it. */
+const AUTOSAVE_KEY = 'webcad-autosave-v1';
+/** How often the autosave safety-net timer writes, in ms (also saved on `beforeunload`). */
+const AUTOSAVE_INTERVAL_MS = 5000;
+
+/**
+ * A Revit-style "temporary dimension" shown after clicking a wall's vertical face: the
+ * live distance from that face to the nearest OTHER instance's surface along its
+ * outward normal (`axis`), editable inline. Never touches ДЕБЕЛИНА (thickness) — the
+ * search excludes the clicked wall's own geometry, so a self-hit (which would only ever
+ * measure thickness) simply isn't found/shown at all.
+ *  - 'translate' (a side face) — moves the WHOLE wall along `axis` so the gap becomes
+ *    the typed value; the wall's own path/thickness are untouched.
+ *  - 'vertex' (an end-cap face) — moves that one polyline endpoint along `axis`,
+ *    shortening/extending the wall from that end.
+ */
+interface WallDim {
+  instId: number;
+  editKind: 'translate' | 'vertex';
+  axis: THREE.Vector3;         // world unit vector, points from the clicked face toward the hit
+  originPoint: THREE.Vector3;
+  hitPoint: THREE.Vector3;
+  dist: number;                // current mm distance (also the pre-edit value of valueStr)
+  vertexIndex?: number;        // editKind === 'vertex': which path index to move
+  screen: { x: number; y: number };
+  valueStr: string;
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -45,6 +98,9 @@ const PLACE_ANCHOR: BasePoint = { x: 0, y: -1, z: 0 };
 export class AdminPageComponent implements OnInit, OnDestroy {
   @ViewChild('rendererCanvas', { static: true })
   canvasRef!: ElementRef<HTMLCanvasElement>;
+
+  @ViewChild('navCubeCanvas', { static: true })
+  navCubeCanvasRef!: ElementRef<HTMLCanvasElement>;
 
   // ── UI state ───────────────────────────────────────────────────────────────
   families   = FAMILIES;
@@ -83,6 +139,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   arrayCount = 3;   // number of copies the Array tool lays down
   itemize = false;  // schedule export: list every panel separately (drop БРОЙ) vs merged quantities
   fileMenuOpen = false;   // the sidebar File dropdown
+  // The file this scene was last saved to (or opened from) via the File System Access
+  // API — lets "Save" overwrite it silently. Null until a "Save as…"/Open succeeds with
+  // that API, or in browsers that lack it (Firefox/Safari), where "Save" always falls
+  // back to "Save as…" (a fresh download) since the page can't get write access otherwise.
+  private savedFileHandle: FileSystemFileHandle | null = null;
   marqueeRect: { left: number; top: number; width: number; height: number } | null = null;
   // Distance editor shown next to the cursor during a move/copy/array.
   moveLabel: { x: number; y: number } | null = null;
@@ -94,6 +155,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   @ViewChild('distInput') private distInputRef?: ElementRef<HTMLInputElement>;
   @ViewChild('fileMenu') private fileMenuRef?: ElementRef<HTMLElement>;
   @ViewChild('visMenu') private visMenuRef?: ElementRef<HTMLElement>;
+  @ViewChild('sceneFileInput') private sceneFileInputRef?: ElementRef<HTMLInputElement>;
 
   // Measurement tool: a dimension line from a start point to the cursor, with a
   // read-only distance label at its midpoint.
@@ -118,6 +180,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private readonly edgeHandleGeo = new THREE.SphereGeometry(48, 12, 10);
   private readonly vtxHandleMat  = new THREE.MeshBasicMaterial({ color: 0xffd400, depthTest: false, transparent: true, opacity: 0.95 });
   private readonly edgeHandleMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, depthTest: false, transparent: true, opacity: 0.9 });
+
+  // Temporary dimensions: click a selected wall's vertical face to see (and edit) its
+  // live distance to the nearest OTHER instance's parallel surface — see WallDim above.
+  wallDims: WallDim[] = [];
+  private wallDimLine!: THREE.LineSegments;
 
   // ПЛОЧА (slab) draw tool — draws a CLOSED polygon, finalised into ONE instance.
   slabThickness = 40;         // mm, applies to the slab being drawn
@@ -145,6 +212,27 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private snapDot!: THREE.Mesh;
   private moveLine!: THREE.Line;   // 3D guide line drawn from moveFrom to the cursor during a move
   private ghost: THREE.Object3D | null = null;
+
+  // ── Navigation cube (Revit-style view-align gizmo, top-right) ────────────────
+  private navScene!: THREE.Scene;
+  private navCamera!: THREE.OrthographicCamera;
+  private navRenderer!: THREE.WebGLRenderer;
+  private navCube!: THREE.Mesh;
+  private navHoverFace = -1;
+  private navTween: {
+    target: THREE.Vector3; fromDir: THREE.Vector3; toDir: THREE.Vector3;
+    quat: THREE.Quaternion; dist: number; start: number; dur: number;
+  } | null = null;
+  private boundNavMove!:  (e: MouseEvent) => void;
+  private boundNavClick!: (e: MouseEvent) => void;
+  private boundNavLeave!: () => void;
+  // BoxGeometry's default material-group order is [+X, -X, +Y, -Y, +Z, -Z]
+  private readonly NAV_FACE_DIRS = [
+    new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
+    new THREE.Vector3(0, 1, -0.02).normalize(), new THREE.Vector3(0, -1, -0.02).normalize(),
+    new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1),
+  ];
+  private readonly NAV_FACE_LABELS = ['RIGHT', 'LEFT', 'TOP', 'BOTTOM', 'FRONT', 'BACK'];
 
   // ── Render (photoreal preview) mode ──────────────────────────────────────────
   renderMode = false;
@@ -177,14 +265,27 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private boundUp!:    (e: MouseEvent) => void;
   private boundWheel!: (e: WheelEvent) => void;
 
+  // Autosave: keeps the in-progress scene alive across an accidental refresh/tab close.
+  // Independent of Save/Save as/Open — it just mirrors whatever is currently on screen.
+  private boundBeforeUnload!: () => void;
+  private autosaveIntervalId = 0;
+
   constructor(private ngZone: NgZone) {}
 
   ngOnInit() {
     this.resetParams();
     this.ngZone.runOutsideAngular(() => this.initThree());
+    this.restoreAutosave();
+    this.boundBeforeUnload = () => this.persistAutosave();
+    window.addEventListener('beforeunload', this.boundBeforeUnload);
+    this.ngZone.runOutsideAngular(() => {
+      this.autosaveIntervalId = window.setInterval(() => this.persistAutosave(), AUTOSAVE_INTERVAL_MS);
+    });
   }
 
   ngOnDestroy() {
+    window.removeEventListener('beforeunload', this.boundBeforeUnload);
+    clearInterval(this.autosaveIntervalId);
     cancelAnimationFrame(this.animFrameId);
     this.resizeObserver?.disconnect();
     const cv = this.canvasRef.nativeElement;
@@ -193,10 +294,19 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     cv.removeEventListener('mousedown', this.boundDown);
     cv.removeEventListener('mouseup',   this.boundUp);
     cv.removeEventListener('wheel',     this.boundWheel);
+    const navCv = this.navCubeCanvasRef?.nativeElement;
+    navCv?.removeEventListener('mousemove',  this.boundNavMove);
+    navCv?.removeEventListener('click',      this.boundNavClick);
+    navCv?.removeEventListener('mouseleave', this.boundNavLeave);
+    this.navCube?.geometry.dispose();
+    (this.navCube?.material as THREE.MeshBasicMaterial[] | undefined)?.forEach(m => { m.map?.dispose(); m.dispose(); });
+    this.navRenderer?.dispose();
     this.moveLine?.geometry.dispose();
     (this.moveLine?.material as THREE.Material | undefined)?.dispose();
     this.measureLine?.geometry.dispose();
     (this.measureLine?.material as THREE.Material | undefined)?.dispose();
+    this.wallDimLine?.geometry.dispose();
+    (this.wallDimLine?.material as THREE.Material | undefined)?.dispose();
     this.renderer?.dispose();
     this.envTexture?.dispose();
     if (this.renderFloor) { this.renderFloor.geometry.dispose(); (this.renderFloor.material as THREE.Material).dispose(); }
@@ -594,6 +704,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   // ── Selection ──────────────────────────────────────────────────────────────
 
   applySelect(ids: number[]) {
+    this.clearWallDims();
     this.selectedIds.forEach(id => {
       const obj = this.objectMap.get(id);
       if (obj) { colorObj(obj, COLOR_NORMAL); setEdgeColor(obj, EDGE_NORMAL); }
@@ -665,10 +776,10 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   // ── Save / Load scene (JSON) ─────────────────────────────────────────────────
 
-  /** Download the current scene as a JSON file describing every instance and its props. */
-  saveScene() {
+  /** The scene document: every instance and its props, the material library, and the view. */
+  private buildSceneDoc() {
     const cam = this.camera, tgt = this.controls.target;
-    const doc = {
+    return {
       format: 'webcad-scene',
       version: 2,
       savedAt: new Date().toISOString(),
@@ -688,7 +799,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         },
       },
     };
-    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+  }
+
+  /** Fallback save: trigger a browser download of the scene JSON (no file handle to keep). */
+  private downloadScene() {
+    const blob = new Blob([JSON.stringify(this.buildSceneDoc(), null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -697,46 +812,155 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     URL.revokeObjectURL(url);
   }
 
-  /** Open a previously-saved scene JSON and recreate every object, coordinate and property. */
+  /**
+   * Save — never shows a dialog. Silently overwrites the file this scene was last
+   * saved to (or opened from) via the File System Access API; if there's no file yet
+   * (or the handle is stale/permission was revoked), it downloads immediately instead
+   * of prompting for a location — that's what "Save as…" is for.
+   */
+  async saveScene() {
+    if (this.savedFileHandle) {
+      try {
+        const writable = await this.savedFileHandle.createWritable();
+        await writable.write(JSON.stringify(this.buildSceneDoc(), null, 2));
+        await writable.close();
+        return;
+      } catch {
+        this.savedFileHandle = null;   // stale/revoked handle — fall through
+      }
+    }
+    this.downloadScene();
+  }
+
+  /** Save as… — always prompts for a location (or downloads, in browsers without the picker API). */
+  async saveSceneAs() {
+    const picker = window.showSaveFilePicker;
+    if (picker) {
+      try {
+        const handle = await picker({
+          suggestedName: 'scene.json',
+          types: [{ description: 'WebCAD scene', accept: { 'application/json': ['.json'] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(JSON.stringify(this.buildSceneDoc(), null, 2));
+        await writable.close();
+        this.savedFileHandle = handle;
+        return;
+      } catch (err) {
+        if ((err as DOMException)?.name === 'AbortError') return;   // user cancelled the picker
+        // any other failure (e.g. picker unsupported in this context) — fall back to a download
+      }
+    }
+    this.downloadScene();
+  }
+
+  /** Open scene… — via the File System Access picker (so a later "Save" can overwrite it), or the classic file input. */
+  async openScene() {
+    const picker = window.showOpenFilePicker;
+    if (picker) {
+      try {
+        const [handle] = await picker({
+          types: [{ description: 'WebCAD scene', accept: { 'application/json': ['.json'] } }],
+        });
+        const file = await handle.getFile();
+        this.savedFileHandle = handle;
+        this.loadSceneFile(file);
+        return;
+      } catch (err) {
+        if ((err as DOMException)?.name === 'AbortError') return;   // user cancelled the picker
+        // any other failure — fall back to the classic hidden file input
+      }
+    }
+    this.sceneFileInputRef?.nativeElement.click();
+  }
+
+  /** Change handler for the classic hidden `<input type=file>` fallback. */
   loadScene(event: Event) {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
-    if (!file) return;
+    input.value = '';   // allow re-loading the same file next time
+    if (file) this.loadSceneFile(file);
+  }
+
+  /** Parse a scene JSON file and recreate every object, coordinate and property. */
+  private loadSceneFile(file: File) {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const doc = JSON.parse(String(reader.result));
-        const instances = Array.isArray(doc) ? doc : doc.instances;   // accept a bare array too
-        if (!Array.isArray(instances)) throw new Error('no instances array');
-        // Normalise + validate each instance; coerce missing fields to safe defaults.
-        const clean: SceneInstance[] = instances.map((i: Partial<SceneInstance>) => ({
-          id: Number(i.id),
-          familyId: String(i.familyId),
-          label: String(i.label ?? `МОДУЛ ${i.id}`),
-          params: { ...(i.params ?? {}) },
-          material: String(i.material ?? ''),
-          materials: i.materials && typeof i.materials === 'object' ? { ...i.materials } : undefined,
-          x: Number(i.x) || 0, y: Number(i.y) || 0, z: Number(i.z) || 0,
-          rotY: Number(i.rotY) || 0,
-          anchor: normAnchor(i.anchor),
-          path: Array.isArray(i.path)
-            ? i.path.map((p: Partial<WallPoint>) => ({ x: Number(p?.x) || 0, z: Number(p?.z) || 0 }))
-            : undefined,
-        })).filter(i => Number.isFinite(i.id) && this.getFamilyDef(i.familyId));
-        const maxId = clean.reduce((m, i) => Math.max(m, i.id), 0);
-        const nextId = Number(doc.nextId) > maxId ? Number(doc.nextId) : maxId + 1;
+        const { snap, materials, view } = this.parseSceneJson(String(reader.result));
         this.ngZone.run(() => {
           this.pushHistory();   // loading is undoable
-          this.restoreScene({ instances: clean, nextId });
-          this.restoreMaterialLibrary(doc.materials);
-          this.restoreView(doc.view);
+          this.restoreScene(snap);
+          this.restoreMaterialLibrary(materials);
+          this.restoreView(view);
         });
       } catch {
         this.ngZone.run(() => alert('Invalid scene file — expected WebCAD scene JSON.'));
       }
     };
     reader.readAsText(file);
-    input.value = '';   // allow re-loading the same file
+  }
+
+  /** Normalise + validate a scene JSON string into a restorable snapshot; throws on invalid input. */
+  private parseSceneJson(text: string): { snap: SceneSnapshot; materials: unknown; view: unknown } {
+    const doc = JSON.parse(text);
+    const instances = Array.isArray(doc) ? doc : doc.instances;   // accept a bare array too
+    if (!Array.isArray(instances)) throw new Error('no instances array');
+    // Normalise + validate each instance; coerce missing fields to safe defaults.
+    const clean: SceneInstance[] = instances.map((i: Partial<SceneInstance>) => ({
+      id: Number(i.id),
+      familyId: String(i.familyId),
+      label: String(i.label ?? `МОДУЛ ${i.id}`),
+      params: { ...(i.params ?? {}) },
+      material: String(i.material ?? ''),
+      materials: i.materials && typeof i.materials === 'object' ? { ...i.materials } : undefined,
+      x: Number(i.x) || 0, y: Number(i.y) || 0, z: Number(i.z) || 0,
+      rotY: Number(i.rotY) || 0,
+      anchor: normAnchor(i.anchor),
+      path: Array.isArray(i.path)
+        ? i.path.map((p: Partial<WallPoint>) => ({ x: Number(p?.x) || 0, z: Number(p?.z) || 0 }))
+        : undefined,
+    })).filter(i => Number.isFinite(i.id) && this.getFamilyDef(i.familyId));
+    const maxId = clean.reduce((m, i) => Math.max(m, i.id), 0);
+    const nextId = Number(doc.nextId) > maxId ? Number(doc.nextId) : maxId + 1;
+    return { snap: { instances: clean, nextId }, materials: doc.materials, view: doc.view };
+  }
+
+  // ── Autosave (localStorage) ──────────────────────────────────────────────────
+  //
+  // Independent of Save/Save as/Open: mirrors whatever is currently on screen so a
+  // refresh, an accidental tab close, or a crash doesn't lose in-progress work. Written
+  // on a timer and on `beforeunload`; restored once at startup if present.
+
+  /** Serialise the current scene and write it to localStorage; silently no-ops on failure
+   *  (storage full, private-browsing mode, or an unserialisable value). */
+  private persistAutosave() {
+    let json: string;
+    try {
+      json = JSON.stringify(this.buildSceneDoc());
+    } catch {
+      return;
+    }
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, json);
+    } catch {
+      // quota exceeded or storage disabled — nothing we can do, just skip this tick
+    }
+  }
+
+  /** Restore the autosaved scene from localStorage, if any — called once at startup. */
+  private restoreAutosave() {
+    const text = localStorage.getItem(AUTOSAVE_KEY);
+    if (!text) return;
+    try {
+      const { snap, materials, view } = this.parseSceneJson(text);
+      if (snap.instances.length === 0) return;   // nothing worth restoring
+      this.restoreScene(snap);
+      this.restoreMaterialLibrary(materials);
+      this.restoreView(view);
+    } catch {
+      localStorage.removeItem(AUTOSAVE_KEY);   // corrupted — drop it rather than fail on every load
+    }
   }
 
   /** Restore the saved material library (v2+); older files leave the current library intact. */
@@ -1009,12 +1233,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     return p;
   }
 
-  /** Live translucent preview of the in-progress segment `from`→`to`, plus a length readout. */
+  /**
+   * Live translucent preview of the in-progress segment `from`→`to`, plus the editable
+   * cursor-distance input (same `.move-measure` editor the Move tool uses) so a specific
+   * length can be typed in rather than clicked — see `commitTypedDistance`.
+   */
   private updateWallGhost(from: THREE.Vector3, to: THREE.Vector3) {
     if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
     const dx = to.x - from.x, dz = to.z - from.z;
     const len = Math.hypot(dx, dz);
-    if (len < 1) { this.ngZone.run(() => { this.measureLabel = null; }); return; }
+    if (len < 1) { this.ngZone.run(() => { this.moveLabel = null; }); return; }
     const seg = makeMesh(len, this.wallHeight, 90, this.wallThickness, [false, false, false, false], 0.5, true);
     ghostify(seg);
     seg.rotation.y = Math.atan2(-dz, dx);
@@ -1022,16 +1250,23 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.ghost = seg;
     this.scene.add(this.ghost);
 
-    const canvas = this.canvasRef.nativeElement;
-    const ndc = to.clone().project(this.camera);
-    const x = ndc.x * canvas.clientWidth / 2 + canvas.clientWidth / 2;
-    const y = canvas.clientHeight / 2 - ndc.y * canvas.clientHeight / 2;
-    this.ngZone.run(() => { this.measureLabel = { x, y, text: `${Math.round(len)} mm` }; });
+    this.moveDir.set(dx, 0, dz).normalize();
+    const { x, y } = this.worldToPx(to);
+    this.ngZone.run(() => {
+      this.moveLabel = { x, y };
+      if (!this.distanceLocked) this.distanceStr = String(Math.round(len));
+      if (this.distFocusPending) {
+        this.distFocusPending = false;
+        setTimeout(() => this.distInputRef?.nativeElement.focus());
+      }
+    });
   }
 
   /** Append a vertex to the current polyline and create/grow the single wall instance. */
   private addWallPoint(p: THREE.Vector3) {
     this.wallPath.push(p.clone());
+    // Reset the typed-length editor for the next segment (fresh live value, auto-focus).
+    this.distanceLocked = false; this.distanceStr = ''; this.distFocusPending = true;
     if (this.wallPath.length < 2) return;
     this.pushHistory();
     const p0 = this.wallPath[0];
@@ -1190,6 +1425,167 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.updateWallHandles();
   }
 
+  // ── Wall face temporary dimensions (Revit-style) ──────────────────────────────
+  //
+  // Clicking a selected wall's vertical face raycasts along that face's outward
+  // normal (and, for a side face, inward too) to find the nearest OTHER instance's
+  // surface, showing an editable live distance. The search always excludes the
+  // clicked wall's own geometry, so this can never show — or change — its thickness;
+  // committing only ever translates the whole wall or moves one endpoint.
+
+  /** Nearest face hit along a ray from `origin` in `dir`, excluding `excludeInstId`. */
+  private nearestSurfaceHit(origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number, excludeInstId: number):
+    { point: THREE.Vector3; dist: number } | null {
+    const eps = 1;   // nudge past the source face so it isn't immediately re-hit at t≈0
+    const targets: THREE.Mesh[] = [];
+    this.objectMap.forEach((obj, id) => {
+      if (id === excludeInstId) return;
+      obj.traverse(c => { if (c instanceof THREE.Mesh && !c.userData['isEdge']) targets.push(c); });
+    });
+    const d = dir.clone().normalize();
+    this.raycaster.set(origin.clone().addScaledVector(d, eps), d);
+    this.raycaster.far = maxDist;
+    const hits = this.raycaster.intersectObjects(targets, false);
+    this.raycaster.far = Infinity;
+    if (!hits.length) return null;
+    return { point: hits[0].point, dist: hits[0].distance + eps };
+  }
+
+  /**
+   * Classify a raycast hit on a wall's solid: an end-cap face (only exists at the
+   * polyline's first/last vertex — interior joints are mitred) or a side face
+   * (belongs to one segment). Returns null for a face this feature doesn't handle.
+   */
+  private classifyWallFace(inst: SceneInstance, worldNormal: THREE.Vector3):
+    { kind: 'end'; vertexIndex: number } | { kind: 'side'; segIndex: number } | null {
+    const path = inst.path;
+    if (!path || path.length < 2) return null;
+    const n = path.length;
+    const dir2 = (a: WallPoint, b: WallPoint) => new THREE.Vector3(b.x - a.x, 0, b.z - a.z).normalize();
+
+    // Undo the wall instance's own Y rotation to work in its local (unrotated) frame.
+    const localN = worldNormal.clone().applyAxisAngle(WALL_Y, -inst.rotY * (Math.PI / 180));
+    localN.y = 0; localN.normalize();
+
+    const d0 = dir2(path[0], path[1]);
+    if (localN.dot(d0) < -0.9) return { kind: 'end', vertexIndex: 0 };
+    const dLast = dir2(path[n - 2], path[n - 1]);
+    if (localN.dot(dLast) > 0.9) return { kind: 'end', vertexIndex: n - 1 };
+
+    let best = -1, bestDot = 0.6;   // require reasonably close alignment
+    for (let i = 0; i < n - 1; i++) {
+      const d = dir2(path[i], path[i + 1]);
+      const perp = new THREE.Vector3(-d.z, 0, d.x);   // rotate 90° in the ground plane
+      const dot = Math.abs(localN.dot(perp));
+      if (dot > bestDot) { bestDot = dot; best = i; }
+    }
+    return best >= 0 ? { kind: 'side', segIndex: best } : null;
+  }
+
+  private makeWallDim(
+    instId: number, editKind: WallDim['editKind'], axis: THREE.Vector3,
+    originPoint: THREE.Vector3, hitPoint: THREE.Vector3, vertexIndex?: number,
+  ): WallDim {
+    const dist = Math.round(originPoint.distanceTo(hitPoint));
+    return {
+      instId, editKind, axis: axis.clone().normalize(),
+      originPoint: originPoint.clone(), hitPoint: hitPoint.clone(),
+      dist, vertexIndex, screen: { x: 0, y: 0 }, valueStr: String(dist),
+    };
+  }
+
+  /** Build the dimension(s) for a clicked face — only ever to ANOTHER instance — and show them. */
+  private beginWallDimension(
+    inst: SceneInstance, point: THREE.Vector3, worldNormal: THREE.Vector3,
+    cls: { kind: 'end'; vertexIndex: number } | { kind: 'side'; segIndex: number },
+  ) {
+    const dims: WallDim[] = [];
+    if (cls.kind === 'end') {
+      const hit = this.nearestSurfaceHit(point, worldNormal, WALL_DIM_MAX, inst.id);
+      if (hit) dims.push(this.makeWallDim(inst.id, 'vertex', worldNormal, point, hit.point, cls.vertexIndex));
+    } else {
+      const out = this.nearestSurfaceHit(point, worldNormal, WALL_DIM_MAX, inst.id);
+      if (out) dims.push(this.makeWallDim(inst.id, 'translate', worldNormal, point, out.point));
+      const inwardDir = worldNormal.clone().negate();
+      const inHit = this.nearestSurfaceHit(point, inwardDir, WALL_DIM_MAX, inst.id);
+      if (inHit) dims.push(this.makeWallDim(inst.id, 'translate', inwardDir, point, inHit.point));
+    }
+    this.wallDims = dims;
+    this.updateWallDimScreens();
+    this.updateWallDimLines();
+  }
+
+  /** Raycast the clicked wall's own solid; on a vertical face, show its temp dimension(s). */
+  private tryStartWallFaceDimension(e: MouseEvent, inst: SceneInstance) {
+    const obj = this.objectMap.get(inst.id);
+    if (!obj) { this.clearWallDims(); return; }
+    this.raycaster.setFromCamera(this.ndc(e), this.camera);
+    const hits = this.raycaster.intersectObject(obj, true).filter(h => !h.object.userData['isEdge'] && h.face);
+    if (!hits.length) { this.clearWallDims(); return; }
+    const hit = hits[0];
+    const worldNormal = hit.face!.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+    if (Math.abs(worldNormal.y) > 0.9) { this.clearWallDims(); return; }   // top/bottom — not handled here
+    const cls = this.classifyWallFace(inst, worldNormal);
+    if (!cls) { this.clearWallDims(); return; }
+    this.beginWallDimension(inst, hit.point, worldNormal, cls);
+  }
+
+  /** Re-project each shown dimension's label onto the canvas (camera moved). */
+  private updateWallDimScreens() {
+    for (const d of this.wallDims) {
+      const mid = d.originPoint.clone().add(d.hitPoint).multiplyScalar(0.5);
+      d.screen = this.worldToPx(mid);
+    }
+  }
+
+  /** Draw the witness line(s) for the currently-shown dimension(s). */
+  private updateWallDimLines() {
+    const attr = this.wallDimLine.geometry.getAttribute('position') as THREE.BufferAttribute;
+    this.wallDims.forEach((d, i) => {
+      attr.setXYZ(i * 2,     d.originPoint.x, d.originPoint.y, d.originPoint.z);
+      attr.setXYZ(i * 2 + 1, d.hitPoint.x,    d.hitPoint.y,    d.hitPoint.z);
+    });
+    attr.needsUpdate = true;
+    this.wallDimLine.geometry.setDrawRange(0, this.wallDims.length * 2);
+    this.wallDimLine.visible = this.wallDims.length > 0;
+  }
+
+  clearWallDims() {
+    if (!this.wallDims.length) return;
+    this.wallDims = [];
+    if (this.wallDimLine) this.wallDimLine.visible = false;
+  }
+
+  /** Commit a typed dimension value: translate the whole wall, or move one endpoint. */
+  commitWallDim(i: number) {
+    const d = this.wallDims[i];
+    if (!d) return;
+    const value = parseFloat(d.valueStr);
+    if (!isFinite(value) || value <= 0) return;
+    const inst = this.instances.find(x => x.id === d.instId);
+    if (!inst) return;
+    this.pushHistory();
+
+    const s = d.dist - value;   // move backward along axis (away from the hit) to grow the gap
+    if (d.editKind === 'translate') {
+      inst.x += d.axis.x * s; inst.y += d.axis.y * s; inst.z += d.axis.z * s;
+    } else {   // 'vertex'
+      if (!inst.path || d.vertexIndex === undefined) return;
+      const newWorld = this.wallToWorld(inst, inst.path[d.vertexIndex]).addScaledVector(d.axis, s);
+      const path = inst.path.map(p => ({ ...p }));
+      path[d.vertexIndex] = this.worldToWallLocal(inst, newWorld);
+      inst.path = path;
+    }
+
+    const old = this.objectMap.get(inst.id);
+    if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
+    this.spawnObject(inst);
+    const obj = this.objectMap.get(inst.id);
+    if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+    this.updateWallHandles();
+    this.clearWallDims();   // click the wall's face again to see the updated dimension(s)
+  }
+
   // ── ПЛОЧА (slab) tool ────────────────────────────────────────────────────────
 
   /** Available whenever idle (no selection needed). */
@@ -1261,6 +1657,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   private beginMoveOp(kind: 'move' | 'copy' | 'array') {
     if (this.selectedIds.size === 0) return;
+    this.clearWallDims();
     this.removeWallHandles();
     this.arrayCount = Math.max(1, Math.floor(Number(this.arrayCount) || 1));
     this.isCopy  = kind === 'copy';
@@ -1306,8 +1703,20 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Cursor distance editor: the user typed → stop syncing the value from the cursor. */
   onDistanceTyped() { this.distanceLocked = true; }
 
-  /** Enter in the distance input: commit the move/copy/array along the current direction. */
+  /**
+   * Enter in the distance input: commit the move/copy/array along the current
+   * direction, or — while drawing a wall — add the next vertex at exactly that
+   * length along the current cursor direction (honouring any Shift axis-lock, since
+   * `moveDir` already reflects it from the last mousemove).
+   */
   commitTypedDistance() {
+    if (this.mode === 'wall-to') {
+      const d = parseFloat(this.distanceStr);
+      if (!isFinite(d) || d <= 0 || this.moveDir.lengthSq() < 1e-9) return;
+      const last = this.wallPath[this.wallPath.length - 1];
+      this.addWallPoint(last.clone().addScaledVector(this.moveDir, d));
+      return;
+    }
     if (this.mode !== 'move-to') return;
     const d = parseFloat(this.distanceStr);
     if (!isFinite(d) || d <= 0 || this.moveDir.lengthSq() < 1e-9) return;
@@ -1322,6 +1731,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   }
 
   cancelMode() {
+    this.clearWallDims();
     if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
     // Only a real Move shifts the originals (and so must restore them); Copy/Array don't.
     if (this.mode === 'move-to' && !this.isCopy && !this.isArray) {
@@ -1899,6 +2309,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.measureLine.renderOrder = 998;
     this.scene.add(this.measureLine);
 
+    // Witness lines for the wall-face temporary dimensions (up to 2 independent
+    // segments — one per direction — drawn via setDrawRange; hidden until wallDims.length).
+    const wallDimGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(),
+    ]);
+    this.wallDimLine = new THREE.LineSegments(wallDimGeo, new THREE.LineBasicMaterial({ color: 0x00e5ff }));
+    this.wallDimLine.visible = false;
+    this.wallDimLine.renderOrder = 998;
+    this.scene.add(this.wallDimLine);
+
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.mouseButtons.LEFT   = null as any; // left-drag reserved for selection/marquee
     this.controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
@@ -1907,6 +2327,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.controls.dampingFactor = 0.06;
     this.controls.minDistance = 50;
     this.controls.maxDistance = 50000;
+    // Keep the wall-face dimension labels glued to their 3D anchors while the user
+    // orbits/pans/zooms (idle — OrbitControls stays enabled while they're shown).
+    this.controls.addEventListener('change', () => {
+      if (this.wallDims.length) this.ngZone.run(() => this.updateWallDimScreens());
+    });
 
     this.boundDown  = (e) => this.onCanvasDown(e);
     this.boundClick = (e) => this.onCanvasClick(e);
@@ -1928,13 +2353,146 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     });
     this.resizeObserver.observe(canvas.parentElement!);
 
+    this.initNavCube();
     this.animate();
   }
 
   private animate() {
     this.animFrameId = requestAnimationFrame(() => this.animate());
     this.controls.update();
+    this.stepNavTween();
     this.renderer.render(this.scene, this.camera);
+    this.renderNavCube();
+  }
+
+  // ── Navigation cube (Revit-style view-align gizmo) ───────────────────────────
+
+  /** Small always-on-top gizmo: a labelled cube that mirrors the main camera's
+   *  orientation; clicking a face snaps the main view to look straight at it. */
+  private initNavCube() {
+    const canvas = this.navCubeCanvasRef.nativeElement;
+    const size = canvas.clientWidth || 84;
+
+    this.navScene = new THREE.Scene();
+    this.navCamera = new THREE.OrthographicCamera(-2.2, 2.2, 2.2, -2.2, 0.1, 20);
+
+    const geo = new THREE.BoxGeometry(2, 2, 2);
+    const mats = this.NAV_FACE_LABELS.map((label, i) => this.makeNavFaceMaterial(label, i === this.navHoverFace));
+    this.navCube = new THREE.Mesh(geo, mats);
+    this.navScene.add(this.navCube);
+    this.navScene.add(new THREE.LineSegments(
+      new THREE.EdgesGeometry(geo),
+      new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 }),
+    ));
+    this.navScene.add(new THREE.AmbientLight(0xffffff, 1));
+
+    this.navRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    this.navRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.navRenderer.setSize(size, size);
+
+    this.boundNavMove  = (e) => this.onNavCubeMove(e);
+    this.boundNavClick = (e) => this.onNavCubeClick(e);
+    this.boundNavLeave = () => this.setNavHover(-1);
+    canvas.addEventListener('mousemove', this.boundNavMove);
+    canvas.addEventListener('click',     this.boundNavClick);
+    canvas.addEventListener('mouseleave', this.boundNavLeave);
+  }
+
+  /** Builds one face's canvas-texture material; `hover` brightens it. */
+  private makeNavFaceMaterial(label: string, hover: boolean): THREE.MeshBasicMaterial {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 256;
+    const ctx = cv.getContext('2d')!;
+    const fill = this.lightTheme ? (hover ? '#dbe4ee' : '#eef1f5') : (hover ? '#3a4048' : '#2b2f36');
+    const border = this.lightTheme ? '#aab4c0' : '#4a5058';
+    const text = this.lightTheme ? '#2a2f36' : '#e4e7eb';
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, 0, 256, 256);
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 10;
+    ctx.strokeRect(5, 5, 246, 246);
+    ctx.fillStyle = text;
+    ctx.font = 'bold 34px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 128, 128);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return new THREE.MeshBasicMaterial({ map: tex });
+  }
+
+  /** Re-skins the cube faces after a theme flip so it stays legible in both themes. */
+  private rebuildNavCubeFaces() {
+    if (!this.navCube) return;
+    (this.navCube.material as THREE.MeshBasicMaterial[]).forEach(m => { m.map?.dispose(); m.dispose(); });
+    this.navCube.material = this.NAV_FACE_LABELS.map((label, i) => this.makeNavFaceMaterial(label, i === this.navHoverFace));
+  }
+
+  private setNavHover(face: number) {
+    if (face === this.navHoverFace) return;
+    this.navHoverFace = face;
+    this.rebuildNavCubeFaces();
+  }
+
+  private navNdc(e: MouseEvent, canvas: HTMLCanvasElement): THREE.Vector2 {
+    const r = canvas.getBoundingClientRect();
+    return new THREE.Vector2(
+      ((e.clientX - r.left) / r.width) * 2 - 1,
+      -((e.clientY - r.top) / r.height) * 2 + 1,
+    );
+  }
+
+  private pickNavFace(e: MouseEvent): number {
+    const canvas = this.navCubeCanvasRef.nativeElement;
+    this.raycaster.setFromCamera(this.navNdc(e, canvas), this.navCamera);
+    const hit = this.raycaster.intersectObject(this.navCube, false)[0];
+    return hit?.face ? hit.face.materialIndex : -1;
+  }
+
+  private onNavCubeMove(e: MouseEvent) { this.setNavHover(this.pickNavFace(e)); }
+
+  private onNavCubeClick(e: MouseEvent) {
+    const face = this.pickNavFace(e);
+    if (face < 0) return;
+    this.orientToNavFace(this.NAV_FACE_DIRS[face]);
+  }
+
+  /** Animates the main camera to look straight at `dir` (a unit vector from the
+   *  OrbitControls target), keeping the current distance and `camera.up` untouched
+   *  so OrbitControls' internal state (captured from `camera.up` at construction)
+   *  stays consistent once the tween hands back control. */
+  private orientToNavFace(dir: THREE.Vector3) {
+    const target = this.controls.target.clone();
+    const dist = THREE.MathUtils.clamp(
+      this.camera.position.distanceTo(target) || 2000, this.controls.minDistance, this.controls.maxDistance,
+    );
+    const fromDir = this.camera.position.clone().sub(target).normalize();
+    const toDir = dir.clone().normalize();
+    const quat = new THREE.Quaternion().setFromUnitVectors(fromDir, toDir);
+    this.navTween = { target, fromDir, toDir, quat, dist, start: performance.now(), dur: 400 };
+  }
+
+  /** Advances the in-flight nav-cube camera tween (slerp along the great-circle arc). */
+  private stepNavTween() {
+    if (!this.navTween) return;
+    const { target, fromDir, toDir, quat, dist, start, dur } = this.navTween;
+    const t = Math.min(1, (performance.now() - start) / dur);
+    const k = t * t * (3 - 2 * t);
+    const curDir = t >= 1 ? toDir : fromDir.clone().applyQuaternion(new THREE.Quaternion().slerp(quat, k));
+    this.camera.position.copy(target).addScaledVector(curDir, dist);
+    this.camera.lookAt(target);
+    if (t >= 1) this.navTween = null;
+  }
+
+  /** Mirrors the nav cube's mini-camera to the main camera's viewing direction each
+   *  frame, so the gizmo always shows the world's current orientation, then renders it. */
+  private renderNavCube() {
+    if (!this.navRenderer) return;
+    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    this.navCamera.position.copy(dir.multiplyScalar(5));
+    this.navCamera.up.copy(this.camera.up);
+    this.navCamera.lookAt(0, 0, 0);
+    this.navRenderer.render(this.navScene, this.navCamera);
   }
 
   // ── Render (photoreal preview) mode ──────────────────────────────────────────
@@ -1995,7 +2553,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   closeSettings() { this.settingsDialogOpen = false; }
 
   /** Flip the UI between dark and light; the 3D background follows the theme too. */
-  toggleTheme() { this.lightTheme = !this.lightTheme; this.applyViewportBackground(); }
+  toggleTheme() { this.lightTheme = !this.lightTheme; this.applyViewportBackground(); this.rebuildNavCubeFaces(); }
 
   /** Camera brightness slider changed — re-apply the lighting multiplier live. */
   onBrightnessChange() { this.applyLighting(); }
@@ -2407,7 +2965,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         this.wallInstanceId = null;
         this.ngZone.run(() => {
           this.mode = 'wall-to';
-          this.modeLabel = 'Click the next corner — hold Shift to lock to X/Z — Esc to finish';
+          this.modeLabel = 'Click the next corner or type a length — hold Shift to lock to X/Z — Esc to finish';
+          this.distanceLocked = false; this.distanceStr = ''; this.distFocusPending = true;
         });
       }
       return;
@@ -2548,9 +3107,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
     this.ngZone.run(() => {
       this.clearSubSelection();
+      const hitInst = hitId !== null ? this.instances.find(x => x.id === hitId) : undefined;
       if (panelNode && panelInstanceId !== null) {
         this.applySelect([]);   // a panel isn't an instance — no instance selection
         this.selectSubPanel(panelInstanceId, panelNode);
+      } else if (hitInst && hitInst.familyId === 'wall') {
+        // Clicking a wall's face never toggles it off — it (re)selects the wall and
+        // tries to show a temporary dimension to the nearest parallel surface.
+        if (!(this.selectedIds.size === 1 && this.selectedIds.has(hitInst.id))) this.applySelect([hitInst.id]);
+        this.tryStartWallFaceDimension(e, hitInst);
       } else if (hitId !== null) {
         this.applySelect(this.selectedIds.size === 1 && this.selectedIds.has(hitId) ? [] : [hitId]);
       } else {

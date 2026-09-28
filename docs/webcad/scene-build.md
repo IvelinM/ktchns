@@ -14,6 +14,17 @@
   for move/copy/array), `groundPlane` (Y=0 fallback).
 - **OrbitControls (non-default):** `LEFT = null` (reserved for select/marquee),
   `MIDDLE = PAN`, `RIGHT = ROTATE`; damping 0.06.
+- **Nav cube** (top-right, `initNavCube`): a second, tiny scene/camera/renderer pair
+  driving `canvas.nav-cube` — a labelled 6-face `BoxGeometry` gizmo mirroring the main
+  camera's viewing direction every frame (`renderNavCube`). Clicking a face
+  (`onNavCubeClick` → `orientToNavFace`) slerp-tweens the main camera to look straight
+  at it (`stepNavTween`, driven from `animate()`), keeping `controls.target` and
+  distance fixed. **Never rotate `camera.up` away from `(0,1,0)`** — OrbitControls
+  captures `camera.up` once at construction to build its internal reorientation quat,
+  so changing it later desyncs orbiting; TOP/BOTTOM face directions instead carry a
+  small (~1°) tilt off the vertical to dodge the `lookAt` degenerate case without
+  touching `up`. Face textures are theme-aware canvas textures rebuilt by
+  `rebuildNavCubeFaces()` (called from `toggleTheme()`).
 
 ## Angular zones
 

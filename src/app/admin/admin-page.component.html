@@ -16,9 +16,16 @@
               <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
               <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
             </svg>
-            Save scene…
+            Save
           </button>
-          <button class="menu-item" (click)="fileMenuOpen = false; sceneFileInput.click()">
+          <button class="menu-item" (click)="fileMenuOpen = false; saveSceneAs()" [disabled]="instances.length === 0">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+              <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+            </svg>
+            Save as…
+          </button>
+          <button class="menu-item" (click)="fileMenuOpen = false; openScene()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
             </svg>
@@ -326,6 +333,9 @@
   <main class="viewport">
     <canvas #rendererCanvas></canvas>
 
+    <!-- Navigation cube (Revit-style): click a face to snap the view to it -->
+    <canvas #navCubeCanvas class="nav-cube" title="Click a face to align the view"></canvas>
+
     <!-- Toolbar -->
     <div class="toolbar">
       <button class="tool-btn" title="Move (M)" [disabled]="!canEdit" (click)="startMove()">
@@ -492,7 +502,7 @@
 
     <!-- Distance editor — follows the cursor; type a value + Enter to commit -->
     <div class="move-measure"
-         *ngIf="moveLabel && mode === 'move-to'"
+         *ngIf="moveLabel && (mode === 'move-to' || mode === 'wall-to')"
          [style.left.px]="moveLabel.x"
          [style.top.px]="moveLabel.y">
       <input #distInput type="number" min="0" step="1"
@@ -509,6 +519,17 @@
          [style.left.px]="measureLabel.x"
          [style.top.px]="measureLabel.y">
       {{ measureLabel.text }}
+    </div>
+
+    <!-- Wall face temporary dimensions — click a value to edit it, Enter commits -->
+    <div class="wall-dim"
+         *ngFor="let d of wallDims; let wi = index"
+         [style.left.px]="d.screen.x"
+         [style.top.px]="d.screen.y">
+      <input type="number" min="1" step="1" [(ngModel)]="d.valueStr"
+             (keydown.enter)="commitWallDim(wi)"
+             (keydown.escape)="clearWallDims()">
+      <span class="mm">mm</span>
     </div>
 
     <!-- Empty hint -->

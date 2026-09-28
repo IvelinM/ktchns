@@ -511,6 +511,17 @@
   }
 }
 
+// Navigation cube (top-right, Revit-style)
+.viewport canvas.nav-cube {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 84px !important;
+  height: 84px !important;
+  z-index: 15;
+  cursor: pointer;
+}
+
 // Mode overlay
 .mode-overlay {
   position: absolute;
@@ -698,6 +709,35 @@
     background: transparent;
     border: none;
     color: #ffcc33;
+    font: 600 12px monospace;
+    outline: none;
+    appearance: textfield;
+    -moz-appearance: textfield;
+    &::-webkit-inner-spin-button, &::-webkit-outer-spin-button { -webkit-appearance: none; }
+  }
+  .mm { opacity: 0.7; }
+}
+
+// Wall face temporary dimensions — centred on their 3D anchor (the witness segment's midpoint)
+.wall-dim {
+  position: absolute;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(10, 10, 10, 0.9);
+  border: 1px solid #00e5ff;
+  color: #00e5ff;
+  font: 600 11px monospace;
+  transform: translate(-50%, -50%);
+
+  input {
+    width: 56px;
+    background: transparent;
+    border: none;
+    color: #00e5ff;
     font: 600 12px monospace;
     outline: none;
     appearance: textfield;
