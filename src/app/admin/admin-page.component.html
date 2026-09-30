@@ -438,6 +438,15 @@
             </svg>
             Settings
           </button>
+          <div class="menu-sep"></div>
+          <button class="menu-item" (click)="exportForRender()" [disabled]="instances.length === 0"
+                  title="Изнеси .glb за фотореалистичен рендер (Blender / Cycles)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15V6a2 2 0 0 0-2-2h-9"/><path d="M3 9v9a2 2 0 0 0 2 2h9"/>
+              <path d="M12 12l9-8"/><path d="M3 20l9-8"/><path d="M12 12v8"/>
+            </svg>
+            Export for render (.glb)
+          </button>
         </div>
       </div>
 

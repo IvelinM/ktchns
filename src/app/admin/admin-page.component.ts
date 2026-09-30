@@ -6,6 +6,7 @@ import { FormsModule } from '@angular/forms';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 
 // The CAD engine is split into focused modules (see each file's header):
 //   webcad.model     — data model & shared constants (the vocabulary; read first)
@@ -1130,6 +1131,103 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     a.download = 'schedule.txt';
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  // ── Photoreal export (→ Blender / V-Ray-class offline render) ───────────────────
+
+  /**
+   * Export the scene as a single self-contained `.glb` for offline path-traced
+   * rendering (see `scripts/render/`). The GLB carries the full **Render-mode PBR look**
+   * (MeshStandard metalness/roughness + embedded JPG textures → glTF PBR, which maps
+   * 1:1 onto Blender's Principled BSDF) plus a camera matching the current view, so the
+   * Blender render frames exactly what's on screen. Nothing here mutates the live scene:
+   * every object is cloned and render materials are applied to the clones with
+   * `dispose = false` (the live materials are shared, so we must not free them), and CAD
+   * edge lines are left invisible so `onlyVisible` drops them.
+   */
+  async exportForRender() {
+    this.visMenuOpen = false;
+    if (!this.instances.length) return;
+
+    const group = new THREE.Group();
+    group.name = 'Kitchen';
+    for (const inst of this.instances) {
+      const src = this.objectMap.get(inst.id);
+      if (!src) continue;
+      const clone = src.clone(true);              // shares geometry + materials with the live object
+      this.applyRenderMaterials(clone, inst, false);  // give the clone its own MeshStandard mats; keep live ones
+      group.add(clone);
+    }
+
+    // A camera matching the current view. Blender's glTF importer handles the Y-up→Z-up
+    // conversion; the aspect ratio (stored as a node extra) lets the script pick a matching
+    // output resolution so the framing is identical.
+    const canvas = this.canvasRef.nativeElement;
+    const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
+    const cam = this.camera.clone();
+    cam.name = 'ViewCamera';
+    cam.userData = { viewAspect: aspect };
+    group.add(cam);
+    group.updateMatrixWorld(true);
+
+    // Textures (chipboard edge, material JPGs) load asynchronously; GLTFExporter throws
+    // "No valid image data" if a map's image hasn't decoded yet. Wait for them, and drop
+    // any that never arrive so one un-loaded image can't block the whole export.
+    await this.awaitGroupTextures(group, 5000);
+
+    const exporter = new GLTFExporter();
+    exporter.parse(
+      group,
+      (result) => {
+        const blob = new Blob([result as ArrayBuffer], { type: 'model/gltf-binary' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'kitchen-render.glb';
+        a.click();
+        URL.revokeObjectURL(url);
+      },
+      (err) => console.error('[render export] GLTF export failed', err),
+      { binary: true, onlyVisible: true },
+    );
+  }
+
+  /**
+   * Resolve once every texture map under `group` has decoded image data (or `timeoutMs`
+   * elapses). Any map still without a usable image is then removed so `GLTFExporter`
+   * won't throw. Operates only on the throwaway clone materials — the shared texture
+   * objects are left intact, so the live scene is unaffected.
+   */
+  private awaitGroupTextures(group: THREE.Object3D, timeoutMs: number): Promise<void> {
+    const maps = new Set<THREE.Texture>();
+    const eachMat = (fn: (m: THREE.MeshStandardMaterial) => void) => group.traverse(o => {
+      const mm = (o as THREE.Mesh).material;
+      if (!mm) return;
+      (Array.isArray(mm) ? mm : [mm]).forEach(m => fn(m as THREE.MeshStandardMaterial));
+    });
+    eachMat(m => { if (m.map) maps.add(m.map); });
+    if (!maps.size) return Promise.resolve();
+
+    const ready = (t: THREE.Texture): boolean => {
+      const img = t.image as (HTMLImageElement | ImageBitmap | HTMLCanvasElement | undefined);
+      if (!img) return false;
+      if (img instanceof HTMLImageElement) return img.complete && img.naturalWidth > 0;
+      return (img as { width?: number }).width! > 0;
+    };
+
+    const start = Date.now();
+    return new Promise<void>(resolve => {
+      const tick = () => {
+        const pending = [...maps].some(t => !ready(t));
+        if (!pending || Date.now() - start > timeoutMs) {
+          eachMat(m => { if (m.map && !ready(m.map)) { m.map = null; m.needsUpdate = true; } });
+          resolve();
+          return;
+        }
+        setTimeout(tick, 100);
+      };
+      tick();
+    });
   }
 
   // ── Match tool ───────────────────────────────────────────────────────────────
@@ -2598,7 +2696,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
    * `*_КАНТ_МАТЕРИАЛ`, and the exposed chipboard edge keeps its texture. Where no library
    * material is assigned, falls back to sensible roughness per material role.
    */
-  private applyRenderMaterials(obj: THREE.Object3D, inst: SceneInstance) {
+  private applyRenderMaterials(obj: THREE.Object3D, inst: SceneInstance, dispose = true) {
     const toKey = (panelName: string) => panelName.replace(/ /g, '_') + '_МАТЕРИАЛ';
     const toKantKey = (panelName: string) => panelName.replace(/ /g, '_') + '_КАНТ_МАТЕРИАЛ';
     obj.traverse(child => {
@@ -2641,7 +2739,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
           envMapIntensity: def ? 0.4 + def.reflection / 100 : 1,
         });
         std.userData = { ...m.userData };   // keep edgeBand tag so colorObj still skips bands
-        m.dispose();
+        if (dispose) m.dispose();           // skip when converting throwaway clones (shared mats)
         return std;
       };
       child.material = Array.isArray(child.material)

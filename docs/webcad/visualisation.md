@@ -22,11 +22,24 @@ reverses it). `applyRenderMaterials(obj, inst)` converts each flat `MeshPhongMat
   `opacity = 1 − transparency/100`, plus the JPG `texture` (below). The exposed
   chipboard edge keeps its own texture.
 
-Render is the **only** realistic mode. A GPU path tracer (`three-gpu-pathtracer`) and a
-raster "Photo" post-processing mode (EffectComposer/TAA/GTAO) were both built and then
+Render is the **only** realistic *in-browser* mode. A GPU path tracer (`three-gpu-pathtracer`)
+and a raster "Photo" post-processing mode (EffectComposer/TAA/GTAO) were both built and then
 **removed** — the path tracer rendered black on Intel integrated GPUs (the owner's Iris
 Xe), and Photo was redundant with Render. **Don't reintroduce either.** (The `roughness`
 floor of 0.06 is a leftover NaN-guard from the path-tracer attempt; harmless, keep it.)
+
+## Export for render (`exportForRender`) — offline photoreal via Blender
+For true V-Ray-class stills (global illumination, area-light shadows, accurate glossy
+reflections) there is an **offline** path that does *not* run in the browser, so the Iris Xe
+limit doesn't apply. **Visualisation ▸ Export for render (.glb)** writes one self-contained
+`.glb` via three's `GLTFExporter`: every instance is **cloned** and given the Render-mode
+`MeshStandardMaterial` look (`applyRenderMaterials(clone, inst, false)` — the `false` skips
+`m.dispose()` so the shared *live* materials survive), edge lines stay invisible so
+`onlyVisible` drops them, and a clone of the current camera is added carrying `viewAspect` in
+`userData` (→ glTF node extras). glTF PBR maps 1:1 onto Blender's Principled BSDF. The
+render itself is done by `scripts/render/render_kitchen.py` (Cycles + OpenImageDenoise, CPU,
+bundled studio HDRI) — see `scripts/render/README.md`. This is a separate tool, **not** a
+re-add of the removed in-browser path tracer / Photo mode.
 
 ## Materials dialog (`materialsDialogOpen`) — the scene material library
 Edits `materialDefs: MaterialDef[]` (scene-level; see [data-model.md](data-model.md)).
