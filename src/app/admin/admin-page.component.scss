@@ -1192,6 +1192,16 @@
   gap: 14px;
 }
 
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--c-text);
+  input { width: 16px; height: 16px; accent-color: #6ab4f4; cursor: pointer; }
+}
+
 // ── Responsive ────────────────────────────────────────────────────────────────
 
 @media (max-width: 680px) {

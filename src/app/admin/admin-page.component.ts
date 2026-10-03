@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import type { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 
 // The CAD engine is split into focused modules (see each file's header):
 //   webcad.model     — data model & shared constants (the vocabulary; read first)
@@ -58,6 +59,25 @@ const PLACE_ANCHOR: BasePoint = { x: 0, y: -1, z: 0 };
 
 /** Max search radius (mm) for the "nearest parallel wall surface" temporary dimension. */
 const WALL_DIM_MAX = 15000;
+
+/**
+ * Built-in material library. New scenes start with these; loaded scenes keep their own
+ * library but have any of these they're MISSING (matched by name) merged in, so the standard
+ * finishes are always available. ГЛАДКО БЯЛО is first — it's the family default every
+ * materialParam references.
+ */
+const DEFAULT_MATERIALS: MaterialDef[] = [
+  { name: 'ГЛАДКО БЯЛО',    color: '#f0f0f0', transparency: 0,  reflection: 8,  glossiness: 50 },
+  { name: 'БЯЛО ГЛАНЦ',     color: '#f4f4f4', transparency: 0,  reflection: 6,  glossiness: 92 },
+  { name: 'БЯЛО МАТ',       color: '#ececec', transparency: 0,  reflection: 2,  glossiness: 14 },
+  { name: 'БЯЛО ШАГРЕ',     color: '#eeeeee', transparency: 0,  reflection: 3,  glossiness: 32, bump: 55 },
+  { name: 'ЧЕРНО ГЛАНЦ',    color: '#0c0c0c', transparency: 0,  reflection: 8,  glossiness: 93 },
+  { name: 'ЧЕРНО МАТ',      color: '#141414', transparency: 0,  reflection: 2,  glossiness: 12 },
+  { name: 'СТЪКЛО',         color: '#d3e2e8', transparency: 85, reflection: 6,  glossiness: 96 },
+  { name: 'ОПУШЕНО СТЪКЛО', color: '#2f3437', transparency: 62, reflection: 6,  glossiness: 95 },
+  { name: 'НЕРЪЖДАВЕЙКА',   color: '#babec2', transparency: 0,  reflection: 85, glossiness: 58 },
+  { name: 'ХРОМ',           color: '#dfe4e9', transparency: 0,  reflection: 98, glossiness: 97 },
+];
 
 /** localStorage key the in-progress scene is autosaved under, so a refresh doesn't lose it. */
 const AUTOSAVE_KEY = 'webcad-autosave-v1';
@@ -114,10 +134,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
    * Materials dialog edits each one's look (color/transparency/reflection/glossiness),
    * which Render mode applies as PBR.
    */
-  materialDefs: MaterialDef[] = [
-    { name: 'ГЛАДКО БЯЛО', color: '#f0f0f0', transparency: 0, reflection: 8, glossiness: 50 },
-    { name: 'БЯЛО МАТ',    color: '#e9e9e9', transparency: 0, reflection: 2, glossiness: 18 },
-  ];
+  materialDefs: MaterialDef[] = DEFAULT_MATERIALS.map(m => ({ ...m }));
 
   // ── Materials dialog ──────────────────────────────────────────────────────────
   materialsDialogOpen = false;
@@ -129,6 +146,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   visMenuOpen = false;            // the toolbar "Visualisation" dropdown
   settingsDialogOpen = false;     // the Settings dialog (camera brightness)
   cameraBrightness = 1.0;         // global light/exposure multiplier (0.2–2.0)
+  /** Render lighting: true = directional key + soft shadows + ray-cast AO; false = flat,
+   *  shadowless diffuse light from the environment only (no directional light). */
+  directLight = true;
 
   instances  = [] as SceneInstance[];
   selectedIds = new Set<number>();
@@ -243,6 +263,32 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private fillLight!: THREE.DirectionalLight;
   private envTexture: THREE.Texture | null = null;  // cached PMREM environment (lazy)
   private renderFloor: THREE.Mesh | null = null;    // shadow-catching ground, only in render mode
+  // Progressive-accumulation pipeline for Render mode: when the view is idle we average many
+  // frames, jittering the camera sub-pixel (clean anti-aliasing) and the key light on a disc
+  // (soft, realistic shadows). Uses only ordinary scene renders + HalfFloat targets — no
+  // depth-texture sampling — so it's robust on integrated GPUs where screen-space AO silently
+  // fails. Targets/quads are lazy-built (kept out of the initial bundle) and only run while
+  // renderMode is on.
+  private accumA: THREE.WebGLRenderTarget | null = null;   // running average (ping)
+  private accumB: THREE.WebGLRenderTarget | null = null;   // running average (pong)
+  private frameRT: THREE.WebGLRenderTarget | null = null;  // one jittered sample (MSAA)
+  private accumBlendQuad: FullScreenQuad | null = null;    // accum = mix(accum, frame, 1/(n+1))
+  private accumShowQuad: FullScreenQuad | null = null;     // tone-map + sRGB to screen
+  private accumN = 0;                                       // samples accumulated for this view
+  private readonly accumMax = 48;                           // stop refining after this many
+  private accumDirty = true;                                // view/scene changed → restart
+  private ppLoading = false;
+  private keyLightBase = new THREE.Vector3();               // un-jittered key-light position
+  private sunDir = new THREE.Vector3();                     // normalised sun direction (direct mode)
+  private sunPerpA = new THREE.Vector3();                   // + two tangents, for the soft-sun cone
+  private sunPerpB = new THREE.Vector3();
+  private _sampleDir = new THREE.Vector3();                 // scratch
+  // HDRI environment: PMREM env map drives reflections (envTexture); the raw float equirect is
+  // kept for CPU direction sampling, so each accumulation frame can light the scene from one
+  // hemisphere direction coloured by the HDRI and shadow-mapped — averaged, that is ray-cast
+  // ambient occlusion + accurate image-based lighting, using only shadow maps (Iris-Xe-safe).
+  private hdriData: { data: Float32Array; w: number; h: number } | null = null;
+  private hdriLoading = false;
   private objectMap = new Map<number, THREE.Object3D>();
   private nextId = 1;
   private moveFrom    = new THREE.Vector3();
@@ -302,6 +348,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.navCube?.geometry.dispose();
     (this.navCube?.material as THREE.MeshBasicMaterial[] | undefined)?.forEach(m => { m.map?.dispose(); m.dispose(); });
     this.navRenderer?.dispose();
+    this.accumA?.dispose(); this.accumB?.dispose(); this.frameRT?.dispose();
+    this.accumBlendQuad?.dispose(); this.accumShowQuad?.dispose();
+    this.bumpTexBySize.forEach(t => t.dispose());
     this.moveLine?.geometry.dispose();
     (this.moveLine?.material as THREE.Material | undefined)?.dispose();
     this.measureLine?.geometry.dispose();
@@ -530,10 +579,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   get editingMaterial(): MaterialDef | undefined { return this.materialDefs[this.editingMaterialIndex]; }
   selectEditingMaterial(i: number) { this.editingMaterialIndex = i; }
 
-  /** Re-skin the scene live while editing a material (only matters in Render mode). */
+  /** Re-skin the scene live while editing a material: full PBR rebuild in Render mode, or
+   *  just the flat colour indication in CAD mode. */
   onMaterialEdited() {
     this.clearTextureCache();   // a texture/tile change must rebuild the GPU texture
-    if (this.renderMode) this.refreshAllObjects();
+    if (this.renderMode) { this.refreshAllObjects(); return; }
+    this.objectMap.forEach((obj, id) => {
+      const inst = this.instances.find(i => i.id === id);
+      if (inst && !this.selectedIds.has(id)) this.cadColorObj(obj, inst);   // keep selected ones blue
+    });
   }
 
   /** Add a fresh material to the library (unique name) and select it for editing. */
@@ -610,13 +664,19 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** The current material chosen for `key` on an instance (defaults to blank). */
   materialOf(inst: SceneInstance, key: string): string { return inst.materials?.[key] ?? ''; }
 
-  /** Assign a per-panel material on the selected instance (data only — no geometry rebuild). */
+  /** Assign a per-panel material on the selected instance, and (in Render mode) show it at once. */
   setMaterial(key: string, value: string) {
     const inst = this.selectedInstance;
     if (!inst) return;
     if (!inst.materials) inst.materials = {};
     inst.materials[key] = value;
     this.commitPendingEdit();
+    if (this.renderMode) {
+      const obj = this.objectMap.get(inst.id);
+      if (obj) { this.applyRenderMaterials(obj, inst); this.accumDirty = true; }  // re-skin live
+    }
+    // In CAD mode the edited object is selected (blue); its new material colour shows on
+    // deselect, when applySelect re-tints it via cadColorObj.
   }
 
   /** Fill in any МАТЕРИАЛИ keys this instance is missing (from the family defaults). */
@@ -684,6 +744,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     obj.position.set(inst.x, inst.y, inst.z);
     obj.rotation.y = inst.rotY * (Math.PI / 180);
     if (this.renderMode) this.applyRenderMaterials(obj, inst);
+    else this.cadColorObj(obj, inst);          // CAD mode: tint faces by assigned material colour
     this.objectMap.set(inst.id, obj);
     this.scene.add(obj);
   }
@@ -706,9 +767,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   applySelect(ids: number[]) {
     this.clearWallDims();
+    // In Render mode faces must keep their real material look, so selection is not painted
+    // onto them (edges are hidden there anyway); CAD mode keeps the blue highlight.
+    const paint = !this.renderMode;
     this.selectedIds.forEach(id => {
       const obj = this.objectMap.get(id);
-      if (obj) { colorObj(obj, COLOR_NORMAL); setEdgeColor(obj, EDGE_NORMAL); }
+      if (obj && paint) {
+        const inst = this.instances.find(i => i.id === id);
+        if (inst) this.cadColorObj(obj, inst); else colorObj(obj, COLOR_NORMAL);  // restore material tint
+        setEdgeColor(obj, EDGE_NORMAL);
+      }
     });
     this.selectedIds = new Set(ids);
     // Migrate any newly-selected instance whose params predate a family change,
@@ -723,7 +791,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     });
     this.selectedIds.forEach(id => {
       const obj = this.objectMap.get(id);
-      if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+      if (obj && paint) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
     });
     this.updateWallHandles();   // show editable handles when a single wall is selected
   }
@@ -794,6 +862,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       view: {
         theme: this.lightTheme ? 'light' : 'dark',
         cameraBrightness: this.cameraBrightness,
+        directLight: this.directLight,
         camera: {
           position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
           target:   { x: tgt.x, y: tgt.y, z: tgt.z },
@@ -975,15 +1044,30 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         transparency: Number(m.transparency) || 0,
         reflection: Number(m.reflection) || 0,
         glossiness: Number.isFinite(m.glossiness as number) ? Number(m.glossiness) : 50,
+        bump: Number(m.bump) > 0 ? Number(m.bump) : undefined,
+        bumpSize: Number(m.bumpSize) > 0 ? Number(m.bumpSize) : undefined,
         texture: typeof m.texture === 'string' ? m.texture : undefined,
         textureW: Number(m.textureW) > 0 ? Number(m.textureW) : undefined,
         textureH: Number(m.textureH) > 0 ? Number(m.textureH) : undefined,
         textureRotation: Number.isFinite(m.textureRotation as number) ? Number(m.textureRotation) : undefined,
       }));
     if (!clean.length) return;
+    // Merge in any built-in defaults the saved library is missing (by name), so older scenes
+    // still get the standard finishes (ХРОМ, СТЪКЛО, …) without losing custom materials.
+    const have = new Set(clean.map(m => m.name));
+    for (const d of DEFAULT_MATERIALS) if (!have.has(d.name)) clean.push({ ...d });
     this.clearTextureCache();
     this.materialDefs = clean;
     this.editingMaterialIndex = 0;
+    // The scene is spawned BEFORE this library loads (restore order), so objects were tinted
+    // against the defaults only — re-skin them now that custom materials exist: full PBR in
+    // Render mode, else the flat CAD colour indication (selected ones stay blue).
+    this.objectMap.forEach((obj, id) => {
+      const inst = this.instances.find(i => i.id === id);
+      if (!inst) return;
+      if (this.renderMode) this.applyRenderMaterials(obj, inst);
+      else if (!this.selectedIds.has(id)) this.cadColorObj(obj, inst);
+    });
   }
 
   /** Restore the saved visualisation/view settings (v2+): theme, brightness, camera pose. */
@@ -997,6 +1081,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.cameraBrightness = Math.min(2, Math.max(0.2, Number(view.cameraBrightness)));
       this.applyLighting();
     }
+    if (typeof view.directLight === 'boolean') this.directLight = view.directLight;
     const cp = view.camera?.position, ct = view.camera?.target;
     if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y) && Number.isFinite(cp.z)) {
       this.camera.position.set(cp.x, cp.y, cp.z);
@@ -1107,7 +1192,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
     this.spawnObject(inst);
     const obj = this.objectMap.get(inst.id)!;
-    colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED);
+    if (!this.renderMode) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+    this.accumDirty = true;
   }
 
   deleteSelected() {
@@ -2428,6 +2514,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     // Keep the wall-face dimension labels glued to their 3D anchors while the user
     // orbits/pans/zooms (idle — OrbitControls stays enabled while they're shown).
     this.controls.addEventListener('change', () => {
+      this.accumDirty = true;   // camera moved → restart Render-mode accumulation
       if (this.wallDims.length) this.ngZone.run(() => this.updateWallDimScreens());
     });
 
@@ -2448,6 +2535,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w, h);
+      this.accumDirty = true;          // resized back-buffer → restart accumulation (renderAccum resizes RTs)
     });
     this.resizeObserver.observe(canvas.parentElement!);
 
@@ -2459,7 +2547,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.animFrameId = requestAnimationFrame(() => this.animate());
     this.controls.update();
     this.stepNavTween();
-    this.renderer.render(this.scene, this.camera);
+    if (this.renderMode && this.accumBlendQuad) {
+      this.renderAccum();              // progressive AA + soft shadows
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
     this.renderNavCube();
   }
 
@@ -2635,6 +2727,18 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.renderFloor.receiveShadow = true;
     }
     this.scene.add(this.renderFloor);
+    // Env intensity depends on the lighting mode (see applyRenderEnv): low in direct-light mode
+    // (the shadowed samples carry the diffuse + AO), high in diffuse-only mode (env lights all).
+    this.applyRenderEnv();
+    this.keyLightBase.copy(this.keyLight.position);   // remember the un-jittered key-light pose
+    // Sun direction + a tangent basis for the soft-sun cone (direct-light mode).
+    this.sunDir.copy(this.keyLightBase).normalize();
+    this.sunPerpA.crossVectors(this.sunDir, Math.abs(this.sunDir.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize();
+    this.sunPerpB.crossVectors(this.sunDir, this.sunPerpA).normalize();
+    this.keyLight.shadow.normalBias = 3;              // hide acne as the light swings around
+    this.accumDirty = true;
+    this.ensureAccum();     // lazy-build the progressive-accumulation targets (async, safe if it fails)
+    this.loadHdri();        // upgrade RoomEnvironment → studio HDRI once it loads (async)
   }
 
   private exitRenderScene() {
@@ -2642,6 +2746,212 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.viewHelpers.forEach(h => h.visible = true);
     if (this.renderFloor) this.scene.remove(this.renderFloor);
+    // Restore the key light to its plain CAD state (renderAccum leaves it coloured/rotated).
+    this.keyLight.position.copy(this.keyLightBase);
+    this.keyLight.color.setRGB(1, 1, 1);
+    this.keyLight.target.position.set(0, 0, 0);
+    this.keyLight.target.updateMatrixWorld();
+    this.renderer.setRenderTarget(null);
+  }
+
+  /**
+   * Build the progressive-accumulation targets and full-screen quads once, lazy-importing
+   * `FullScreenQuad` so it stays out of the initial bundle. Three HalfFloat targets: one
+   * MSAA sample buffer and a ping/pong pair holding the running average. A blend quad folds
+   * each new sample in (`mix(avg, sample, 1/(n+1))`), a show quad tone-maps (ACES) the
+   * average to screen. HalfFloat + plain scene renders are well supported on integrated GPUs.
+   */
+  private async ensureAccum() {
+    if (this.accumBlendQuad || this.ppLoading) return;
+    this.ppLoading = true;
+    try {
+      const { FullScreenQuad } = await import('three/examples/jsm/postprocessing/Pass.js');
+      const [w, h] = this.accumSize();
+      this.frameRT = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 4 });
+      this.accumA = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false });
+      this.accumB = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false });
+
+      const vert = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
+      this.accumBlendQuad = new FullScreenQuad(new THREE.ShaderMaterial({
+        uniforms: { tAccum: { value: null }, tFrame: { value: null }, uWeight: { value: 1 } },
+        vertexShader: vert,
+        fragmentShader: `
+          varying vec2 vUv; uniform sampler2D tAccum; uniform sampler2D tFrame; uniform float uWeight;
+          void main(){ gl_FragColor = mix(texture2D(tAccum, vUv), texture2D(tFrame, vUv), uWeight); }`,
+      }));
+      this.accumShowQuad = new FullScreenQuad(new THREE.ShaderMaterial({
+        uniforms: { tDiffuse: { value: null }, uExposure: { value: 1 } },
+        vertexShader: vert,
+        fragmentShader: `
+          varying vec2 vUv; uniform sampler2D tDiffuse; uniform float uExposure;
+          void main(){
+            vec3 c = texture2D(tDiffuse, vUv).rgb * uExposure;
+            c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);  // ACES filmic (Narkowicz)
+            c = clamp(c, 0.0, 1.0);
+            c = pow(c, vec3(1.0 / 2.2));                                    // linear → sRGB
+            gl_FragColor = vec4(c, 1.0);
+          }`,
+      }));
+      this.accumDirty = true;
+    } catch (e) {
+      console.error('[render] accumulation unavailable — using basic render', e);
+    } finally {
+      this.ppLoading = false;
+    }
+  }
+
+  /** Back-buffer size in device pixels (matches the renderer's drawing buffer). */
+  private accumSize(): [number, number] {
+    const v = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    return [Math.max(1, v.x), Math.max(1, v.y)];
+  }
+
+  /** Van der Corput / Halton low-discrepancy sample in a given base. */
+  private halton(index: number, base: number): number {
+    let f = 1, r = 0, i = index + 1;
+    while (i > 0) { f /= base; r += f * (i % base); i = Math.floor(i / base); }
+    return r;
+  }
+
+  /**
+   * Load the studio HDRI once and upgrade the environment from the synthetic RoomEnvironment
+   * to it: a PMREM env map drives reflections, and the raw float equirect is kept for CPU
+   * direction sampling in renderAccum. Async; on failure we simply keep RoomEnvironment.
+   */
+  private async loadHdri() {
+    if (this.hdriData || this.hdriLoading) return;
+    this.hdriLoading = true;
+    try {
+      const { HDRLoader } = await import('three/examples/jsm/loaders/HDRLoader.js');
+      const loader = new HDRLoader();
+      loader.setDataType(THREE.FloatType);      // Float32 pixels so we can sample directions on the CPU
+      const tex = await loader.loadAsync('assets/images/3D/studio.hdr') as THREE.DataTexture;
+      const img = tex.image as { data: Float32Array; width: number; height: number };
+      this.hdriData = { data: img.data, w: img.width, h: img.height };
+
+      tex.mapping = THREE.EquirectangularReflectionMapping;
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      pmrem.compileEquirectangularShader();
+      this.envTexture = pmrem.fromEquirectangular(tex).texture;   // reflections
+      pmrem.dispose();
+      tex.dispose();                             // GPU copy no longer needed (data + PMREM kept)
+      if (this.renderMode) this.scene.environment = this.envTexture;
+      this.accumDirty = true;                    // re-accumulate with the real HDRI
+    } catch (e) {
+      console.error('[render] HDRI load failed — keeping RoomEnvironment', e);
+    } finally {
+      this.hdriLoading = false;
+    }
+  }
+
+  /** Radiance of the HDRI in a world direction (equirect lookup on the kept float data). */
+  private sampleHdri(dx: number, dy: number, dz: number): [number, number, number] {
+    const d = this.hdriData;
+    if (!d) return [1, 1, 1];
+    const len = Math.hypot(dx, dy, dz) || 1; dx /= len; dy /= len; dz /= len;
+    const u = Math.atan2(dz, dx) / (2 * Math.PI) + 0.5;
+    const v = 1 - (Math.asin(Math.max(-1, Math.min(1, dy))) / Math.PI + 0.5);  // row 0 = top of image
+    let px = Math.floor(u * d.w) % d.w; if (px < 0) px += d.w;
+    const py = Math.max(0, Math.min(d.h - 1, Math.floor(v * d.h)));
+    const i = (py * d.w + px) * 4;
+    // clamp to tame the odd very-bright texel (firefly) into the average
+    return [Math.min(8, d.data[i]), Math.min(8, d.data[i + 1]), Math.min(8, d.data[i + 2])];
+  }
+
+  /**
+   * One frame of Render mode. While the view keeps changing we show a single fresh sample
+   * (responsive) lit by a neutral key; once it settles we fold in up to `accumMax` samples,
+   * each lighting the scene from one hemisphere direction coloured by the HDRI and
+   * shadow-mapped (so occluded points miss those directions → ray-cast ambient occlusion),
+   * plus sub-pixel camera jitter for anti-aliasing. Then we just keep displaying the converged
+   * average. Exposure is applied at display time, so the brightness slider never forces a restart.
+   */
+  private renderAccum() {
+    const r = this.renderer;
+    if (this.navTween) this.accumDirty = true;          // nav-cube fly-to moves the camera directly
+    if (this.accumDirty) { this.accumN = 0; this.accumDirty = false; }
+
+    if (this.accumN < this.accumMax) {
+      const [w, h] = this.accumSize();
+      if (w !== this.frameRT!.width || h !== this.frameRT!.height) {
+        this.frameRT!.setSize(w, h); this.accumA!.setSize(w, h); this.accumB!.setSize(w, h);
+        this.accumN = 0;
+      }
+      const n = this.accumN, cam = this.camera;
+
+      // Sub-pixel camera jitter (skip on the very first sample so a still frame is centred).
+      cam.updateProjectionMatrix();
+      if (n > 0) {
+        cam.projectionMatrix.elements[8] += ((this.halton(n, 2) - 0.5) * 2) / w;
+        cam.projectionMatrix.elements[9] += ((this.halton(n, 3) - 0.5) * 2) / h;
+      }
+
+      // Light the sample. n === 0 (the frame shown while orbiting) uses a neutral key from
+      // the base pose for a responsive, evenly-lit preview. n > 0 draws one shadow-mapped
+      // directional light from a uniform hemisphere direction, coloured by the HDRI radiance
+      // there; averaging these is image-based lighting whose per-direction visibility (the
+      // shadow map) yields ray-cast ambient occlusion in the crevices.
+      const b = this.cameraBrightness;
+      const tgt = this.controls.target;
+      // Every sample is ONE shadow-mapped directional light; averaging their per-direction
+      // visibility gives soft, realistic shadows + ray-cast AO in BOTH modes. n === 0 (the
+      // frame shown while orbiting) is a stable neutral key for a responsive preview.
+      // - "sky" samples: uniform upper hemisphere, coloured by the HDRI → soft overcast shadows.
+      // - "sun" samples (direct-light mode only, ~45% of samples): a tight cone around the sun
+      //   direction → a defined, only-slightly-soft primary shadow on top of the soft fill.
+      let dx: number, dy: number, dz: number, cr = 1, cg = 1, cb = 1, inten: number;
+      if (n === 0) {
+        dx = this.sunDir.x; dy = this.sunDir.y; dz = this.sunDir.z; inten = 2.6 * b;
+      } else if (this.directLight && this.halton(n, 7) < 0.45) {
+        const rr = 0.12 * Math.sqrt(this.halton(n, 5)), a = 2 * Math.PI * this.halton(n, 2);
+        this._sampleDir.copy(this.sunDir)
+          .addScaledVector(this.sunPerpA, Math.cos(a) * rr)
+          .addScaledVector(this.sunPerpB, Math.sin(a) * rr).normalize();
+        dx = this._sampleDir.x; dy = this._sampleDir.y; dz = this._sampleDir.z;
+        inten = 4.6 * b;                                      // neutral-bright sun
+      } else {
+        const cosT = this.halton(n, 2);                       // uniform over the upper hemisphere
+        const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT));
+        const phi = 2 * Math.PI * this.halton(n, 3);
+        dx = sinT * Math.cos(phi); dy = cosT; dz = sinT * Math.sin(phi);
+        [cr, cg, cb] = this.sampleHdri(dx, dy, dz);
+        inten = (this.directLight ? 3.6 : 4.8) * b;           // brighter sky when there's no sun
+      }
+      this.keyLight.color.setRGB(cr, cg, cb);
+      this.keyLight.intensity = inten;
+      this.keyLight.position.set(tgt.x + dx * 9000, tgt.y + dy * 9000, tgt.z + dz * 9000);
+      this.keyLight.target.position.copy(tgt);
+      this.keyLight.target.updateMatrixWorld();
+
+      // Render one linear sample (tone mapping is applied later, at display).
+      const prevTone = r.toneMapping;
+      r.toneMapping = THREE.NoToneMapping;
+      r.setRenderTarget(this.frameRT!);
+      r.clear();
+      r.render(this.scene, cam);
+      r.toneMapping = prevTone;
+
+      cam.updateProjectionMatrix();                      // undo jitter
+      this.keyLight.color.setRGB(1, 1, 1);
+      this.keyLight.position.copy(this.keyLightBase);
+
+      // avg' = mix(avg, sample, 1/(n+1)) → accumB, then swap.
+      const bm = this.accumBlendQuad!.material as THREE.ShaderMaterial;
+      bm.uniforms['tAccum'].value = this.accumA!.texture;
+      bm.uniforms['tFrame'].value = this.frameRT!.texture;
+      bm.uniforms['uWeight'].value = 1 / (n + 1);
+      r.setRenderTarget(this.accumB!);
+      this.accumBlendQuad!.render(r);
+      const tmp = this.accumA; this.accumA = this.accumB; this.accumB = tmp;
+      this.accumN++;
+    }
+
+    // Tone-map the current average to screen.
+    const sm = this.accumShowQuad!.material as THREE.ShaderMaterial;
+    sm.uniforms['tDiffuse'].value = this.accumA!.texture;
+    sm.uniforms['uExposure'].value = this.cameraBrightness;
+    r.setRenderTarget(null);
+    this.accumShowQuad!.render(r);
   }
 
   // ── Visualisation menu / theme / camera settings ──────────────────────────────
@@ -2656,6 +2966,22 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Camera brightness slider changed — re-apply the lighting multiplier live. */
   onBrightnessChange() { this.applyLighting(); }
 
+  /** Toggle directional light (shadows + AO) vs flat diffuse-only environment lighting. */
+  setDirectLight(on: boolean) {
+    this.directLight = on;
+    this.applyRenderEnv();
+    this.applyLighting();
+    this.accumDirty = true;
+  }
+
+  /** Environment (IBL) intensity: kept low in Render so the shadow-mapped samples carry the
+   *  diffuse and the soft shadows / AO stay visible (the env is mainly for specular reflections).
+   *  Both lighting modes use the sampled shadows, so this no longer depends on `directLight`. */
+  private applyRenderEnv() {
+    if (!this.scene) return;
+    this.scene.environmentIntensity = this.renderMode ? 0.28 : 1.0;
+  }
+
   /** The 3D background: white-ish in light theme, dark otherwise (a touch lighter in Render). */
   private applyViewportBackground() {
     if (!this.scene) return;
@@ -2668,9 +2994,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (!this.ambientLight) return;
     const b = this.cameraBrightness;
     if (this.renderMode) {
-      this.ambientLight.intensity = 0.12 * b;   // env does the soft lighting
-      this.keyLight.intensity = 1.1 * b;
-      this.fillLight.intensity = 0.3 * b;
+      // Diffuse lighting comes from the per-sample shadow-mapped hemisphere lights in
+      // renderAccum (which also produce the AO), so the constant fill is OFF and ambient is
+      // barely above zero — a uniform, unshadowed fill would flood crevices and cancel the AO.
+      // keyLight's intensity/colour are set per sample in renderAccum; this value only seeds it.
+      this.ambientLight.intensity = 0.015 * b;
+      this.keyLight.intensity = 2.6 * b;
+      this.fillLight.intensity = 0;
       this.renderer.toneMappingExposure = b;
     } else {
       this.ambientLight.intensity = 0.45 * b;
@@ -2687,6 +3017,61 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.objectMap.clear();
     this.instances.forEach(inst => this.spawnObject(inst));
     this.applySelect(sel);
+    this.accumDirty = true;   // scene changed → restart Render-mode accumulation
+  }
+
+  /** Procedural noise used as a bump map — a material's `bump` scales its strength and its
+   *  `bumpSize` sets the grain (mm per noise tile). The noise image is generated once; one
+   *  Texture per grain size is cached (they share the canvas but need their own `repeat`). */
+  private bumpCanvas: HTMLCanvasElement | null = null;
+  private bumpTexBySize = new Map<number, THREE.Texture>();
+  private bumpTexture(tileMM: number): THREE.Texture {
+    const key = Math.max(2, Math.round(tileMM));
+    const cached = this.bumpTexBySize.get(key);
+    if (cached) return cached;
+    if (!this.bumpCanvas) {
+      const S = 128;
+      const cv = document.createElement('canvas'); cv.width = cv.height = S;
+      const ctx = cv.getContext('2d')!;
+      const img = ctx.createImageData(S, S);
+      for (let i = 0; i < S * S; i++) {
+        // slightly blurred-feeling value noise (average two randoms) → orange-peel grain, not TV static
+        const v = ((Math.random() + Math.random()) * 0.5 * 255) | 0;
+        img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
+      }
+      ctx.putImageData(img, 0, 0);
+      this.bumpCanvas = cv;
+    }
+    const tex = new THREE.CanvasTexture(this.bumpCanvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(1 / key, 1 / key);       // one noise tile spans `key` mm of real surface
+    this.bumpTexBySize.set(key, tex);
+    return tex;
+  }
+
+  /**
+   * CAD-mode indication (not Render): tint each panel's faces with its assigned material's
+   * colour — a flat colour swatch so finishes are distinguishable without entering Render.
+   * Bands take their `*_КАНТ_МАТЕРИАЛ` colour; the textured chipboard edge keeps its look.
+   * Faces with no library material fall back to the neutral COLOR_NORMAL (also clears any
+   * lingering selection blue on deselect).
+   */
+  private cadColorObj(obj: THREE.Object3D, inst: SceneInstance) {
+    const toKey = (p: string) => p.replace(/ /g, '_') + '_МАТЕРИАЛ';
+    const toKantKey = (p: string) => p.replace(/ /g, '_') + '_КАНТ_МАТЕРИАЛ';
+    obj.traverse(child => {
+      if (!(child instanceof THREE.Mesh) || child.userData['isEdge']) return;
+      let n: THREE.Object3D | null = child, panelName: string | undefined;
+      while (n && n !== obj) { if (n.userData['panel']) { panelName = n.userData['panel'].name as string; break; } n = n.parent; }
+      const boardDef = panelName ? this.materialDef(inst.materials?.[toKey(panelName)]) : this.materialDef(inst.material);
+      const kantDef = panelName ? this.materialDef(inst.materials?.[toKantKey(panelName)]) : boardDef;
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      (mats as THREE.MeshPhongMaterial[]).forEach(m => {
+        if (m.map) return;                                    // textured chipboard edge — leave it
+        const def = m.userData['edgeBand'] ? kantDef : boardDef;
+        if (def) m.color.set(def.color); else m.color.setHex(COLOR_NORMAL);
+      });
+    });
   }
 
   /**
@@ -2736,8 +3121,17 @@ export class AdminPageComponent implements OnInit, OnDestroy {
           // clamp roughness away from 0 — a perfect mirror makes the path tracer emit NaNs
           // (which poison the running average → black) on some GPUs (e.g. Intel/ANGLE).
           roughness: Math.max(0.06, def ? 1 - def.glossiness / 100 : (m.userData['edgeBand'] ? (m.map ? 0.85 : 0.3) : 0.5)),
-          envMapIntensity: def ? 0.4 + def.reflection / 100 : 1,
+          // Metals (high reflection) get a boosted env intensity so their mirror reflections
+          // survive the low scene.environmentIntensity used for AO; a metal has ~no diffuse env
+          // term, so this doesn't re-flood matte surfaces or wash out the ambient occlusion.
+          envMapIntensity: (def ? 0.4 + def.reflection / 100 : 1) * (def && def.reflection > 50 ? 3.6 : 1),
         });
+        // Bump/relief: a procedural noise map perturbs the shading normals for a fine
+        // structured surface (e.g. ШАГРЕ / orange-peel), scaled by the material's `bump`.
+        if (def?.bump) {
+          std.bumpMap = this.bumpTexture(def.bumpSize ?? 24);
+          std.bumpScale = (def.bump / 100) * 1.4;
+        }
         std.userData = { ...m.userData };   // keep edgeBand tag so colorObj still skips bands
         if (dispose) m.dispose();           // skip when converting throwaway clones (shared mats)
         return std;

@@ -46,6 +46,8 @@ export interface MaterialDef {
   transparency: number;   // 0–100 %
   reflection: number;     // 0–100 %
   glossiness: number;     // 0–100 %
+  bump?: number;          // 0–100 %: procedural noise relief (fine surface roughness), Render only
+  bumpSize?: number;      // grain size of the bump noise, in mm (one noise tile); default 24
   texture?: string;        // data URL of a JPG/PNG, or absent for a plain colour
   textureW?: number;       // real-world tile width  (mm) — one image tile spans this
   textureH?: number;       // real-world tile height (mm)

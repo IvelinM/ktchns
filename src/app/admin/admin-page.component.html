@@ -646,6 +646,18 @@
               <input type="range" min="0" max="100" step="1" [(ngModel)]="m.glossiness" (ngModelChange)="onMaterialEdited()">
             </label>
 
+            <label class="mat-field">
+              <span>Релеф <em>{{ m.bump || 0 }}%</em></span>
+              <input type="range" min="0" max="100" step="1" [ngModel]="m.bump || 0"
+                     (ngModelChange)="m.bump = $event; onMaterialEdited()">
+            </label>
+
+            <label class="mat-field" *ngIf="m.bump">
+              <span>Размер релеф <em>{{ m.bumpSize || 24 }} мм</em></span>
+              <input type="range" min="2" max="120" step="1" [ngModel]="m.bumpSize || 24"
+                     (ngModelChange)="m.bumpSize = $event; onMaterialEdited()">
+            </label>
+
             <div class="mat-actions">
               <button type="button" class="mat-del" [disabled]="materialDefs.length <= 1"
                       (click)="deleteMaterial(editingMaterialIndex)">Изтрий</button>
@@ -674,6 +686,13 @@
                    (ngModelChange)="cameraBrightness = +$event; onBrightnessChange()">
           </label>
           <p class="mat-hint">Регулира осветлението на сцената (и експозицията в Render).</p>
+
+          <label class="settings-check">
+            <input type="checkbox" [ngModel]="directLight" (ngModelChange)="setDirectLight($event)">
+            <span>Пряко слънце</span>
+          </label>
+          <p class="mat-hint">Вкл.: слънце с ясна сянка + меко дифузно осветление. Изкл.: само меко
+            дифузно осветление с меки сенки (облачно). И двата режима хвърлят реалистични сенки.</p>
         </div>
       </div>
     </div>
