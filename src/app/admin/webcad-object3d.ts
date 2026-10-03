@@ -93,6 +93,11 @@ export function colorObj(obj: THREE.Object3D, hex: number, transparent = false, 
         if (!mat.map && !mat.userData['edgeBand']) mat.color.setHex(hex);
         mat.transparent = transparent;
         mat.opacity = opacity;
+        // Transparent materials still WRITE the depth buffer by default, so a large
+        // solid (a wall/slab) would keep fully occluding whatever sits behind it even
+        // though it looks tinted — a small floating panel rarely has anything directly
+        // behind it to expose this, which is why it "worked" there but not for walls.
+        mat.depthWrite = !transparent;
       });
     }
   });
