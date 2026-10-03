@@ -791,7 +791,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     });
     this.selectedIds.forEach(id => {
       const obj = this.objectMap.get(id);
-      if (obj && paint) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+        if (obj && paint) { colorObj(obj, COLOR_SELECTED, true, 0.75); setEdgeColor(obj, EDGE_SELECTED); }
     });
     this.updateWallHandles();   // show editable handles when a single wall is selected
   }
@@ -1192,7 +1192,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
     this.spawnObject(inst);
     const obj = this.objectMap.get(inst.id)!;
-    if (!this.renderMode) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+      if (!this.renderMode) { colorObj(obj, COLOR_SELECTED, true, 0.75); setEdgeColor(obj, EDGE_SELECTED); }
     this.accumDirty = true;
   }
 
@@ -1583,7 +1583,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
     this.spawnObject(inst);
     const obj = this.objectMap.get(inst.id);
-    if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+    if (obj) { colorObj(obj, COLOR_SELECTED, true, 0.75); setEdgeColor(obj, EDGE_SELECTED); }
     this.updateWallHandles();
   }
 
@@ -1765,7 +1765,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
     this.spawnObject(inst);
     const obj = this.objectMap.get(inst.id);
-    if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+    if (obj) { colorObj(obj, COLOR_SELECTED, true, 0.75); setEdgeColor(obj, EDGE_SELECTED); }
     this.updateWallHandles();
     this.clearWallDims();   // click the wall's face again to see the updated dimension(s)
   }
@@ -1934,7 +1934,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
         this.spawnObject(inst);
         const obj = this.objectMap.get(inst.id);
-        if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+        if (obj) { colorObj(obj, COLOR_SELECTED, true, 0.75); setEdgeColor(obj, EDGE_SELECTED); }
       }
       this.wallEdit = null; this.wallEditOrig = null;
     }
