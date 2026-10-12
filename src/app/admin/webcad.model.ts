@@ -90,6 +90,7 @@ export interface SceneInstance {
   anchor?: BasePoint;  // which bbox point x/y/z refers to; absent ⇒ centre {0,0,0}
   path?: WallPoint[];  // СТЕНА / ПЛОЧА only: the polyline (local coords, first vertex at origin)
   materials?: Record<string, string>;  // per-panel material choices (МАТЕРИАЛИ section)
+  hidden?: boolean;    // toggled from the scene list's eye icon; hides it from the viewport and picking
 }
 
 /** A restorable copy of the scene's data model for the undo history. */

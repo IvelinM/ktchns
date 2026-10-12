@@ -67,7 +67,7 @@
           <div class="toggle-wrap">
             <input type="checkbox"
                    [checked]="currentParams[p.key] === 1"
-                   (change)="currentParams[p.key] = $any($event.target).checked ? 1 : 0">
+                   (change)="setToggleParam(currentParams, p.key, $any($event.target).checked)">
           </div>
         </ng-container>
         <ng-template #numIn>
@@ -201,7 +201,7 @@
               <input type="checkbox"
                      [checked]="selectedInstance!.params[p.key] === 1"
                      (focus)="beginEdit()"
-                     (change)="selectedInstance!.params[p.key] = $any($event.target).checked ? 1 : 0; rebuildSelected()">
+                     (change)="setToggleParam(selectedInstance!.params, p.key, $any($event.target).checked); rebuildSelected()">
             </div>
           </ng-container>
           <ng-template #numInSel>
@@ -316,8 +316,24 @@
         <div class="inst-row"
              *ngFor="let inst of instances; trackBy: trackById"
              [class.active]="selectedIds.has(inst.id)"
+             [class.hidden-inst]="inst.hidden"
              (click)="clickList(inst.id)">
           <span class="inst-dot" [class.sel]="selectedIds.has(inst.id)"></span>
+          <button type="button" class="inst-vis" [class.off]="inst.hidden"
+                  [title]="inst.hidden ? 'Show' : 'Hide'"
+                  (click)="toggleVisibility(inst.id, $event)">
+            <svg *ngIf="!inst.hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+            <svg *ngIf="inst.hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
+              <circle cx="12" cy="12" r="3"/>
+              <line x1="2" y1="2" x2="22" y2="22"/>
+            </svg>
+          </button>
           <span class="inst-name">{{ inst.label }}</span>
           <span class="inst-family">{{ getFamilyDef(inst.familyId).name }}</span>
         </div>
@@ -563,6 +579,11 @@
     <div class="controls-hint">
       Click · select &nbsp;|&nbsp; Drag · box select &nbsp;|&nbsp;
       Right-drag · orbit &nbsp;|&nbsp; Mid-drag · pan &nbsp;|&nbsp; Scroll · zoom
+    </div>
+
+    <!-- Hover info: family type + label of whatever scene-list row the cursor is over -->
+    <div class="hover-info" *ngIf="hoveredInst">
+      ТИП: {{ getFamilyDef(hoveredInst.familyId).name }};{{ hoveredInst.label }}
     </div>
 
     <!-- ── Materials dialog ── -->

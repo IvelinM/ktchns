@@ -1,20 +1,32 @@
-# WebCAD — the КОРПУС С ВРАТА carcass
+# WebCAD — the МОДУЛ carcass
 
 [← index](../webcad.md) · panel-level geometry: [geometry.md](geometry.md) · code: `webcad-geometry.ts` (`korpusPanels`/`buildKorpus`)
 
 `korpusPanels(p, withDoor)` is the **single source** of the carcass layout — used both
 to build the 3D group (`buildKorpus`) and to generate the schedule. It returns
 `KorpusPanel[]`, each `{ name, AB, BC, rx, ry, rz, px, py, pz, pvc }`. `name` is the
-Bulgarian role (ЛЯВА СТРАНИЦА / ДЯСНА СТРАНИЦА / ДЪНО / ТАВАН / ГРЪБ / ВРАТИЧКА) and
-becomes the **ЕЛЕМЕНТ** column in the itemised schedule.
+Bulgarian role (ЛЯВА СТРАНИЦА / ДЯСНА СТРАНИЦА / ДЪНО / ТАВАН or РЕБРО ТАВАН 1/2 / ГРЪБ /
+ВРАТИЧКА) and becomes the **ЕЛЕМЕНТ** column in the itemised schedule.
 
 `buildKorpus` reads `t = ПЛОСКОСТ_ДЕБЕЛИНА` and `kant = КАНТ_ДЕБЕЛИНА` from the
-instance params and passes them into `makeMesh` for every panel.
+instance params and passes them into `makeMesh` for every panel. (`module` unifies what
+used to be two near-identical families, `cabinet-door`/КОРПУС С ВРАТА and
+`cabinet-ribs`/КОРПУС С РЕБРА — see [families.md](families.md).)
 
-## Present-panel toggles (`С_*`, default on)
+## Present-panel toggles (`С_*`, default on except С_РЕБРА)
 
-`С_ГРЪБ`, `С_ЛЯВА_СТРАНИЦА`, `С_ДЯСНА_СТРАНИЦА`, `С_ТАВАН`, `С_ДЪНО`, `С_ВРАТИЧКА`.
-**Positive sense**: checked = panel present; uncheck to remove it.
+`С_ГРЪБ`, `С_ЛЯВА_СТРАНИЦА`, `С_ДЯСНА_СТРАНИЦА`, `С_ТАВАН`, `С_РЕБРА`, `С_ДЪНО`,
+`С_ВРАТИЧКА`. **Positive sense**: checked = panel present; uncheck to remove it.
+
+`С_ТАВАН` and `С_РЕБРА` are **mutually exclusive** (`setToggleParam` in
+admin-page.component.ts unchecks one when you check the other): `С_ТАВАН` builds one
+full ТАВАН panel; `С_РЕБРА` instead builds two narrow ribs — РЕБРО ТАВАН 1 (front) and
+РЕБРО ТАВАН 2 (back), each `РЕБРА_ШИРИНА` deep (default 100 mm), spanning ШИРИНА minus
+the side thicknesses. Ribs never trim the side panels' height (sides always run full
+height under ribs); a full ТАВАН panel does, per its own `ВИДИМ_*` flag below. The
+door's top/bottom edges always follow the usual `ВРАТИЧКА_ФУГА_ОТГОРЕ`/`ОТДОЛУ` reveal
+(offset by the `ВРАТИЧКА_*_РЪБ_ОФСЕТ` params below), the same formula regardless of
+С_ТАВАН vs С_РЕБРА.
 
 ## Depth envelope (critical)
 

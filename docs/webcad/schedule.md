@@ -9,8 +9,8 @@ wraps it in a Blob and downloads `schedule.txt`. It's a **tab-separated `.txt`**
 SCENE panel.
 
 It lists **every ploskost panel in the project** — standalone Ploskost objects **and**
-each panel composing every КОРПУС С ВРАТА (via [`korpusPanels`](korpus.md), using the
-cabinet's `material` for all its panels and its `КАНТ_ДЕБЕЛИНА` for the door band).
+each panel composing every МОДУЛ (via [`korpusPanels`](korpus.md), using the
+module's `material` for all its panels and its `КАНТ_ДЕБЕЛИНА` for the door band).
 
 ## Columns
 

@@ -23,17 +23,21 @@ The placement, selection, move/copy/array, undo, and schedule flows are
 
 | id | name | picker? | geometry |
 |----|------|---------|----------|
-| `ploskost` | ПЛОСКОСТ | yes | `makeMesh(...)` — one board + inset PVC bands |
-| `cabinet-door` | КОРПУС С ВРАТА | yes | `buildKorpus(p, true)` — carcass + door; has `materialParams` |
+| `ploskost` | ПЛОСКОСТ | yes | `makeMesh(...)` — one board + inset PVC bands; has `materialParams` |
+| `module` | МОДУЛ | yes | `buildKorpus(p, true)` — carcass + door; has `materialParams` |
 | `wall` | СТЕНА | **hidden** | `buildWallPath(inst.path, …)` — vertical extruded polyline |
 | `slab` | ПЛОЧА | **hidden** | `buildSlabPath(inst.path, …)` — flat extruded polygon |
 
 `hidden` families are made by their toolbar tool (СТЕНА/ПЛОЧА), not the picker, and build
 from `inst.path` (a polyline) rather than `buildObject` — see [tools.md](tools.md).
-`materialParams` (КОРПУС only) drive the МАТЕРИАЛИ section — per-panel material names
+`materialParams` (ПЛОСКОСТ, МОДУЛ) drive the МАТЕРИАЛИ section — per-panel material names
 stored in `inst.materials` and applied only in Render mode (see
 [visualisation.md](visualisation.md)).
-*(A plain `cabinet`/КОРПУС family existed earlier and was removed — only the door version remains.)*
+*(`cabinet-door`/КОРПУС С ВРАТА and `cabinet-ribs`/КОРПУС С РЕБРА were two near-identical
+families — differing only in a full ТАВАН panel vs two РЕБРО ТАВАН ribs — unified into
+one `module` family. `С_ТАВАН`/`С_РЕБРА` are mutually exclusive, enforced by
+`setToggleParam` in admin-page.component.ts; old saves migrate on load, see
+[data-model.md](data-model.md).)*
 
 ## `ploskost` — a single panel/slab, optionally PVC-banded
 
@@ -49,12 +53,14 @@ stored in `inst.materials` and applied only in Render mode (see
 Edges in winding order are **AB, BC, CD, DA** (fixed, assumed everywhere).
 `buildObject` → `makeMesh(AB, BC, angle, thickness, [pvcAB,pvcBC,pvcCD,pvcDA], kantThickness)`.
 
-## `cabinet-door` — КОРПУС С ВРАТА
+## `module` — МОДУЛ
 
 Built by `buildKorpus(p, withDoor=true)` from the shared `KORPUS_PARAMS`. Full geometry:
-[korpus.md](korpus.md). Param groups: dims (`ШИРИНА/ВИСОЧИНА/ДЪЛБОЧИНА`),
+[korpus.md](korpus.md). Param groups: dims (`ШИРИНА/ВИСОЧИНА/ДЪЛБОЧИНА`, `РЕБРА_ШИРИНА`),
 thicknesses (`ПЛОСКОСТ_ДЕБЕЛИНА`=18, `КАНТ_ДЕБЕЛИНА`=1), present-panel toggles
-(`С_*`, default on), visible-edge flags (`*_ВИДИМ_КАНТ_*`), door reveals (`ВРАТИЧКА_ФУГА_*`).
+(`С_*`, default on except `С_РЕБРА`), visible-edge flags (`*_ВИДИМ_КАНТ_*`), door reveals
+(`ВРАТИЧКА_ФУГА_*`). `С_ТАВАН` builds one full ТАВАН panel; `С_РЕБРА` instead builds two
+narrow ribs — the two are mutually exclusive.
 
 > `С_*` toggles are **positive** (checked = panel present; uncheck to remove). They were
 > once negative `БЕЗ_*` (checked = remove), which confused users — positive is correct.

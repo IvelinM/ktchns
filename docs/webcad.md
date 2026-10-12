@@ -28,7 +28,7 @@ Assets: `assets/images/3D/chipboard-texture.jpg`. Route: `app.routes.ts` maps `a
 | [`webcad/data-model.md`](webcad/data-model.md) | `SceneInstance`, `objectMap`, ids, in-memory scene, `backfillParams` migration |
 | [`webcad/families.md`](webcad/families.md) | `FamilyDef`/`ParamDef`, the four families (incl. hidden wall/slab) & their params, adding a family |
 | [`webcad/geometry.md`](webcad/geometry.md) | ploskost as 1–5 inset band solids, `makeMesh`, the texture gotcha, edges, colours |
-| [`webcad/korpus.md`](webcad/korpus.md) | КОРПУС С ВРАТА carcass: `korpusPanels`, depth envelope, visible-edge joinery, door fuga |
+| [`webcad/korpus.md`](webcad/korpus.md) | МОДУЛ carcass: `korpusPanels`, depth envelope, visible-edge joinery, door fuga, ТАВАН panel vs РЕБРА ribs |
 | [`webcad/snapping.md`](webcad/snapping.md) | endpoint/midpoint/origin/grid snap subsystem |
 | [`webcad/tools.md`](webcad/tools.md) | modes, selection (incl. shift-additive), move/copy/array, measure, wall-vertex editing, in-command nav, undo, toolbar |
 | [`webcad/visualisation.md`](webcad/visualisation.md) | Render (PBR preview), Materials + JPG textures, dark/light theme, camera brightness |

@@ -20,8 +20,8 @@ const CHIPBOARD_URL = 'assets/images/3D/chipboard-texture.jpg';
 /** PVC band thickness (mm) used on КОРПУС door edges (matches makeMesh's default). */
 export const KORPUS_KANT = 1;
 
-/** Fixed depth (mm) of each РЕБРО ТАВАН panel in the КОРПУС С РЕБРА family. */
-export const REBRO_TAVAN_D = 100;
+/** Default depth (mm) of each РЕБРО ТАВАН panel when С_РЕБРА is set (РЕБРА_ШИРИНА param). */
+const REBRO_TAVAN_D_DEFAULT = 100;
 
 /** Intersection of line (p1, dir d1) with line (p2, dir d2); falls back to p2 if parallel. */
 function lineIntersect(p1: THREE.Vector2, d1: THREE.Vector2, p2: THREE.Vector2, d2: THREE.Vector2): THREE.Vector2 {
@@ -146,14 +146,23 @@ export interface KorpusPanel {
 }
 
 /**
- * Decompose a КОРПУС into its panels. This is the single source of the carcass
- * layout, consumed both by buildKorpus (to build the 3D group) and by the
+ * Decompose a КОРПУС (МОДУЛ) into its panels. This is the single source of the
+ * carcass layout, consumed both by buildKorpus (to build the 3D group) and by the
  * schedule export (to list every panel).
  *
  * `С_*` toggles include/omit a panel. `*_ВИДИМ_КАНТ_*` flags pick which panel covers
  * the other at a shared edge (true → this panel's edge runs to the outer face and
  * covers its neighbour; false → it is inset by one thickness so the neighbour covers
  * it). A top/bottom flag also shortens the matching side panel to sit under it.
+ *
+ * С_РЕБРА and С_ТАВАН are mutually exclusive (enforced in the UI, see
+ * `setToggleParam` in admin-page.component.ts): С_ТАВАН builds one full ТАВАН panel;
+ * С_РЕБРА instead builds two narrow ribs (РЕБРО ТАВАН 1 front / РЕБРО ТАВАН 2 back,
+ * each РЕБРА_ШИРИНА deep) spanning ШИРИНА minus the side-panel thicknesses — sides
+ * then never trim for ribs (only a full ТАВАН panel trims them). The door's top edge
+ * always follows the usual ВРАТИЧКА_ФУГА_ОТГОРЕ reveal (plus ВРАТИЧКА_ГОРЕН_РЪБ_ОФСЕТ),
+ * regardless of С_ТАВАН vs С_РЕБРА, overridden to a flush inset when
+ * ТАВАН_ВИДИМ_КАНТ_ОТПРЕД is set.
  */
 export function korpusPanels(p: Record<string, number>, withDoor: boolean): KorpusPanel[] {
   const W = p['ШИРИНА']    ?? 800;
@@ -164,7 +173,9 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
   const b = (k: string) => Boolean(p[k]);
 
   const hasBack = b('С_ГРЪБ'), hasLeft = b('С_ЛЯВА_СТРАНИЦА'), hasRight = b('С_ДЯСНА_СТРАНИЦА');
-  const hasTop  = b('С_ТАВАН'), hasBottom = b('С_ДЪНО'), hasDoor = b('С_ВРАТИЧКА');
+  const hasRibs = b('С_РЕБРА');
+  const hasTop  = b('С_ТАВАН') && !hasRibs;   // a full panel and ribs can never both build
+  const hasBottom = b('С_ДЪНО'), hasDoor = b('С_ВРАТИЧКА');
 
   const grbL = b('ГРЪБ_ВИДИМ_КАНТ_ОТЛЯВО'), grbR = b('ГРЪБ_ВИДИМ_КАНТ_ОТДЯСНО');
   const grbT = b('ГРЪБ_ВИДИМ_КАНТ_ОТГОРЕ'), grbB = b('ГРЪБ_ВИДИМ_КАНТ_ОТДОЛУ');
@@ -172,11 +183,22 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
   const dunL = b('ДЪНО_ВИДИМ_КАНТ_ОТЛЯВО'),  dunR = b('ДЪНО_ВИДИМ_КАНТ_ОТДЯСНО');
   // Does this panel's FRONT edge extend flush with the module's true front face
   // (covering the door there), instead of stopping at the door's rear face? The door
-  // then insets on that side by this panel's thickness + 1 mm gap (see below).
+  // then insets on that side by this panel's thickness + 1 mm gap (see below). For the
+  // ribs case this shifts РЕБРО ТАВАН 1 (the front rib) forward instead of resizing it.
   const sideLeftFront = b('ЛЯВА_СТРАНИЦА_ВИДИМ_КАНТ_ОТПРЕД');
   const sideRightFront = b('ДЯСНА_СТРАНИЦА_ВИДИМ_КАНТ_ОТПРЕД');
   const tavFront = b('ТАВАН_ВИДИМ_КАНТ_ОТПРЕД');
   const dunFront = b('ДЪНО_ВИДИМ_КАНТ_ОТПРЕД');
+  // Raw vertical offsets (mm) added to that panel's own top/bottom edge, on top of
+  // whatever the rest of this function already computes for it: positive always moves
+  // the edge up (+Y) — further above the module's nominal top, or further inset from
+  // its nominal bottom; negative always moves it down.
+  const offTopLeft  = p['ЛЯВА_СТРАНИЦА_ГОРЕН_РЪБ_ОФСЕТ']  ?? 0;
+  const offBotLeft  = p['ЛЯВА_СТРАНИЦА_ДОЛЕН_РЪБ_ОФСЕТ']  ?? 0;
+  const offTopRight = p['ДЯСНА_СТРАНИЦА_ГОРЕН_РЪБ_ОФСЕТ'] ?? 0;
+  const offBotRight = p['ДЯСНА_СТРАНИЦА_ДОЛЕН_РЪБ_ОФСЕТ'] ?? 0;
+  const offTopDoor  = p['ВРАТИЧКА_ГОРЕН_РЪБ_ОФСЕТ']       ?? 0;
+  const offBotDoor  = p['ВРАТИЧКА_ДОЛЕН_РЪБ_ОФСЕТ']       ?? 0;
 
   const mid = (a: number, c: number) => (a + c) / 2;
   const panels: KorpusPanel[] = [];
@@ -191,8 +213,6 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
   // ДЪЛБОЧИНА − ГРЪБ_ДЕБЕЛИНА − t(ВРАТИЧКА) deep.
   const tBack = hasBack ? backT : 0;
   const tDoor = (withDoor && hasDoor) ? t : 0;
-  const innerD = D - tBack - tDoor;     // depth of sides/top/bottom
-  const innerZ = (tBack - tDoor) / 2;   // their depth-centre (rear bound + front bound)/2
   // Per-panel depth override for a panel whose *_ВИДИМ_КАНТ_ОТПРЕД flag is set: its
   // front bound moves from the door's rear face (D/2 − tDoor) out to the true front
   // face (D/2); the rear bound (back panel/backT) is unaffected either way.
@@ -204,12 +224,13 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
   const topD   = frontD(tavFront),       topZ   = frontZ(tavFront);
   const botD   = frontD(dunFront),       botZ   = frontZ(dunFront);
 
-  // Sides span the inner depth; their height is trimmed only where a present top /
-  // bottom covers them (that side's *_ВИДИМ flag = true).
-  const lTop = (hasTop && tavL) ? H / 2 - t : H / 2;
-  const lBot = (hasBottom && dunL) ? -(H / 2 - t) : -H / 2;
-  const rTop = (hasTop && tavR) ? H / 2 - t : H / 2;
-  const rBot = (hasBottom && dunR) ? -(H / 2 - t) : -H / 2;
+  // Sides span the inner depth; their height is trimmed only where a present FULL
+  // ТАВАН panel covers them (ribs never trim — they always sit between full-height
+  // sides), then further adjusted by that side's own ГОРЕН/ДОЛЕН РЪБ ОФСЕТ.
+  const lTop = ((hasTop && tavL) ? H / 2 - t : H / 2) + offTopLeft;
+  const lBot = ((hasBottom && dunL) ? -(H / 2 - t) : -H / 2) + offBotLeft;
+  const rTop = ((hasTop && tavR) ? H / 2 - t : H / 2) + offTopRight;
+  const rBot = ((hasBottom && dunR) ? -(H / 2 - t) : -H / 2) + offBotRight;
   // PVC banding per panel, edge order [AB, BC, CD, DA]. The world-facing direction of
   // each local edge depends on the panel's rotation:
   //   Sides  (rot about Y): AB=ОТДОЛУ, BC=back, CD=ОТГОРЕ, DA=ОТПРЕД (meets ВРАТИЧКА).
@@ -220,18 +241,39 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
   if (hasLeft)  add('ЛЯВА СТРАНИЦА',  leftD,  lTop - lBot, 0, Math.PI / 2, 0, -(W / 2 - t / 2), mid(lTop, lBot), leftZ,  leftPvc);
   if (hasRight) add('ДЯСНА СТРАНИЦА', rightD, rTop - rBot, 0, Math.PI / 2, 0,  (W / 2 - t / 2), mid(rTop, rBot), rightZ, rightPvc);
 
-  // Bottom / top: width runs to the outer face on a side whose flag = true, else inset;
+  // Bottom: width runs to the outer face on a side whose flag = true, else inset;
   // depth is the inner depth (between back and door), or extended flush to the front
-  // when that panel's own *_ВИДИМ_КАНТ_ОТПРЕД flag is set (see leftD/topD/botD above).
+  // when its own *_ВИДИМ_КАНТ_ОТПРЕД flag is set (see botD/botZ above).
   if (hasBottom) {
     const xl = dunL ? -W / 2 : -(W / 2 - t), xr = dunR ? W / 2 : W / 2 - t;
     const bottomPvc = [b('ДЪНО_С_КАНТ_ОТПРЕД'), b('ДЪНО_С_КАНТ_ОТДЯСНО'), false, b('ДЪНО_С_КАНТ_ОТЛЯВО')];
     add('ДЪНО', xr - xl, botD, -Math.PI / 2, 0, 0, mid(xl, xr), -(H / 2 - t / 2), botZ, bottomPvc);
   }
+
+  // Top: either one full ТАВАН panel (same depth-override rule as the sides/bottom)…
   if (hasTop) {
     const xl = tavL ? -W / 2 : -(W / 2 - t), xr = tavR ? W / 2 : W / 2 - t;
     const topPvc = [b('ТАВАН_С_КАНТ_ОТПРЕД'), b('ТАВАН_С_КАНТ_ОТДЯСНО'), false, b('ТАВАН_С_КАНТ_ОТЛЯВО')];
     add('ТАВАН', xr - xl, topD, -Math.PI / 2, 0, 0, mid(xl, xr),  (H / 2 - t / 2), topZ, topPvc);
+  }
+  // …or (mutually exclusive) two narrow ribs: width = ШИРИНА − left_t − right_t (sides
+  // always cover), depth = РЕБРА_ШИРИНА. After −π/2 rotation around X, the AB edge
+  // faces ОТПРЕД (toward door). Each rib's PVC toggle bands that interior-visible face.
+  if (hasRibs) {
+    const ribD = p['РЕБРА_ШИРИНА'] ?? REBRO_TAVAN_D_DEFAULT;
+    const xl = hasLeft  ? -(W / 2 - t) : -W / 2;
+    const xr = hasRight ? (W / 2 - t)  :  W / 2;
+    const ribW = xr - xl;
+    const pyRib = H / 2 - t / 2;
+    // РЕБРО ТАВАН 1 — front rib, flush with the front inner face; when ТАВАН_ВИДИМ_КАНТ_ОТПРЕД
+    // is set it shifts forward flush with the true front face instead (covering the door there).
+    const z1 = (tavFront ? D / 2 : D / 2 - tDoor) - ribD / 2;
+    add('РЕБРО ТАВАН 1', ribW, ribD, -Math.PI / 2, 0, 0, mid(xl, xr), pyRib, z1,
+        [b('РЕБРО_ТАВАН_1_С_КАНТ_ОТПРЕД'), false, false, false]);
+    // РЕБРО ТАВАН 2 — back rib, flush with the back inner face.
+    const z2 = -D / 2 + tBack + ribD / 2;
+    add('РЕБРО ТАВАН 2', ribW, ribD, -Math.PI / 2, 0, 0, mid(xl, xr), pyRib, z2,
+        [b('РЕБРО_ТАВАН_2_С_КАНТ_ОТПРЕД'), false, false, false]);
   }
 
   // Back occupies the rear thickness of the envelope (its own ГРЪБ ДЕБЕЛИНА); each edge
@@ -245,23 +287,26 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
   }
 
   // Front door occupies the front thickness of the envelope; left/right edges are
-  // always banded, top/bottom follow their own toggles (ВРАТИЧКА ФУГА values inset the
-  // door by that reveal gap (mm) on each side). No rotation, so — like ГРЪБ above —
-  // AB=ОТДОЛУ, BC=ОТДЯСНО, CD=ОТГОРЕ, DA=ОТЛЯВО. When a neighbouring panel's own
-  // *_ВИДИМ_КАНТ_ОТПРЕД flag extends it flush with the front face on that side, the
-  // door insets from that boundary by the panel's thickness + 1 mm gap instead.
+  // always banded, top/bottom follow their own toggles. No rotation, so — like ГРЪБ
+  // above — AB=ОТДОЛУ, BC=ОТДЯСНО, CD=ОТГОРЕ, DA=ОТЛЯВО. When a neighbouring panel's
+  // own *_ВИДИМ_КАНТ_ОТПРЕД flag extends it flush with the front face on that side,
+  // the door insets from that boundary by the panel's thickness + 1 mm gap instead.
   if (withDoor && hasDoor) {
     const xl = sideLeftFront ? -W / 2 + t + 1 : -W / 2 + (p['ВРАТИЧКА_ФУГА_ОТЛЯВО'] ?? 0);
     const xr = sideRightFront ? W / 2 - t - 1 : W / 2 - (p['ВРАТИЧКА_ФУГА_ОТДЯСНО'] ?? 0);
-    const yb = dunFront ? -H / 2 + t + 1 : -H / 2 + (p['ВРАТИЧКА_ФУГА_ОТДОЛУ'] ?? 0);
-    const yt = tavFront ? H / 2 - t - 1 : H / 2 - (p['ВРАТИЧКА_ФУГА_ОТГОРЕ'] ?? 0);
+    const ybNominal = -H / 2 + (p['ВРАТИЧКА_ФУГА_ОТДОЛУ'] ?? 0);
+    // The usual ФУГА_ОТГОРЕ reveal, overridden to a flush inset when
+    // ТАВАН_ВИДИМ_КАНТ_ОТПРЕД is set — same formula regardless of С_ТАВАН vs С_РЕБРА.
+    // ГОРЕН/ДОЛЕН РЪБ ОФСЕТ then further nudges each edge on top of that.
+    const yb = (dunFront ? -H / 2 + t + 1 : ybNominal) + offBotDoor;
+    const yt = (tavFront ? H / 2 - t - 1 : H / 2 - (p['ВРАТИЧКА_ФУГА_ОТГОРЕ'] ?? 0)) + offTopDoor;
     const doorPvc = [b('ВРАТИЧКА_С_КАНТ_ОТДОЛУ'), true, b('ВРАТИЧКА_С_КАНТ_ОТГОРЕ'), true];
     add('ВРАТИЧКА', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), (D / 2 - t / 2), doorPvc);
   }
   return panels;
 }
 
-/** Build the full КОРПУС carcass group from params, tagging each panel for sub-selection. */
+/** Build the full КОРПУС (МОДУЛ) carcass group from params, tagging each panel for sub-selection. */
 export function buildKorpus(p: Record<string, number>, withDoor: boolean): THREE.Group {
   const kant = p['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
   const group = new THREE.Group();
@@ -270,140 +315,6 @@ export function buildKorpus(p: Record<string, number>, withDoor: boolean): THREE
     mesh.rotation.set(pan.rx, pan.ry, pan.rz);
     mesh.position.set(pan.px, pan.py, pan.pz);
     // Tag the panel node so it can be sub-selected (TAB) and shown read-only.
-    mesh.userData['panel'] = {
-      name: pan.name, size1: Math.round(pan.AB), size2: Math.round(pan.BC),
-      thickness: pan.t, pvc: pan.pvc, kant,
-    };
-    group.add(mesh);
-  }
-  return group;
-}
-
-/**
- * Decompose a КОРПУС С РЕБРА into its panels. Like korpusPanels but the ТАВАН is
- * replaced by two narrow ribs: РЕБРО ТАВАН 1 (front) and РЕБРО ТАВАН 2 (back), each
- * REBRO_TAVAN_D deep, spanning ШИРИНА minus the side-panel thicknesses (sides always
- * cover the ribs). The ВРАТИЧКА height is driven by ВИСОЧИНА_ВРАТИЧКА (bottom edge
- * fixed, only the top moves).
- */
-export function korpusRebraPanels(p: Record<string, number>, withDoor: boolean): KorpusPanel[] {
-  const W = p['ШИРИНА']    ?? 800;
-  const H = p['ВИСОЧИНА']  ?? 720;
-  const D = p['ДЪЛБОЧИНА'] ?? 550;
-  const t = p['ПЛОСКОСТ_ДЕБЕЛИНА'] ?? 18;
-  const backT = p['ГРЪБ_ДЕБЕЛИНА'] ?? t;
-  const b = (k: string) => Boolean(p[k]);
-
-  const hasBack   = b('С_ГРЪБ');
-  const hasLeft   = b('С_ЛЯВА_СТРАНИЦА');
-  const hasRight  = b('С_ДЯСНА_СТРАНИЦА');
-  const hasTop    = b('С_ТАВАН');
-  const hasBottom = b('С_ДЪНО');
-  const hasDoor   = b('С_ВРАТИЧКА');
-
-  const grbL = b('ГРЪБ_ВИДИМ_КАНТ_ОТЛЯВО'), grbR = b('ГРЪБ_ВИДИМ_КАНТ_ОТДЯСНО');
-  const grbT = b('ГРЪБ_ВИДИМ_КАНТ_ОТГОРЕ'), grbB = b('ГРЪБ_ВИДИМ_КАНТ_ОТДОЛУ');
-  const dunL = b('ДЪНО_ВИДИМ_КАНТ_ОТЛЯВО'),  dunR = b('ДЪНО_ВИДИМ_КАНТ_ОТДЯСНО');
-  // Does this panel's FRONT edge extend flush with the module's true front face
-  // (covering the door there), instead of stopping at the door's rear face? The door
-  // then insets on that side by this panel's thickness + 1 mm gap (see below). For the
-  // ТАВАН role this shifts РЕБРО ТАВАН 1 (the front rib) forward instead of resizing it.
-  const sideLeftFront = b('ЛЯВА_СТРАНИЦА_ВИДИМ_КАНТ_ОТПРЕД');
-  const sideRightFront = b('ДЯСНА_СТРАНИЦА_ВИДИМ_КАНТ_ОТПРЕД');
-  const tavFront = b('ТАВАН_ВИДИМ_КАНТ_ОТПРЕД');
-  const dunFront = b('ДЪНО_ВИДИМ_КАНТ_ОТПРЕД');
-
-  const mid = (a: number, c: number) => (a + c) / 2;
-  const panels: KorpusPanel[] = [];
-  const add = (name: string, AB: number, BC: number, rx: number, ry: number, rz: number,
-               px: number, py: number, pz: number,
-               pvc: boolean[] = [false, false, false, false], pt: number = t) =>
-    panels.push({ name, AB, BC, rx, ry, rz, px, py, pz, pvc, t: pt });
-
-  const tBack = hasBack ? backT : 0;
-  const tDoor = (withDoor && hasDoor) ? t : 0;
-  const innerD = D - tBack - tDoor;
-  const innerZ = (tBack - tDoor) / 2;
-  // Per-panel depth override — see korpusPanels' identical comment for the full rationale.
-  const backBound = -D / 2 + tBack;
-  const frontD = (extend: boolean) => (extend ? D / 2 : D / 2 - tDoor) - backBound;
-  const frontZ = (extend: boolean) => mid(backBound, extend ? D / 2 : D / 2 - tDoor);
-  const leftD  = frontD(sideLeftFront),  leftZ  = frontZ(sideLeftFront);
-  const rightD = frontD(sideRightFront), rightZ = frontZ(sideRightFront);
-  const botD   = frontD(dunFront),       botZ   = frontZ(dunFront);
-
-  // Sides run full height — ribs always sit between them, never trim them at the top.
-  const lTop = H / 2;
-  const lBot = (hasBottom && dunL) ? -(H / 2 - t) : -H / 2;
-  const rTop = H / 2;
-  const rBot = (hasBottom && dunR) ? -(H / 2 - t) : -H / 2;
-  const leftPvc  = [b('ЛЯВА_СТРАНИЦА_С_КАНТ_ОТДОЛУ'),  false, b('ЛЯВА_СТРАНИЦА_С_КАНТ_ОТГОРЕ'),  b('ЛЯВА_СТРАНИЦА_С_КАНТ_ОТПРЕД')];
-  const rightPvc = [b('ДЯСНА_СТРАНИЦА_С_КАНТ_ОТДОЛУ'), false, b('ДЯСНА_СТРАНИЦА_С_КАНТ_ОТГОРЕ'), b('ДЯСНА_СТРАНИЦА_С_КАНТ_ОТПРЕД')];
-  if (hasLeft)  add('ЛЯВА СТРАНИЦА',  leftD,  lTop - lBot, 0, Math.PI / 2, 0, -(W / 2 - t / 2), mid(lTop, lBot), leftZ,  leftPvc);
-  if (hasRight) add('ДЯСНА СТРАНИЦА', rightD, rTop - rBot, 0, Math.PI / 2, 0,  (W / 2 - t / 2), mid(rTop, rBot), rightZ, rightPvc);
-
-  if (hasBottom) {
-    const xl = dunL ? -W / 2 : -(W / 2 - t), xr = dunR ? W / 2 : W / 2 - t;
-    const bottomPvc = [b('ДЪНО_С_КАНТ_ОТПРЕД'), b('ДЪНО_С_КАНТ_ОТДЯСНО'), false, b('ДЪНО_С_КАНТ_ОТЛЯВО')];
-    add('ДЪНО', xr - xl, botD, -Math.PI / 2, 0, 0, mid(xl, xr), -(H / 2 - t / 2), botZ, bottomPvc);
-  }
-
-  // Two ribs at the top: width = ШИРИНА − left_t − right_t (sides always cover), depth = 100 mm.
-  // After −π/2 rotation around X, the AB edge faces ОТПРЕД (toward door). Each rib PVC toggle
-  // bands that interior-visible forward face.
-  if (hasTop) {
-    const xl = hasLeft  ? -(W / 2 - t) : -W / 2;
-    const xr = hasRight ? (W / 2 - t)  :  W / 2;
-    const ribW = xr - xl;
-    const pyRib = H / 2 - t / 2;
-    // РЕБРО ТАВАН 1 — front rib, flush with the front inner face; when ТАВАН_ВИДИМ_КАНТ_ОТПРЕД
-    // is set it shifts forward flush with the true front face instead (covering the door there).
-    const z1 = (tavFront ? D / 2 : D / 2 - tDoor) - REBRO_TAVAN_D / 2;
-    add('РЕБРО ТАВАН 1', ribW, REBRO_TAVAN_D, -Math.PI / 2, 0, 0, mid(xl, xr), pyRib, z1,
-        [b('РЕБРО_ТАВАН_1_С_КАНТ_ОТПРЕД'), false, false, false]);
-    // РЕБРО ТАВАН 2 — back rib, flush with the back inner face.
-    const z2 = -D / 2 + tBack + REBRO_TAVAN_D / 2;
-    add('РЕБРО ТАВАН 2', ribW, REBRO_TAVAN_D, -Math.PI / 2, 0, 0, mid(xl, xr), pyRib, z2,
-        [b('РЕБРО_ТАВАН_2_С_КАНТ_ОТПРЕД'), false, false, false]);
-  }
-
-  if (hasBack) {
-    const xl = grbL ? -W / 2 : -(W / 2 - t), xr = grbR ? W / 2 : W / 2 - t;
-    const yb = grbB ? -H / 2 : -(H / 2 - t), yt = grbT ? H / 2 : H / 2 - t;
-    const backPvc = [b('ГРЪБ_С_КАНТ_ОТДОЛУ'), b('ГРЪБ_С_КАНТ_ОТДЯСНО'), b('ГРЪБ_С_КАНТ_ОТГОРЕ'), b('ГРЪБ_С_КАНТ_ОТЛЯВО')];
-    add('ГРЪБ', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), -(D / 2 - backT / 2), backPvc, backT);
-  }
-
-  // Door: ВИСОЧИНА_ВРАТИЧКА always fixes the height counting from the NOMINAL
-  // (ФУГА_ОТДОЛУ) bottom edge, regardless of ТАВАН_ВИДИМ_КАНТ_ОТПРЕД/ДЪНО_ВИДИМ_КАНТ_ОТПРЕД
-  // — unlike КОРПУС С ВРАТА (which has no independent height param), the door here must
-  // always follow ВИСОЧИНА_ВРАТИЧКА; those flags only reposition РЕБРО ТАВАН 1 / inset
-  // the bottom edge, they never touch the door's height. Left/right edges are always
-  // banded, top/bottom follow their own toggles — no rotation, so AB=ОТДОЛУ, BC=ОТДЯСНО,
-  // CD=ОТГОРЕ, DA=ОТЛЯВО (same convention as ГРЪБ above). ЛЯВА/ДЯСНА_СТРАНИЦА_ВИДИМ_КАНТ_ОТПРЕД
-  // still inset the door's left/right edge by that panel's thickness + 1 mm gap, same as
-  // КОРПУС С ВРАТА.
-  if (withDoor && hasDoor) {
-    const xl = sideLeftFront ? -W / 2 + t + 1 : -W / 2 + (p['ВРАТИЧКА_ФУГА_ОТЛЯВО'] ?? 0);
-    const xr = sideRightFront ? W / 2 - t - 1 : W / 2 - (p['ВРАТИЧКА_ФУГА_ОТДЯСНО'] ?? 0);
-    const ybNominal = -H / 2 + (p['ВРАТИЧКА_ФУГА_ОТДОЛУ'] ?? 0);
-    const yb = dunFront ? -H / 2 + t + 1 : ybNominal;
-    const yt = ybNominal + (p['ВИСОЧИНА_ВРАТИЧКА'] ?? H);
-    const doorPvc = [b('ВРАТИЧКА_С_КАНТ_ОТДОЛУ'), true, b('ВРАТИЧКА_С_КАНТ_ОТГОРЕ'), true];
-    add('ВРАТИЧКА', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), D / 2 - t / 2, doorPvc);
-  }
-
-  return panels;
-}
-
-/** Build the КОРПУС С РЕБРА group from params, tagging each panel for sub-selection. */
-export function buildKorpusRebra(p: Record<string, number>, withDoor: boolean): THREE.Group {
-  const kant = p['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
-  const group = new THREE.Group();
-  for (const pan of korpusRebraPanels(p, withDoor)) {
-    const mesh = makeMesh(pan.AB, pan.BC, 90, pan.t, pan.pvc, kant);
-    mesh.rotation.set(pan.rx, pan.ry, pan.rz);
-    mesh.position.set(pan.px, pan.py, pan.pz);
     mesh.userData['panel'] = {
       name: pan.name, size1: Math.round(pan.AB), size2: Math.round(pan.BC),
       thickness: pan.t, pvc: pan.pvc, kant,

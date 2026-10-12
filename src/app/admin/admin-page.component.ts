@@ -152,6 +152,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   instances  = [] as SceneInstance[];
   selectedIds = new Set<number>();
+  hoveredInst: SceneInstance | null = null;   // instance under the cursor in the 3D viewport — drives the bottom-left ТИП readout
   mode: InteractionMode = 'idle';
   modeLabel  = '';
   movePlane: MovePlane = 'XZ';
@@ -305,12 +306,17 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private isMarqueeing = false;
   private orbiting = false;                 // Shift + middle-drag orbit while a tool is active
   private orbitPrev = { x: 0, y: 0 };
+  private customOrbiting = false;           // idle right-drag orbit pivoting on the selection's centre
+  private customOrbitPrev = { x: 0, y: 0 };
+  private readonly customOrbitPivot = new THREE.Vector3();
+  private customOrbitPhi = 0;               // tracks tilt-from-pivot this drag, to clamp like OrbitControls does
 
   private boundClick!: (e: MouseEvent) => void;
   private boundMove!:  (e: MouseEvent) => void;
   private boundDown!:  (e: MouseEvent) => void;
   private boundUp!:    (e: MouseEvent) => void;
   private boundWheel!: (e: WheelEvent) => void;
+  private boundCanvasLeave!: () => void;
 
   // Autosave: keeps the in-progress scene alive across an accidental refresh/tab close.
   // Independent of Save/Save as/Open — it just mirrors whatever is currently on screen.
@@ -341,6 +347,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     cv.removeEventListener('mousedown', this.boundDown);
     cv.removeEventListener('mouseup',   this.boundUp);
     cv.removeEventListener('wheel',     this.boundWheel);
+    cv.removeEventListener('mouseleave', this.boundCanvasLeave);
     const navCv = this.navCubeCanvasRef?.nativeElement;
     navCv?.removeEventListener('mousemove',  this.boundNavMove);
     navCv?.removeEventListener('click',      this.boundNavClick);
@@ -483,6 +490,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     { title: 'ДЯСНА СТРАНИЦА', prefix: 'ДЯСНА СТРАНИЦА' },
     { title: 'ВРАТИЧКА',       prefix: 'ВРАТИЧКА' },
   ];
+  /** Params forced into a specific section by exact label, overriding prefix matching
+   *  — РЕБРА ШИРИНА controls the РЕБРО ТАВАН ribs, so it belongs with ТАВАН even though
+   *  its own label doesn't start with that prefix. */
+  private readonly SECTION_OVERRIDE = new Map<string, string>([
+    ['РЕБРА ШИРИНА', 'ТАВАН'],
+  ]);
   private groupedCache = new Map<string, { top: ParamDef[]; sections: { title: string; params: ParamDef[] }[] }>();
 
   /**
@@ -496,8 +509,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const top: ParamDef[] = [];
     const byTitle = new Map<string, ParamDef[]>();
     for (const p of fam.params) {
+      const overrideTitle = this.SECTION_OVERRIDE.get(p.label);
       const sec = this.UNGROUPED_PARAMS.has(p.label)
         ? null
+        : overrideTitle
+        ? this.PARAM_SECTIONS.find(s => s.title === overrideTitle)
         : this.PARAM_SECTIONS.find(s => p.label.startsWith(s.prefix));
       if (!sec) { top.push(p); continue; }
       (byTitle.get(sec.title) ?? byTitle.set(sec.title, []).get(sec.title)!).push(p);
@@ -508,6 +524,17 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     g = { top, sections };
     this.groupedCache.set(fam.id, g);
     return g;
+  }
+
+  /**
+   * Set a toggle param, enforcing the С_РЕБРА / С_ТАВАН mutual exclusivity (МОДУЛ
+   * builds either a full ТАВАН panel or ribs, never both — checking one unchecks the
+   * other). A no-op pass-through for every other toggle key.
+   */
+  setToggleParam(params: Record<string, number>, key: string, checked: boolean) {
+    params[key] = checked ? 1 : 0;
+    if (checked && key === 'С_РЕБРА') params['С_ТАВАН'] = 0;
+    if (checked && key === 'С_ТАВАН') params['С_РЕБРА'] = 0;
   }
 
   // ── Family picker ──────────────────────────────────────────────────────────
@@ -735,14 +762,30 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     return this.getFamilyDef(inst.familyId).buildObject(inst.params);
   }
 
+  /**
+   * A МОДУЛ's nominal ШИРИНА × ВИСОЧИНА × ДЪЛБОЧИНА box, for `anchorWrap`'s
+   * `nominalSize` — so a `*_РЪБ_ОФСЕТ` nudging one panel past that envelope never
+   * shifts the anchor (and with it every other panel); undefined for every other
+   * family, which still anchors off its actual built geometry.
+   */
+  private nominalAnchorSize(inst: SceneInstance): THREE.Vector3 | undefined {
+    if (inst.familyId !== 'module') return undefined;
+    return new THREE.Vector3(
+      inst.params['ШИРИНА'] ?? 800,
+      inst.params['ВИСОЧИНА'] ?? 720,
+      inst.params['ДЪЛБОЧИНА'] ?? 550,
+    );
+  }
+
   private spawnObject(inst: SceneInstance) {
     this.backfillParams(inst);
     this.backfillMaterials(inst);
     const built = this.buildInstanceObject(inst);
     addEdges(built);
-    const obj = anchorWrap(built, inst.anchor, inst.rotY);
+    const obj = anchorWrap(built, inst.anchor, inst.rotY, this.nominalAnchorSize(inst));
     obj.position.set(inst.x, inst.y, inst.z);
     obj.rotation.y = inst.rotY * (Math.PI / 180);
+    obj.visible = !inst.hidden;
     if (this.renderMode) this.applyRenderMaterials(obj, inst);
     else this.cadColorObj(obj, inst);          // CAD mode: tint faces by assigned material colour
     this.objectMap.set(inst.id, obj);
@@ -791,14 +834,55 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     });
     this.selectedIds.forEach(id => {
       const obj = this.objectMap.get(id);
-        if (obj && paint) { colorObj(obj, COLOR_SELECTED, true, 0.75); setEdgeColor(obj, EDGE_SELECTED); }
+        if (obj && paint) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
     });
     this.updateWallHandles();   // show editable handles when a single wall is selected
+  }
+
+  /** World-space centre of the union AABB of the current selection's live objects (or null if none). */
+  private selectionCenter(): THREE.Vector3 | null {
+    if (this.selectedIds.size === 0) return null;
+    const box = new THREE.Box3();
+    let any = false;
+    this.selectedIds.forEach(id => {
+      const obj = this.objectMap.get(id);
+      if (!obj) return;
+      obj.updateMatrixWorld(true);
+      const b = new THREE.Box3().setFromObject(obj);
+      if (b.isEmpty()) return;
+      box.union(b);
+      any = true;
+    });
+    return any ? box.getCenter(new THREE.Vector3()) : null;
   }
 
   clickList(id: number) {
     this.cancelMode();
     this.applySelect(this.selectedIds.size === 1 && this.selectedIds.has(id) ? [] : [id]);
+  }
+
+  /**
+   * Eye icon in the scene list: show/hide one instance without touching undo. When the
+   * clicked row is part of a multi-selection, the toggle applies to every selected
+   * instance at once (direction taken from the clicked row's current state), so you can
+   * hide/show a whole multi-select from any one of its eye icons.
+   */
+  toggleVisibility(id: number, event: Event) {
+    event.stopPropagation();   // don't also trigger the row's clickList()
+    const inst = this.instances.find(i => i.id === id);
+    if (!inst) return;
+    const ids = (this.selectedIds.size > 1 && this.selectedIds.has(id)) ? [...this.selectedIds] : [id];
+    const nextHidden = !inst.hidden;
+    for (const targetId of ids) {
+      const target = this.instances.find(i => i.id === targetId);
+      if (!target) continue;
+      target.hidden = nextHidden;
+      const obj = this.objectMap.get(targetId);
+      if (obj) obj.visible = !nextHidden;
+    }
+    if (nextHidden) {
+      this.applySelect([...this.selectedIds].filter(x => !ids.includes(x)));
+    }
   }
 
   // ── Undo history ─────────────────────────────────────────────────────────────
@@ -977,20 +1061,44 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const instances = Array.isArray(doc) ? doc : doc.instances;   // accept a bare array too
     if (!Array.isArray(instances)) throw new Error('no instances array');
     // Normalise + validate each instance; coerce missing fields to safe defaults.
-    const clean: SceneInstance[] = instances.map((i: Partial<SceneInstance>) => ({
-      id: Number(i.id),
-      familyId: String(i.familyId),
-      label: String(i.label ?? `МОДУЛ ${i.id}`),
-      params: { ...(i.params ?? {}) },
-      material: String(i.material ?? ''),
-      materials: i.materials && typeof i.materials === 'object' ? { ...i.materials } : undefined,
-      x: Number(i.x) || 0, y: Number(i.y) || 0, z: Number(i.z) || 0,
-      rotY: Number(i.rotY) || 0,
-      anchor: normAnchor(i.anchor),
-      path: Array.isArray(i.path)
-        ? i.path.map((p: Partial<WallPoint>) => ({ x: Number(p?.x) || 0, z: Number(p?.z) || 0 }))
-        : undefined,
-    })).filter(i => Number.isFinite(i.id) && this.getFamilyDef(i.familyId));
+    const clean: SceneInstance[] = instances.map((i: Partial<SceneInstance>) => {
+      // Migrate scenes saved before КОРПУС С ВРАТА / КОРПУС С РЕБРА were unified into
+      // one МОДУЛ family (С_ТАВАН vs С_РЕБРА) — everything else backfills automatically.
+      let familyId = String(i.familyId);
+      const params: Record<string, number> = { ...(i.params ?? {}) };
+      if (familyId === 'cabinet-door') { familyId = 'module'; params['С_РЕБРА'] = 0; }
+      else if (familyId === 'cabinet-ribs') { familyId = 'module'; params['С_РЕБРА'] = 1; }
+      // Migrate scenes saved before ВИСОЧИНА_ВРАТИЧКА was removed (replaced by
+      // ВРАТИЧКА_ГОРЕН_РЪБ_ОФСЕТ): in ribs mode it used to fix the door's top edge
+      // directly from the nominal bottom — fold that into an equivalent offset so
+      // existing geometry doesn't move.
+      if (familyId === 'module' && params['С_РЕБРА'] === 1 && 'ВИСОЧИНА_ВРАТИЧКА' in params) {
+        const H = params['ВИСОЧИНА'] ?? 720;
+        const t = params['ПЛОСКОСТ_ДЕБЕЛИНА'] ?? 18;
+        const fugaTop = params['ВРАТИЧКА_ФУГА_ОТГОРЕ'] ?? 0;
+        const fugaBot = params['ВРАТИЧКА_ФУГА_ОТДОЛУ'] ?? 0;
+        const tavFront = !!params['ТАВАН_ВИДИМ_КАНТ_ОТПРЕД'];
+        const oldYt = (-H / 2 + fugaBot) + params['ВИСОЧИНА_ВРАТИЧКА'];
+        const newBaseYt = tavFront ? H / 2 - t - 1 : H / 2 - fugaTop;
+        params['ВРАТИЧКА_ГОРЕН_РЪБ_ОФСЕТ'] = (params['ВРАТИЧКА_ГОРЕН_РЪБ_ОФСЕТ'] ?? 0) + (oldYt - newBaseYt);
+        delete params['ВИСОЧИНА_ВРАТИЧКА'];
+      }
+      return {
+        id: Number(i.id),
+        familyId,
+        label: String(i.label ?? `МОДУЛ ${i.id}`),
+        params,
+        material: String(i.material ?? ''),
+        materials: i.materials && typeof i.materials === 'object' ? { ...i.materials } : undefined,
+        x: Number(i.x) || 0, y: Number(i.y) || 0, z: Number(i.z) || 0,
+        rotY: Number(i.rotY) || 0,
+        anchor: normAnchor(i.anchor),
+        path: Array.isArray(i.path)
+          ? i.path.map((p: Partial<WallPoint>) => ({ x: Number(p?.x) || 0, z: Number(p?.z) || 0 }))
+          : undefined,
+        hidden: Boolean(i.hidden) || undefined,
+      };
+    }).filter(i => Number.isFinite(i.id) && this.getFamilyDef(i.familyId));
     const maxId = clean.reduce((m, i) => Math.max(m, i.id), 0);
     const nextId = Number(doc.nextId) > maxId ? Number(doc.nextId) : maxId + 1;
     return { snap: { instances: clean, nextId }, materials: doc.materials, view: doc.view };
@@ -1192,7 +1300,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
     this.spawnObject(inst);
     const obj = this.objectMap.get(inst.id)!;
-      if (!this.renderMode) { colorObj(obj, COLOR_SELECTED, true, 0.75); setEdgeColor(obj, EDGE_SELECTED); }
+      if (!this.renderMode) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
     this.accumDirty = true;
   }
 
@@ -1202,6 +1310,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       const obj = this.objectMap.get(id);
       if (obj) { this.scene.remove(obj); disposeObj(obj); this.objectMap.delete(id); }
     });
+    if (this.hoveredInst && this.selectedIds.has(this.hoveredInst.id)) this.hoveredInst = null;
     this.instances = this.instances.filter(i => !this.selectedIds.has(i.id));
     this.applySelect([]);
   }
@@ -1324,7 +1433,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /**
    * Enter Match mode: the single selected instance becomes the source. Every object
    * clicked afterwards takes the source's properties (params + material) if it is the
-   * SAME family — you can't match a Ploskost onto a КОРПУС С ВРАТА. Placement
+   * SAME family — you can't match a Ploskost onto a МОДУЛ. Placement
    * (position/rotation) is never copied. Esc finishes.
    */
   startMatch() {
@@ -1583,7 +1692,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
     this.spawnObject(inst);
     const obj = this.objectMap.get(inst.id);
-    if (obj) { colorObj(obj, COLOR_SELECTED, true, 0.75); setEdgeColor(obj, EDGE_SELECTED); }
+    if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
     this.updateWallHandles();
   }
 
@@ -1765,7 +1874,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
     this.spawnObject(inst);
     const obj = this.objectMap.get(inst.id);
-    if (obj) { colorObj(obj, COLOR_SELECTED, true, 0.75); setEdgeColor(obj, EDGE_SELECTED); }
+    if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
     this.updateWallHandles();
     this.clearWallDims();   // click the wall's face again to see the updated dimension(s)
   }
@@ -1858,7 +1967,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       if (!inst) return;
       this.moveOrigins.set(id, new THREE.Vector3(inst.x, inst.y, inst.z));
       const makeGhost = (key: number) => {
-        const ghost = anchorWrap(this.buildInstanceObject(inst), inst.anchor, inst.rotY);
+        const ghost = anchorWrap(this.buildInstanceObject(inst), inst.anchor, inst.rotY, this.nominalAnchorSize(inst));
         ghost.position.set(inst.x, inst.y, inst.z);
         ghost.rotation.y = inst.rotY * (Math.PI / 180);
         ghostify(ghost);
@@ -1934,7 +2043,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
         this.spawnObject(inst);
         const obj = this.objectMap.get(inst.id);
-        if (obj) { colorObj(obj, COLOR_SELECTED, true, 0.75); setEdgeColor(obj, EDGE_SELECTED); }
+        if (obj) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
       }
       this.wallEdit = null; this.wallEditOrig = null;
     }
@@ -2075,6 +2184,53 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     offset.setFromSpherical(sph);
     this.camera.position.copy(target).add(offset);
     this.camera.lookAt(target);
+  }
+
+  /**
+   * Orbit the camera around an arbitrary `pivot` (the current selection's centre) by a
+   * screen-pixel delta, exactly like Revit's dynamic-view orbit: INCREMENTAL rotation
+   * composed onto the camera's CURRENT orientation, never an absolute `lookAt(pivot)`.
+   *
+   * `orbitCamera` above (and OrbitControls itself) always ends with `camera.lookAt(target)`
+   * — fine when `target` already IS wherever the camera is looking, but the moment you
+   * retarget to a genuinely different point (the selection, which the camera usually
+   * isn't currently centred on), that absolute lookAt snaps the view instantly, even with
+   * zero mouse movement. Rotating the existing orientation by the SAME small delta used to
+   * move the offset-from-pivot keeps dx=dy=0 a true no-op and makes every subsequent delta
+   * continuous, so there is never a jump — only genuine drag input changes anything.
+   *
+   * `controls.target` is kept glued to exactly where the camera ends up facing (same
+   * distance as before) so OrbitControls' own per-frame `lookAt(target)` in `animate()`
+   * is always a no-op against this and never fights it; pan/zoom immediately afterward
+   * then behave exactly as if this had been a native orbit.
+   */
+  private orbitCameraAroundPivot(dx: number, dy: number, pivot: THREE.Vector3) {
+    if (dx === 0 && dy === 0) return;
+    const h = this.canvasRef.nativeElement.clientHeight || 1;
+    const thetaDelta = -2 * Math.PI * dx / h;
+    let phiDelta = -2 * Math.PI * dy / h;
+
+    // Clamp the SAME way OrbitControls clamps its polar angle, tracked relative to the
+    // pivot (not the camera's actual look direction, which this never forces to align)
+    // so a long drag still can't flip the camera upside down.
+    const EPS = 1e-4;
+    const clamped = Math.max(EPS - this.customOrbitPhi, Math.min(Math.PI - EPS - this.customOrbitPhi, phiDelta));
+    this.customOrbitPhi += clamped;
+    phiDelta = clamped;
+
+    const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), thetaDelta);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    const qPitch = new THREE.Quaternion().setFromAxisAngle(right, phiDelta);
+    const dq = qYaw.multiply(qPitch);
+
+    const offset = this.camera.position.clone().sub(pivot);
+    offset.applyQuaternion(dq);
+    this.camera.position.copy(pivot).add(offset);
+    this.camera.quaternion.premultiply(dq);
+
+    const dist = this.controls.target.distanceTo(this.camera.position) || 1;
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    this.controls.target.copy(this.camera.position).addScaledVector(forward, dist);
   }
 
   /**
@@ -2517,17 +2673,29 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.accumDirty = true;   // camera moved → restart Render-mode accumulation
       if (this.wallDims.length) this.ngZone.run(() => this.updateWallDimScreens());
     });
+    // Right-drag-to-orbit is handled natively by OrbitControls EXCEPT when a selection
+    // is active (see the capture-phase 'pointerdown' listener below + onCanvasDown/
+    // onCanvasMove/onCanvasUp's customOrbiting branch), which instead orbits around the
+    // selection's own centre via orbitCameraAroundPivot — see that method for why a
+    // native OrbitControls retarget can't be used here without visibly snapping the view.
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.button === 2 && this.mode === 'idle' && this.selectedIds.size > 0 && this.controls.enabled) {
+        e.stopPropagation();   // steal this gesture before OrbitControls' own handler sees it
+      }
+    }, { capture: true });
 
     this.boundDown  = (e) => this.onCanvasDown(e);
     this.boundClick = (e) => this.onCanvasClick(e);
     this.boundMove  = (e) => this.onCanvasMove(e);
     this.boundUp    = (e) => this.onCanvasUp(e);
     this.boundWheel = (e) => this.onCanvasWheel(e);
+    this.boundCanvasLeave = () => { this.clearHover(); this.ngZone.run(() => { this.hoveredInst = null; }); };
     canvas.addEventListener('mousedown', this.boundDown);
     canvas.addEventListener('click',     this.boundClick);
     canvas.addEventListener('mousemove', this.boundMove);
     canvas.addEventListener('mouseup',   this.boundUp);
     canvas.addEventListener('wheel',     this.boundWheel, { passive: false });
+    canvas.addEventListener('mouseleave', this.boundCanvasLeave);
 
     this.resizeObserver = new ResizeObserver(() => {
       const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -3063,8 +3231,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       if (!(child instanceof THREE.Mesh) || child.userData['isEdge']) return;
       let n: THREE.Object3D | null = child, panelName: string | undefined;
       while (n && n !== obj) { if (n.userData['panel']) { panelName = n.userData['panel'].name as string; break; } n = n.parent; }
-      const boardDef = panelName ? this.materialDef(inst.materials?.[toKey(panelName)]) : this.materialDef(inst.material);
-      const kantDef = panelName ? this.materialDef(inst.materials?.[toKantKey(panelName)]) : boardDef;
+      // Panel-less families (ПЛОСКОСТ) carry their own МАТЕРИАЛ/МАТЕРИАЛ_КАНТ picks in
+      // inst.materials; fall back to the free-text laminate spec (inst.material) for
+      // families with neither (СТЕНА/ПЛОЧА) — same rule as applyRenderMaterials below.
+      const boardDef = panelName
+        ? this.materialDef(inst.materials?.[toKey(panelName)])
+        : this.materialDef(inst.materials?.['МАТЕРИАЛ'] ?? inst.material);
+      const kantDef = panelName
+        ? this.materialDef(inst.materials?.[toKantKey(panelName)])
+        : (inst.materials?.['МАТЕРИАЛ_КАНТ'] ? this.materialDef(inst.materials['МАТЕРИАЛ_КАНТ']) : boardDef);
       const mats = Array.isArray(child.material) ? child.material : [child.material];
       (mats as THREE.MeshPhongMaterial[]).forEach(m => {
         if (m.map) return;                                    // textured chipboard edge — leave it
@@ -3094,12 +3269,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         if (n.userData['panel']) { panelName = n.userData['panel'].name as string; break; }
         n = n.parent;
       }
+      // Panel-less families (ПЛОСКОСТ) carry their own МАТЕРИАЛ/МАТЕРИАЛ_КАНТ picks in
+      // inst.materials; fall back to the free-text laminate spec (inst.material) for
+      // families with neither (СТЕНА/ПЛОЧА).
       const boardDef = panelName
         ? this.materialDef(inst.materials?.[toKey(panelName)])
-        : this.materialDef(inst.material);
+        : this.materialDef(inst.materials?.['МАТЕРИАЛ'] ?? inst.material);
       const kantDef = panelName
         ? this.materialDef(inst.materials?.[toKantKey(panelName)])
-        : boardDef;
+        : (inst.materials?.['МАТЕРИАЛ_КАНТ'] ? this.materialDef(inst.materials['МАТЕРИАЛ_КАНТ']) : boardDef);
 
       const conv = (m: THREE.MeshPhongMaterial): THREE.MeshStandardMaterial => {
         const isBand = !!m.userData['edgeBand'];
@@ -3187,6 +3365,20 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.orbitPrev = { x: e.clientX, y: e.clientY };
       return;
     }
+    // Idle right-drag with an active selection: orbit around the selection's centre
+    // instead of OrbitControls' own target (see orbitCameraAroundPivot) — the matching
+    // capture-phase 'pointerdown' listener in initThree steals this gesture from
+    // OrbitControls before it ever sees it.
+    if (e.button === 2 && this.mode === 'idle' && this.controls.enabled) {
+      const center = this.selectionCenter();
+      if (center) {
+        this.customOrbiting = true;
+        this.customOrbitPivot.copy(center);
+        this.customOrbitPrev = { x: e.clientX, y: e.clientY };
+        this.customOrbitPhi = new THREE.Spherical().setFromVector3(this.camera.position.clone().sub(center)).phi;
+        return;
+      }
+    }
     this.mouseDownAt  = { x: e.clientX, y: e.clientY };
     this.marqueeStart = { x: e.clientX, y: e.clientY };
     this.isMarqueeing = false;
@@ -3198,6 +3390,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       if (!(e.buttons & 4)) { this.orbiting = false; return; }   // middle button released elsewhere
       this.orbitCamera(e.clientX - this.orbitPrev.x, e.clientY - this.orbitPrev.y);
       this.orbitPrev = { x: e.clientX, y: e.clientY };
+      return;
+    }
+
+    if (this.customOrbiting) {
+      if (!(e.buttons & 2)) { this.customOrbiting = false; return; }   // right button released elsewhere
+      this.orbitCameraAroundPivot(e.clientX - this.customOrbitPrev.x, e.clientY - this.customOrbitPrev.y, this.customOrbitPivot);
+      this.customOrbitPrev = { x: e.clientX, y: e.clientY };
       return;
     }
 
@@ -3309,6 +3508,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   private onCanvasUp(e: MouseEvent) {
     if (this.orbiting && e.button === 1) { this.orbiting = false; return; }
+    if (this.customOrbiting && e.button === 2) { this.customOrbiting = false; return; }
     if (e.button !== 0) return;
     if (this.isMarqueeing && this.mode === 'idle') {
       this.isMarqueeing = false;
@@ -3327,6 +3527,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
     const selected: number[] = [];
     this.objectMap.forEach((obj, id) => {
+      if (!obj.visible) return;
       obj.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(obj);
       if (box.isEmpty()) return;
@@ -3348,6 +3549,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.raycaster.setFromCamera(this.ndc(e), this.camera);
     const meshes: THREE.Mesh[] = [];
     this.objectMap.forEach((obj, id) => {
+      if (!obj.visible) return;
       obj.traverse(child => {
         if (child instanceof THREE.Mesh && !child.userData['isEdge']) {
           child.userData['iid'] = id; meshes.push(child);
@@ -3404,10 +3606,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.hoverId = null; this.hoverPanels = []; this.tabIndex = 0;
   }
 
-  /** Track what's under the cursor while idle (drives the TAB cycle). */
+  /** Track what's under the cursor while idle (drives the TAB cycle + the ТИП readout). */
   private updateHover(e: MouseEvent) {
     const id = this.pickInstance(e);
-    if (id !== this.hoverId) { this.clearHover(); this.hoverId = id; this.tabIndex = 0; }
+    if (id !== this.hoverId) {
+      this.clearHover();
+      this.hoverId = id; this.tabIndex = 0;
+      const inst = id === null ? null : (this.instances.find(i => i.id === id) ?? null);
+      this.ngZone.run(() => { this.hoveredInst = inst; });
+    }
     if (id === null) return;
     this.hoverPanels = this.panelsUnderCursor(e, id);
     if (this.tabIndex > this.hoverPanels.length) this.tabIndex = 0;   // clamp if the stack shrank

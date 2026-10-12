@@ -132,7 +132,7 @@
 
 .param-grid {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: minmax(0, 46%) 1fr;
   align-items: center;
   gap: 6px 10px;
 
@@ -182,6 +182,8 @@
   font-size: 11px;
   color: var(--c-text-3);
   font-family: 'Courier New', monospace;
+  white-space: normal;
+  line-height: 1.25;
 }
 
 .rot-slider { width: 100%; accent-color: #d4a96a; }
@@ -470,6 +472,28 @@
   &.sel { background: #4a9cd4; }
 }
 
+.inst-vis {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--c-text-6);
+  cursor: pointer;
+
+  svg { width: 13px; height: 13px; }
+  &:hover { color: var(--c-text-2); }
+  &.off { color: var(--c-text-8); }
+}
+
+.inst-row.hidden-inst {
+  .inst-name, .inst-family { opacity: 0.45; }
+}
+
 .inst-name {
   flex: 1;
   font-size: 12px;
@@ -587,6 +611,16 @@
   transform: translateX(-50%);
   font-size: 10px;
   color: var(--c-text-9);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.hover-info {
+  position: absolute;
+  bottom: 12px;
+  left: 14px;
+  font-size: 10px;
+  color: var(--c-text-8);
   pointer-events: none;
   white-space: nowrap;
 }

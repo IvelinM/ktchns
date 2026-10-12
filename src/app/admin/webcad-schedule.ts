@@ -3,11 +3,11 @@
  * tab-separated text the shop imports into Excel. The component only handles the download.
  *
  * It lists every ploskost panel in the project — standalone ПЛОСКОСТ objects AND each
- * board that composes a КОРПУС С ВРАТА (via `korpusPanels`, the same decomposition the
- * 3D build uses, so the geometry and the cut-list can never disagree).
+ * board that composes a МОДУЛ (via `korpusPanels`, the same decomposition the 3D build
+ * uses, so the geometry and the cut-list can never disagree).
  */
 import { SceneInstance } from './webcad.model';
-import { korpusPanels, korpusRebraPanels, KORPUS_KANT } from './webcad-geometry';
+import { korpusPanels, KORPUS_KANT } from './webcad-geometry';
 
 interface Panel {
   element: string; material: string; size1: number; size2: number;
@@ -40,14 +40,9 @@ export function buildScheduleText(instances: SceneInstance[], itemize: boolean):
       const p = inst.params;
       addPanel(inst.label, material, p['AB'], p['BC'],
         [!!p['pvcAB'], !!p['pvcBC'], !!p['pvcCD'], !!p['pvcDA']], p['kantThickness'] || 0);
-    } else if (inst.familyId === 'cabinet-door') {
+    } else if (inst.familyId === 'module') {
       const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
       for (const pan of korpusPanels(inst.params, true)) {
-        addPanel(pan.name, material, pan.AB, pan.BC, pan.pvc, kant);
-      }
-    } else if (inst.familyId === 'cabinet-ribs') {
-      const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
-      for (const pan of korpusRebraPanels(inst.params, true)) {
         addPanel(pan.name, material, pan.AB, pan.BC, pan.pvc, kant);
       }
     }

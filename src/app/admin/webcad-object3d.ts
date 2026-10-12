@@ -52,16 +52,35 @@ function worldAnchorOffset(obj: THREE.Object3D, a: BasePoint, rotYDeg: number): 
 }
 
 /**
+ * Same anchor-offset formula as `worldAnchorOffset`, but measured against a NOMINAL
+ * box (e.g. a МОДУЛ's ШИРИНА × ВИСОЧИНА × ДЪЛБОЧИНА) centred at the local origin,
+ * instead of the actual built geometry. Pass this for families whose panels can
+ * individually poke past their nominal envelope (e.g. the `*_РЪБ_ОФСЕТ` params) —
+ * otherwise such a per-panel nudge would enlarge the whole object's AABB and the
+ * anchor would compensate by shifting every OTHER panel along with it.
+ */
+function nominalAnchorOffset(size: THREE.Vector3, a: BasePoint, rotYDeg: number): THREE.Vector3 {
+  const half = size.clone().multiplyScalar(0.5);
+  const box = new THREE.Box3(half.clone().multiplyScalar(-1), half.clone());
+  box.applyMatrix4(new THREE.Matrix4().makeRotationY(rotYDeg * (Math.PI / 180)));
+  const c = box.getCenter(new THREE.Vector3());
+  const s = box.getSize(new THREE.Vector3());
+  return new THREE.Vector3(c.x + a.x * s.x / 2, c.y + a.y * s.y / 2, c.z + a.z * s.z / 2);
+}
+
+/**
  * Wrap a freshly-built object so its chosen (world-axis) base point lands on the
  * wrapper origin — which is where `obj.position` then places it. Because the anchor
  * is world-aligned, the geometry must be shifted by the INVERSE-rotated world offset
  * (`R⁻¹·(−worldOffset)`): once the wrapper re-applies `rotYDeg`, the world AABB point
  * picked by `anchor` sits exactly at `obj.position`. The centre anchor needs no shift.
+ * `nominalSize`, when given, measures the anchor against that fixed box instead of
+ * the actual geometry (see `nominalAnchorOffset`).
  */
-export function anchorWrap(built: THREE.Object3D, anchor: BasePoint | undefined, rotYDeg: number): THREE.Object3D {
+export function anchorWrap(built: THREE.Object3D, anchor: BasePoint | undefined, rotYDeg: number, nominalSize?: THREE.Vector3): THREE.Object3D {
   const a = anchor ?? CENTRE_ANCHOR;
   if (a.x === 0 && a.y === 0 && a.z === 0) return built;
-  const off = worldAnchorOffset(built, a, rotYDeg);
+  const off = nominalSize ? nominalAnchorOffset(nominalSize, a, rotYDeg) : worldAnchorOffset(built, a, rotYDeg);
   built.position.copy(off.multiplyScalar(-1).applyEuler(new THREE.Euler(0, -rotYDeg * (Math.PI / 180), 0)));
   const wrap = new THREE.Group();
   wrap.add(built);
