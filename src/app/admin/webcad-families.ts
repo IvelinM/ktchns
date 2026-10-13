@@ -75,6 +75,41 @@ const KORPUS_PARAMS: ParamDef[] = [
   { key: 'ГРЪБ_С_КАНТ_ОТДОЛУ',  label: 'ГРЪБ С КАНТ ОТДОЛУ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ГРЪБ_С_КАНТ_ОТЛЯВО',  label: 'ГРЪБ С КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ГРЪБ_С_КАНТ_ОТДЯСНО', label: 'ГРЪБ С КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  // ПОЛИЦИ: up to 10 independent shelf panels, each toggled on/off and positioned by
+  // its own ОФСЕТ ОТДОЛУ (mm from the module's nominal bottom to the shelf's own
+  // bottom/finished edge); С КАНТ ОТПРЕД bands its front edge. See korpusPanels
+  // (webcad-geometry.ts). Materials (default ГЛАДКО БЯЛО) live in KORPUS_MATERIAL_PARAMS
+  // below, each shown only while its shelf's toggle is checked (admin-page.component.html).
+  { key: 'С_ПОЛИЦА_1',  label: 'С ПОЛИЦА 1',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ПОЛИЦА_1_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 1 ОФСЕТ ОТДОЛУ',  defaultValue: 100,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_1_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 1 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ПОЛИЦА_2',  label: 'С ПОЛИЦА 2',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ПОЛИЦА_2_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 2 ОФСЕТ ОТДОЛУ',  defaultValue: 200,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_2_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 2 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ПОЛИЦА_3',  label: 'С ПОЛИЦА 3',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ПОЛИЦА_3_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 3 ОФСЕТ ОТДОЛУ',  defaultValue: 300,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_3_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 3 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ПОЛИЦА_4',  label: 'С ПОЛИЦА 4',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ПОЛИЦА_4_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 4 ОФСЕТ ОТДОЛУ',  defaultValue: 400,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_4_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 4 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ПОЛИЦА_5',  label: 'С ПОЛИЦА 5',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ПОЛИЦА_5_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 5 ОФСЕТ ОТДОЛУ',  defaultValue: 500,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_5_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 5 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ПОЛИЦА_6',  label: 'С ПОЛИЦА 6',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ПОЛИЦА_6_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 6 ОФСЕТ ОТДОЛУ',  defaultValue: 600,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_6_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 6 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ПОЛИЦА_7',  label: 'С ПОЛИЦА 7',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ПОЛИЦА_7_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 7 ОФСЕТ ОТДОЛУ',  defaultValue: 700,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_7_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 7 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ПОЛИЦА_8',  label: 'С ПОЛИЦА 8',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ПОЛИЦА_8_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 8 ОФСЕТ ОТДОЛУ',  defaultValue: 800,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_8_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 8 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ПОЛИЦА_9',  label: 'С ПОЛИЦА 9',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ПОЛИЦА_9_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 9 ОФСЕТ ОТДОЛУ',  defaultValue: 900,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_9_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 9 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'С_ПОЛИЦА_10', label: 'С ПОЛИЦА 10', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ПОЛИЦА_10_ОФСЕТ_ОТДОЛУ', label: 'ПОЛИЦА 10 ОФСЕТ ОТДОЛУ', defaultValue: 1000, min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_10_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 10 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
 ];
 
 /** МАТЕРИАЛИ: board + edge-band material per panel of a МОДУЛ. Defaults to ГЛАДКО БЯЛО.
@@ -97,6 +132,28 @@ const KORPUS_MATERIAL_PARAMS: MaterialParamDef[] = [
   { key: 'ГРЪБ_КАНТ_МАТЕРИАЛ',          label: 'ГРЪБ КАНТ МАТЕРИАЛ',          default: 'ГЛАДКО БЯЛО' },
   { key: 'ВРАТИЧКА_МАТЕРИАЛ',           label: 'ВРАТИЧКА МАТЕРИАЛ',           default: 'ГЛАДКО БЯЛО' },
   { key: 'ВРАТИЧКА_КАНТ_МАТЕРИАЛ',      label: 'ВРАТИЧКА КАНТ МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
+  // ПОЛИЦА 1..10: each pair only shown (admin-page.component.html) while that shelf's
+  // own С_ПОЛИЦА_n toggle is checked.
+  { key: 'ПОЛИЦА_1_МАТЕРИАЛ',       label: 'ПОЛИЦА 1 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_1_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 1 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_2_МАТЕРИАЛ',       label: 'ПОЛИЦА 2 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_2_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 2 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_3_МАТЕРИАЛ',       label: 'ПОЛИЦА 3 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_3_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 3 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_4_МАТЕРИАЛ',       label: 'ПОЛИЦА 4 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_4_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 4 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_5_МАТЕРИАЛ',       label: 'ПОЛИЦА 5 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_5_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 5 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_6_МАТЕРИАЛ',       label: 'ПОЛИЦА 6 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_6_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 6 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_7_МАТЕРИАЛ',       label: 'ПОЛИЦА 7 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_7_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 7 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_8_МАТЕРИАЛ',       label: 'ПОЛИЦА 8 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_8_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 8 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_9_МАТЕРИАЛ',       label: 'ПОЛИЦА 9 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_9_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 9 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_10_МАТЕРИАЛ',      label: 'ПОЛИЦА 10 МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_10_КАНТ_МАТЕРИАЛ', label: 'ПОЛИЦА 10 КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
 ];
 
 export const FAMILIES: FamilyDef[] = [
@@ -114,17 +171,24 @@ export const FAMILIES: FamilyDef[] = [
       { key: 'pvcCD',        label: 'PVC Кант CD',    defaultValue: 0,   min: 0,   step: 1,   unit: '',   type: 'toggle' },
       { key: 'pvcDA',        label: 'PVC Кант DA',    defaultValue: 0,   min: 0,   step: 1,   unit: '',   type: 'toggle' },
       { key: 'kantThickness', label: 'КАНТ ДЕБЕЛИНА', defaultValue: 1, min: 0.1, step: 0.1, unit: 'mm' },
+      // Tilts the panel about the horizontal axis that lies IN its own face (i.e.
+      // perpendicular to world Y) and runs through its centre — think of it hinging
+      // forward/back, as opposed to rotY which spins it about the vertical world axis.
+      { key: 'tilt', label: 'НАКЛОН', defaultValue: 0, min: -180, max: 180, step: 1, unit: '°', type: 'slider' },
     ],
     materialParams: [
       { key: 'МАТЕРИАЛ',      label: 'МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
       { key: 'МАТЕРИАЛ_КАНТ', label: 'МАТЕРИАЛ КАНТ', default: 'ГЛАДКО БЯЛО' },
     ],
     buildObject(p) {
-      return makeMesh(
+      const obj = makeMesh(
         p['AB'], p['BC'], p['angle'] ?? 90, p['thickness'],
         [Boolean(p['pvcAB']), Boolean(p['pvcBC']), Boolean(p['pvcCD']), Boolean(p['pvcDA'])],
         p['kantThickness'] ?? 1,
       );
+      const tilt = p['tilt'] ?? 0;
+      if (tilt) obj.rotateX(tilt * Math.PI / 180);
+      return obj;
     },
   },
 

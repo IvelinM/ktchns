@@ -18,7 +18,7 @@ import type { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 // This component is the Angular *interaction controller*: it owns the viewport, the
 // scene<->data sync, the toolbar/panel UI, and every mouse/keyboard tool.
 import {
-  ParamDef, MaterialDef, FamilyDef, BasePoint, WallPoint,
+  ParamDef, MaterialParamDef, MaterialDef, FamilyDef, BasePoint, WallPoint,
   SceneInstance, SceneSnapshot, PanelInfo, InteractionMode, MovePlane,
   COLOR_NORMAL, COLOR_SELECTED, EDGE_NORMAL, EDGE_SELECTED, EDGE_HOVER,
   CENTRE_ANCHOR, WALL_Y,
@@ -452,6 +452,78 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     return inst ? (FAMILIES.find(f => f.id === inst.familyId) ?? null) : null;
   }
 
+  /** Live instance objects for the current multi-selection (in no particular order). */
+  private get multiSelectedInstances(): SceneInstance[] {
+    const out: SceneInstance[] = [];
+    this.selectedIds.forEach(id => {
+      const inst = this.instances.find(i => i.id === id);
+      if (inst) out.push(inst);
+    });
+    return out;
+  }
+
+  /**
+   * When 2+ instances are selected and they're ALL the same family, that family's def —
+   * drives the "common parameters" grid, letting one edit apply to every selected
+   * instance at once. Null (no grid shown) for a mixed-family selection, since params
+   * differ per family.
+   */
+  get multiSelectFamilyDef(): FamilyDef | null {
+    const insts = this.multiSelectedInstances;
+    if (insts.length < 2) return null;
+    const familyId = insts[0].familyId;
+    return insts.every(i => i.familyId === familyId) ? this.getFamilyDef(familyId) : null;
+  }
+
+  /** This param's shared value across the whole multi-selection, or null if they differ (shown as an empty input). */
+  multiParamValue(key: string): number | null {
+    const insts = this.multiSelectedInstances;
+    if (insts.length === 0) return null;
+    const first = insts[0].params[key];
+    return insts.every(i => i.params[key] === first) ? first : null;
+  }
+
+  /** This toggle param's shared state across the whole multi-selection — 'mixed' shows an indeterminate checkbox. */
+  multiToggleState(key: string): 'on' | 'off' | 'mixed' {
+    const insts = this.multiSelectedInstances;
+    if (insts.length === 0) return 'off';
+    const first = insts[0].params[key] === 1;
+    return insts.every(i => (i.params[key] === 1) === first) ? (first ? 'on' : 'off') : 'mixed';
+  }
+
+  /** Rebuild one instance in place, keeping its selection highlight (CAD mode). */
+  private rebuildInstanceKeepingSelection(inst: SceneInstance) {
+    const old = this.objectMap.get(inst.id);
+    if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
+    this.spawnObject(inst);
+    if (!this.renderMode) {
+      const obj = this.objectMap.get(inst.id)!;
+      colorObj(obj, COLOR_SELECTED);
+      setEdgeColor(obj, EDGE_SELECTED);
+    }
+  }
+
+  /** Multi-select number input: apply one value to this param on every selected instance. */
+  setMultiParam(key: string, value: number | null) {
+    if (value === null || !Number.isFinite(value)) return;   // cleared/invalid while typing — wait for a real number
+    this.commitPendingEdit();
+    this.multiSelectedInstances.forEach(inst => {
+      inst.params[key] = value;
+      this.rebuildInstanceKeepingSelection(inst);
+    });
+    this.accumDirty = true;
+  }
+
+  /** Multi-select checkbox: apply the same checked state to this toggle on every selected instance. */
+  setMultiToggleParam(key: string, checked: boolean) {
+    this.commitPendingEdit();
+    this.multiSelectedInstances.forEach(inst => {
+      this.setToggleParam(inst.params, key, checked);
+      this.rebuildInstanceKeepingSelection(inst);
+    });
+    this.accumDirty = true;
+  }
+
   /**
    * Live С КАНТ / БЕЗ КАНТ sizes for a selected Ploskost (null for other families).
    * A band reduces the dimension PERPENDICULAR to its edge: the AB/CD edges (which run
@@ -489,12 +561,17 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     { title: 'ЛЯВА СТРАНИЦА',  prefix: 'ЛЯВА СТРАНИЦА' },
     { title: 'ДЯСНА СТРАНИЦА', prefix: 'ДЯСНА СТРАНИЦА' },
     { title: 'ВРАТИЧКА',       prefix: 'ВРАТИЧКА' },
+    { title: 'ПОЛИЦИ',         prefix: 'ПОЛИЦА' },
   ];
   /** Params forced into a specific section by exact label, overriding prefix matching
-   *  — РЕБРА ШИРИНА controls the РЕБРО ТАВАН ribs, so it belongs with ТАВАН even though
-   *  its own label doesn't start with that prefix. */
+   *  — РЕБРА ШИРИНА and the ТАВАН-vs-РЕБРА-shared edge-band toggles all belong with
+   *  ТАВАН even though their own labels don't start with that prefix; the С ПОЛИЦА n
+   *  toggles would otherwise match the generic 'С ' section ahead of 'ПОЛИЦИ'. */
   private readonly SECTION_OVERRIDE = new Map<string, string>([
     ['РЕБРА ШИРИНА', 'ТАВАН'],
+    ['РЕБРО ТАВАН 1 С КАНТ ОТПРЕД', 'ТАВАН'],
+    ['РЕБРО ТАВАН 2 С КАНТ ОТПРЕД', 'ТАВАН'],
+    ...Array.from({ length: 10 }, (_, i) => [`С ПОЛИЦА ${i + 1}`, 'ПОЛИЦИ'] as [string, string]),
   ]);
   private groupedCache = new Map<string, { top: ParamDef[]; sections: { title: string; params: ParamDef[] }[] }>();
 
@@ -524,6 +601,29 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     g = { top, sections };
     this.groupedCache.set(fam.id, g);
     return g;
+  }
+
+  /**
+   * The ТАВАН section mixes params for the full-panel mode with ones for the mutually-
+   * exclusive ribs mode (РЕБРА_ШИРИНА, РЕБРО ТАВАН 1/2 С КАНТ ОТПРЕД) — split it into
+   * two sub-groups (divided by a line in the template) so the two modes read as
+   * distinct, instead of one undifferentiated list.
+   */
+  tavanSplit(params: ParamDef[]): { tavan: ParamDef[]; rebra: ParamDef[] } {
+    return {
+      tavan: params.filter(p => p.label.startsWith('ТАВАН')),
+      rebra: params.filter(p => !p.label.startsWith('ТАВАН')),
+    };
+  }
+
+  /**
+   * ПОЛИЦА n's МАТЕРИАЛ/КАНТ МАТЕРИАЛ only make sense once that shelf exists — hide
+   * the pair in the МАТЕРИАЛИ section until the matching С_ПОЛИЦА_n toggle is checked.
+   * Every other material param (no shelf involved) is always shown.
+   */
+  materialParamVisible(mp: MaterialParamDef, params: Record<string, number>): boolean {
+    const shelf = /^ПОЛИЦА_(\d+)_(?:КАНТ_)?МАТЕРИАЛ$/.exec(mp.key);
+    return !shelf || params[`С_ПОЛИЦА_${shelf[1]}`] === 1;
   }
 
   /**
@@ -763,18 +863,34 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * A МОДУЛ's nominal ШИРИНА × ВИСОЧИНА × ДЪЛБОЧИНА box, for `anchorWrap`'s
-   * `nominalSize` — so a `*_РЪБ_ОФСЕТ` nudging one panel past that envelope never
-   * shifts the anchor (and with it every other panel); undefined for every other
-   * family, which still anchors off its actual built geometry.
+   * This instance's nominal (untilted/unoffset) envelope, for `anchorWrap`'s
+   * `nominalSize` — so a per-panel nudge (МОДУЛ's `*_РЪБ_ОФСЕТ`) or an in-place
+   * rotation (ПЛОСКОСТ's НАКЛОН) that changes the as-built bbox never drags the
+   * anchor — and with it every other panel, or the rotation's own pivot — along
+   * with it. Undefined for every other family, which still anchors off its actual
+   * built geometry.
    */
   private nominalAnchorSize(inst: SceneInstance): THREE.Vector3 | undefined {
-    if (inst.familyId !== 'module') return undefined;
-    return new THREE.Vector3(
-      inst.params['ШИРИНА'] ?? 800,
-      inst.params['ВИСОЧИНА'] ?? 720,
-      inst.params['ДЪЛБОЧИНА'] ?? 550,
-    );
+    if (inst.familyId === 'module') {
+      return new THREE.Vector3(
+        inst.params['ШИРИНА'] ?? 800,
+        inst.params['ВИСОЧИНА'] ?? 720,
+        inst.params['ДЪЛБОЧИНА'] ?? 550,
+      );
+    }
+    if (inst.familyId === 'ploskost') {
+      // НАКЛОН tilts the built mesh before anchorWrap ever sees it, so its as-built
+      // bbox shrinks/grows with the tilt angle. Anchoring off the untilted AB×BC×
+      // ДЕБЕЛИНА envelope instead keeps that anchor offset constant — so the tilt
+      // always pivots around the panel's own centre instead of the anchor (e.g. a
+      // floor-anchored instance's bottom edge) dragging that centre around as it spins.
+      return new THREE.Vector3(
+        inst.params['AB'] ?? 600,
+        inst.params['BC'] ?? 600,
+        inst.params['thickness'] ?? 18,
+      );
+    }
+    return undefined;
   }
 
   private spawnObject(inst: SceneInstance) {

@@ -19,7 +19,8 @@ export interface ParamDef {
   min: number;
   step: number;
   unit: string;
-  type?: 'number' | 'toggle';
+  type?: 'number' | 'toggle' | 'slider';
+  max?: number;   // upper bound for a 'slider' param (ignored otherwise)
 }
 
 /** A per-panel material choice (a string picked from the scene's material list). */

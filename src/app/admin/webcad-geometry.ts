@@ -163,6 +163,12 @@ export interface KorpusPanel {
  * always follows the usual ВРАТИЧКА_ФУГА_ОТГОРЕ reveal (plus ВРАТИЧКА_ГОРЕН_РЪБ_ОФСЕТ),
  * regardless of С_ТАВАН vs С_РЕБРА, overridden to a flush inset when
  * ТАВАН_ВИДИМ_КАНТ_ОТПРЕД is set.
+ *
+ * ПОЛИЦИ: up to 10 independent shelves (С_ПОЛИЦА_1..10), each positioned purely by its
+ * own ОФСЕТ_ОТДОЛУ (mm from the nominal bottom to the shelf's own bottom edge) —
+ * unrelated to ДЪНО/ТАВАН/РЕБРА and never trimmed by or trimming any other panel. Its
+ * own С_КАНТ_ОТПРЕД toggle bands the front edge; МАТЕРИАЛ/КАНТ_МАТЕРИАЛ live in
+ * KORPUS_MATERIAL_PARAMS (webcad-families.ts).
  */
 export function korpusPanels(p: Record<string, number>, withDoor: boolean): KorpusPanel[] {
   const W = p['ШИРИНА']    ?? 800;
@@ -248,6 +254,20 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
     const xl = dunL ? -W / 2 : -(W / 2 - t), xr = dunR ? W / 2 : W / 2 - t;
     const bottomPvc = [b('ДЪНО_С_КАНТ_ОТПРЕД'), b('ДЪНО_С_КАНТ_ОТДЯСНО'), false, b('ДЪНО_С_КАНТ_ОТЛЯВО')];
     add('ДЪНО', xr - xl, botD, -Math.PI / 2, 0, 0, mid(xl, xr), -(H / 2 - t / 2), botZ, bottomPvc);
+  }
+
+  // ПОЛИЦИ: up to 10 independent shelves, each toggled on/off (С_ПОЛИЦА_n) and placed by
+  // its own ОФСЕТ_ОТДОЛУ — the shelf's finished bottom edge sits that many mm above the
+  // module's nominal bottom, regardless of ДЪНО/ТАВАН/РЕБРА. Always inset between the
+  // sides (never extends to the outer face) and never flush to the front door face.
+  const shelfD = frontD(false), shelfZ = frontZ(false);
+  for (let n = 1; n <= 10; n++) {
+    if (!b(`С_ПОЛИЦА_${n}`)) continue;
+    const offset = p[`ПОЛИЦА_${n}_ОФСЕТ_ОТДОЛУ`] ?? 0;
+    const xl = -(W / 2 - t), xr = W / 2 - t;
+    const yb = -H / 2 + offset, yt = yb + t;
+    const shelfPvc = [b(`ПОЛИЦА_${n}_С_КАНТ_ОТПРЕД`), false, false, false];
+    add(`ПОЛИЦА ${n}`, xr - xl, shelfD, -Math.PI / 2, 0, 0, mid(xl, xr), mid(yb, yt), shelfZ, shelfPvc);
   }
 
   // Top: either one full ТАВАН panel (same depth-override rule as the sides/bottom)…

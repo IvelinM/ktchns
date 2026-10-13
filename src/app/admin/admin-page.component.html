@@ -47,6 +47,36 @@
       <input #sceneFileInput type="file" accept="application/json,.json" (change)="loadScene($event)" hidden>
     </div>
 
+    <!-- One collapsible section's body: the ТАВАН section mixes full-panel params
+         with ribs-only ones, so it renders as two sub-groups split by a line; every
+         other section just lists its params as one grid. Shared across the "place
+         new"/multi-select/"selected object" grids (each passes its own per-row
+         template as rowTpl) — declared here, outside any *ngIf-gated section, so
+         every section below (each behind its OWN separate *ngIf, hence its own
+         isolated embedded view) can still resolve this one shared reference. -->
+    <ng-template #sectionBody let-sec="sec" let-rowTpl="rowTpl">
+      <ng-container *ngIf="sec.title === 'ТАВАН'; else plainSecParams">
+        <div class="param-grid">
+          <ng-container *ngFor="let p of tavanSplit(sec.params).tavan">
+            <ng-container *ngTemplateOutlet="rowTpl; context: { $implicit: p }"></ng-container>
+          </ng-container>
+        </div>
+        <hr class="param-sec-divider">
+        <div class="param-grid">
+          <ng-container *ngFor="let p of tavanSplit(sec.params).rebra">
+            <ng-container *ngTemplateOutlet="rowTpl; context: { $implicit: p }"></ng-container>
+          </ng-container>
+        </div>
+      </ng-container>
+      <ng-template #plainSecParams>
+        <div class="param-grid">
+          <ng-container *ngFor="let p of sec.params">
+            <ng-container *ngTemplateOutlet="rowTpl; context: { $implicit: p }"></ng-container>
+          </ng-container>
+        </div>
+      </ng-template>
+    </ng-template>
+
     <!-- ── Place new object (only when nothing is selected) ── -->
     <section class="panel-section" *ngIf="selectedIds.size === 0 && !selectedPanel">
       <h2>FAMILY</h2>
@@ -63,19 +93,21 @@
       <!-- one param row for the "place new" grid -->
       <ng-template #placeParam let-p>
         <label class="param-label">{{ p.label }}</label>
-        <ng-container *ngIf="(p.type ?? 'number') === 'toggle'; else numIn">
-          <div class="toggle-wrap">
+        <ng-container [ngSwitch]="p.type ?? 'number'">
+          <div class="toggle-wrap" *ngSwitchCase="'toggle'">
             <input type="checkbox"
                    [checked]="currentParams[p.key] === 1"
                    (change)="setToggleParam(currentParams, p.key, $any($event.target).checked)">
           </div>
-        </ng-container>
-        <ng-template #numIn>
-          <div class="param-input-wrap">
+          <div class="param-input-wrap" *ngSwitchCase="'slider'">
+            <input type="range" class="rot-slider" [(ngModel)]="currentParams[p.key]" [min]="p.min" [max]="p.max" [step]="p.step">
+            <span class="param-unit">{{ currentParams[p.key] }}{{ p.unit }}</span>
+          </div>
+          <div class="param-input-wrap" *ngSwitchDefault>
             <input type="number" [(ngModel)]="currentParams[p.key]" [min]="p.min" [step]="p.step">
             <span class="param-unit">{{ p.unit }}</span>
           </div>
-        </ng-template>
+        </ng-container>
       </ng-template>
 
       <div class="param-grid mt">
@@ -85,26 +117,24 @@
       </div>
       <details class="param-sec" *ngFor="let sec of grouped(selectedFamily).sections">
         <summary>{{ sec.title }}</summary>
-        <div class="param-grid">
-          <ng-container *ngFor="let p of sec.params">
-            <ng-container *ngTemplateOutlet="placeParam; context: { $implicit: p }"></ng-container>
-          </ng-container>
-        </div>
+        <ng-container *ngTemplateOutlet="sectionBody; context: { sec: sec, rowTpl: placeParam }"></ng-container>
       </details>
       <details class="param-sec" *ngIf="selectedFamily.materialParams?.length">
         <summary>МАТЕРИАЛИ</summary>
         <div class="param-grid material-grid">
           <ng-container *ngFor="let mp of selectedFamily.materialParams">
-            <label class="param-label">{{ mp.label }}</label>
-            <div class="select-wrap">
-              <select [(ngModel)]="currentMaterials[mp.key]">
-                <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
-              </select>
-              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2" stroke-linecap="round" aria-hidden="true">
-                <polyline points="6 9 12 15 18 9"/>
-              </svg>
-            </div>
+            <ng-container *ngIf="materialParamVisible(mp, currentParams)">
+              <label class="param-label">{{ mp.label }}</label>
+              <div class="select-wrap">
+                <select [(ngModel)]="currentMaterials[mp.key]">
+                  <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
+                </select>
+                <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </div>
+            </ng-container>
           </ng-container>
         </div>
       </details>
@@ -124,6 +154,50 @@
         <span class="sel-dot"></span>
         <span class="sel-label">{{ selectedIds.size }} objects selected</span>
       </div>
+
+      <!-- Common parameters: editing one applies it to every selected instance. A
+           param whose value differs across the selection shows an empty input/an
+           indeterminate checkbox instead of picking one side arbitrarily. -->
+      <ng-container *ngIf="multiSelectFamilyDef as mfam">
+        <p class="readonly-note">Общи параметри — промяната важи за всички избрани</p>
+
+        <ng-template #multiParam let-p>
+          <label class="param-label">{{ p.label }}</label>
+          <ng-container [ngSwitch]="p.type ?? 'number'">
+            <div class="toggle-wrap" *ngSwitchCase="'toggle'">
+              <input type="checkbox"
+                     [checked]="multiToggleState(p.key) === 'on'"
+                     [indeterminate]="multiToggleState(p.key) === 'mixed'"
+                     (change)="setMultiToggleParam(p.key, $any($event.target).checked)">
+            </div>
+            <div class="param-input-wrap" *ngSwitchCase="'slider'">
+              <input type="range" class="rot-slider"
+                     [ngModel]="multiParamValue(p.key) ?? p.min"
+                     (ngModelChange)="setMultiParam(p.key, $event)"
+                     [min]="p.min" [max]="p.max" [step]="p.step">
+              <span class="param-unit">{{ multiParamValue(p.key) === null ? '—' : (multiParamValue(p.key) + p.unit) }}</span>
+            </div>
+            <div class="param-input-wrap" *ngSwitchDefault>
+              <input type="number"
+                     [ngModel]="multiParamValue(p.key)"
+                     (ngModelChange)="setMultiParam(p.key, $event)"
+                     [placeholder]="multiParamValue(p.key) === null ? '—' : ''"
+                     [min]="p.min" [step]="p.step">
+              <span class="param-unit">{{ p.unit }}</span>
+            </div>
+          </ng-container>
+        </ng-template>
+
+        <div class="param-grid">
+          <ng-container *ngFor="let p of grouped(mfam).top">
+            <ng-container *ngTemplateOutlet="multiParam; context: { $implicit: p }"></ng-container>
+          </ng-container>
+        </div>
+        <details class="param-sec" *ngFor="let sec of grouped(mfam).sections">
+          <summary>{{ sec.title }}</summary>
+          <ng-container *ngTemplateOutlet="sectionBody; context: { sec: sec, rowTpl: multiParam }"></ng-container>
+        </details>
+      </ng-container>
     </section>
 
     <!-- ── Selected family element (read-only) ── -->
@@ -196,16 +270,22 @@
         <!-- one param row for the "selected object" grid -->
         <ng-template #selParam let-p>
           <label class="param-label">{{ p.label }}</label>
-          <ng-container *ngIf="(p.type ?? 'number') === 'toggle'; else numInSel">
-            <div class="toggle-wrap">
+          <ng-container [ngSwitch]="p.type ?? 'number'">
+            <div class="toggle-wrap" *ngSwitchCase="'toggle'">
               <input type="checkbox"
                      [checked]="selectedInstance!.params[p.key] === 1"
                      (focus)="beginEdit()"
                      (change)="setToggleParam(selectedInstance!.params, p.key, $any($event.target).checked); rebuildSelected()">
             </div>
-          </ng-container>
-          <ng-template #numInSel>
-            <div class="param-input-wrap">
+            <div class="param-input-wrap" *ngSwitchCase="'slider'">
+              <input type="range" class="rot-slider"
+                     [(ngModel)]="selectedInstance!.params[p.key]"
+                     (focus)="beginEdit()"
+                     (ngModelChange)="rebuildSelected()"
+                     [min]="p.min" [max]="p.max" [step]="p.step">
+              <span class="param-unit">{{ selectedInstance!.params[p.key] }}{{ p.unit }}</span>
+            </div>
+            <div class="param-input-wrap" *ngSwitchDefault>
               <input type="number"
                      [(ngModel)]="selectedInstance!.params[p.key]"
                      (focus)="beginEdit()"
@@ -213,7 +293,7 @@
                      [min]="p.min" [step]="p.step">
               <span class="param-unit">{{ p.unit }}</span>
             </div>
-          </ng-template>
+          </ng-container>
         </ng-template>
 
         <div class="param-grid">
@@ -223,28 +303,26 @@
         </div>
         <details class="param-sec" *ngFor="let sec of grouped(selectedFamilyDef!).sections">
           <summary>{{ sec.title }}</summary>
-          <div class="param-grid">
-            <ng-container *ngFor="let p of sec.params">
-              <ng-container *ngTemplateOutlet="selParam; context: { $implicit: p }"></ng-container>
-            </ng-container>
-          </div>
+          <ng-container *ngTemplateOutlet="sectionBody; context: { sec: sec, rowTpl: selParam }"></ng-container>
         </details>
         <details class="param-sec" *ngIf="selectedFamilyDef!.materialParams?.length">
           <summary>МАТЕРИАЛИ</summary>
           <div class="param-grid material-grid">
             <ng-container *ngFor="let mp of selectedFamilyDef!.materialParams">
-              <label class="param-label">{{ mp.label }}</label>
-              <div class="select-wrap">
-                <select [ngModel]="materialOf(selectedInstance!, mp.key)"
-                        (focus)="beginEdit()"
-                        (ngModelChange)="setMaterial(mp.key, $event)">
-                  <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
-                </select>
-                <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                     stroke-width="2" stroke-linecap="round" aria-hidden="true">
-                  <polyline points="6 9 12 15 18 9"/>
-                </svg>
-              </div>
+              <ng-container *ngIf="materialParamVisible(mp, selectedInstance!.params)">
+                <label class="param-label">{{ mp.label }}</label>
+                <div class="select-wrap">
+                  <select [ngModel]="materialOf(selectedInstance!, mp.key)"
+                          (focus)="beginEdit()"
+                          (ngModelChange)="setMaterial(mp.key, $event)">
+                    <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
+                  </select>
+                  <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <polyline points="6 9 12 15 18 9"/>
+                  </svg>
+                </div>
+              </ng-container>
             </ng-container>
           </div>
         </details>

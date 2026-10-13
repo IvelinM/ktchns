@@ -176,6 +176,14 @@
   &[open] > summary::before { content: '▾'; }
 
   .param-grid { padding: 10px; }
+
+  // Splits a section into two sub-groups (e.g. ТАВАН panel vs РЕБРА ribs) — sits
+  // between two .param-grid blocks, so it only needs side margins, not top/bottom.
+  .param-sec-divider {
+    margin: 0 10px;
+    border: none;
+    border-top: 1px solid var(--c-border-soft);
+  }
 }
 
 .param-label {
