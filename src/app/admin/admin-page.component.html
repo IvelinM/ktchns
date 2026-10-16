@@ -92,21 +92,23 @@
 
       <!-- one param row for the "place new" grid -->
       <ng-template #placeParam let-p>
-        <label class="param-label">{{ p.label }}</label>
-        <ng-container [ngSwitch]="p.type ?? 'number'">
-          <div class="toggle-wrap" *ngSwitchCase="'toggle'">
-            <input type="checkbox"
-                   [checked]="currentParams[p.key] === 1"
-                   (change)="setToggleParam(currentParams, p.key, $any($event.target).checked)">
-          </div>
-          <div class="param-input-wrap" *ngSwitchCase="'slider'">
-            <input type="range" class="rot-slider" [(ngModel)]="currentParams[p.key]" [min]="p.min" [max]="p.max" [step]="p.step">
-            <span class="param-unit">{{ currentParams[p.key] }}{{ p.unit }}</span>
-          </div>
-          <div class="param-input-wrap" *ngSwitchDefault>
-            <input type="number" [(ngModel)]="currentParams[p.key]" [min]="p.min" [step]="p.step">
-            <span class="param-unit">{{ p.unit }}</span>
-          </div>
+        <ng-container *ngIf="paramRowVisible(p, currentParams)">
+          <label class="param-label">{{ p.label }}</label>
+          <ng-container [ngSwitch]="p.type ?? 'number'">
+            <div class="toggle-wrap" *ngSwitchCase="'toggle'">
+              <input type="checkbox"
+                     [checked]="currentParams[p.key] === 1"
+                     (change)="setToggleParam(currentParams, p.key, $any($event.target).checked)">
+            </div>
+            <div class="param-input-wrap" *ngSwitchCase="'slider'">
+              <input type="range" class="rot-slider" [(ngModel)]="currentParams[p.key]" [min]="p.min" [max]="p.max" [step]="p.step">
+              <span class="param-unit">{{ currentParams[p.key] }}{{ p.unit }}</span>
+            </div>
+            <div class="param-input-wrap" *ngSwitchDefault>
+              <input type="number" [(ngModel)]="currentParams[p.key]" [min]="p.min" [step]="p.step">
+              <span class="param-unit">{{ p.unit }}</span>
+            </div>
+          </ng-container>
         </ng-container>
       </ng-template>
 
@@ -162,29 +164,31 @@
         <p class="readonly-note">Общи параметри — промяната важи за всички избрани</p>
 
         <ng-template #multiParam let-p>
-          <label class="param-label">{{ p.label }}</label>
-          <ng-container [ngSwitch]="p.type ?? 'number'">
-            <div class="toggle-wrap" *ngSwitchCase="'toggle'">
-              <input type="checkbox"
-                     [checked]="multiToggleState(p.key) === 'on'"
-                     [indeterminate]="multiToggleState(p.key) === 'mixed'"
-                     (change)="setMultiToggleParam(p.key, $any($event.target).checked)">
-            </div>
-            <div class="param-input-wrap" *ngSwitchCase="'slider'">
-              <input type="range" class="rot-slider"
-                     [ngModel]="multiParamValue(p.key) ?? p.min"
-                     (ngModelChange)="setMultiParam(p.key, $event)"
-                     [min]="p.min" [max]="p.max" [step]="p.step">
-              <span class="param-unit">{{ multiParamValue(p.key) === null ? '—' : (multiParamValue(p.key) + p.unit) }}</span>
-            </div>
-            <div class="param-input-wrap" *ngSwitchDefault>
-              <input type="number"
-                     [ngModel]="multiParamValue(p.key)"
-                     (ngModelChange)="setMultiParam(p.key, $event)"
-                     [placeholder]="multiParamValue(p.key) === null ? '—' : ''"
-                     [min]="p.min" [step]="p.step">
-              <span class="param-unit">{{ p.unit }}</span>
-            </div>
+          <ng-container *ngIf="multiParamRowVisible(p)">
+            <label class="param-label">{{ p.label }}</label>
+            <ng-container [ngSwitch]="p.type ?? 'number'">
+              <div class="toggle-wrap" *ngSwitchCase="'toggle'">
+                <input type="checkbox"
+                       [checked]="multiToggleState(p.key) === 'on'"
+                       [indeterminate]="multiToggleState(p.key) === 'mixed'"
+                       (change)="setMultiToggleParam(p.key, $any($event.target).checked)">
+              </div>
+              <div class="param-input-wrap" *ngSwitchCase="'slider'">
+                <input type="range" class="rot-slider"
+                       [ngModel]="multiParamValue(p.key) ?? p.min"
+                       (ngModelChange)="setMultiParam(p.key, $event)"
+                       [min]="p.min" [max]="p.max" [step]="p.step">
+                <span class="param-unit">{{ multiParamValue(p.key) === null ? '—' : (multiParamValue(p.key) + p.unit) }}</span>
+              </div>
+              <div class="param-input-wrap" *ngSwitchDefault>
+                <input type="number"
+                       [ngModel]="multiParamValue(p.key)"
+                       (ngModelChange)="setMultiParam(p.key, $event)"
+                       [placeholder]="multiParamValue(p.key) === null ? '—' : ''"
+                       [min]="p.min" [step]="p.step">
+                <span class="param-unit">{{ p.unit }}</span>
+              </div>
+            </ng-container>
           </ng-container>
         </ng-template>
 
@@ -196,6 +200,26 @@
         <details class="param-sec" *ngFor="let sec of grouped(mfam).sections">
           <summary>{{ sec.title }}</summary>
           <ng-container *ngTemplateOutlet="sectionBody; context: { sec: sec, rowTpl: multiParam }"></ng-container>
+        </details>
+        <details class="param-sec" *ngIf="mfam.materialParams?.length">
+          <summary>МАТЕРИАЛИ</summary>
+          <div class="param-grid material-grid">
+            <ng-container *ngFor="let mp of mfam.materialParams">
+              <ng-container *ngIf="multiMaterialParamVisible(mp)">
+                <label class="param-label">{{ mp.label }}</label>
+                <div class="select-wrap">
+                  <select [ngModel]="multiMaterialValue(mp.key)" (ngModelChange)="setMultiMaterial(mp.key, $event)">
+                    <option *ngIf="multiMaterialValue(mp.key) === null" value="" disabled>— различни —</option>
+                    <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
+                  </select>
+                  <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <polyline points="6 9 12 15 18 9"/>
+                  </svg>
+                </div>
+              </ng-container>
+            </ng-container>
+          </div>
         </details>
       </ng-container>
     </section>
@@ -269,30 +293,32 @@
 
         <!-- one param row for the "selected object" grid -->
         <ng-template #selParam let-p>
-          <label class="param-label">{{ p.label }}</label>
-          <ng-container [ngSwitch]="p.type ?? 'number'">
-            <div class="toggle-wrap" *ngSwitchCase="'toggle'">
-              <input type="checkbox"
-                     [checked]="selectedInstance!.params[p.key] === 1"
-                     (focus)="beginEdit()"
-                     (change)="setToggleParam(selectedInstance!.params, p.key, $any($event.target).checked); rebuildSelected()">
-            </div>
-            <div class="param-input-wrap" *ngSwitchCase="'slider'">
-              <input type="range" class="rot-slider"
-                     [(ngModel)]="selectedInstance!.params[p.key]"
-                     (focus)="beginEdit()"
-                     (ngModelChange)="rebuildSelected()"
-                     [min]="p.min" [max]="p.max" [step]="p.step">
-              <span class="param-unit">{{ selectedInstance!.params[p.key] }}{{ p.unit }}</span>
-            </div>
-            <div class="param-input-wrap" *ngSwitchDefault>
-              <input type="number"
-                     [(ngModel)]="selectedInstance!.params[p.key]"
-                     (focus)="beginEdit()"
-                     (ngModelChange)="rebuildSelected()"
-                     [min]="p.min" [step]="p.step">
-              <span class="param-unit">{{ p.unit }}</span>
-            </div>
+          <ng-container *ngIf="paramRowVisible(p, selectedInstance!.params)">
+            <label class="param-label">{{ p.label }}</label>
+            <ng-container [ngSwitch]="p.type ?? 'number'">
+              <div class="toggle-wrap" *ngSwitchCase="'toggle'">
+                <input type="checkbox"
+                       [checked]="selectedInstance!.params[p.key] === 1"
+                       (focus)="beginEdit()"
+                       (change)="setToggleParam(selectedInstance!.params, p.key, $any($event.target).checked); rebuildSelected()">
+              </div>
+              <div class="param-input-wrap" *ngSwitchCase="'slider'">
+                <input type="range" class="rot-slider"
+                       [(ngModel)]="selectedInstance!.params[p.key]"
+                       (focus)="beginEdit()"
+                       (ngModelChange)="rebuildSelected()"
+                       [min]="p.min" [max]="p.max" [step]="p.step">
+                <span class="param-unit">{{ selectedInstance!.params[p.key] }}{{ p.unit }}</span>
+              </div>
+              <div class="param-input-wrap" *ngSwitchDefault>
+                <input type="number"
+                       [(ngModel)]="selectedInstance!.params[p.key]"
+                       (focus)="beginEdit()"
+                       (ngModelChange)="rebuildSelected()"
+                       [min]="p.min" [step]="p.step">
+                <span class="param-unit">{{ p.unit }}</span>
+              </div>
+            </ng-container>
           </ng-container>
         </ng-template>
 

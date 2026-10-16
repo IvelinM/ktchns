@@ -9,17 +9,23 @@ wraps it in a Blob and downloads `schedule.txt`. It's a **tab-separated `.txt`**
 SCENE panel.
 
 It lists **every ploskost panel in the project** — standalone Ploskost objects **and**
-each panel composing every МОДУЛ (via [`korpusPanels`](korpus.md), using the
-module's `material` for all its panels and its `КАНТ_ДЕБЕЛИНА` for the door band).
+each panel composing every МОДУЛ (via [`korpusPanels`](korpus.md)), with its `КАНТ_ДЕБЕЛИНА`
+for the band thickness. Each panel's own board + edge-band **material names** are resolved
+the same way the 3D build colours it (`resolveMaterials` in webcad-schedule.ts, mirroring
+`cadColorObj`/`applyRenderMaterials`): a МОДУЛ panel reads its per-panel pick
+(`<PANEL_NAME>_МАТЕРИАЛ` / `_КАНТ_МАТЕРИАЛ` from `inst.materials`, spaces → underscores);
+a ПЛОСКОСТ reads the flat `МАТЕРИАЛ`/`МАТЕРИАЛ_КАНТ` keys, falling back to the legacy
+free-text `material` field for an instance saved before either existed. Blank when nothing
+resolves — never a guessed material.
 
 ## Columns
 
-`ЕЛЕМЕНТ`*, `МАТЕРИАЛ`, `РАЗМЕР 1`, `РАЗМЕР 2`, `БРОЙ`*,
+`ЕЛЕМЕНТ`*, `МАТЕРИАЛ`, `КАНТ МАТЕРИАЛ`, `РАЗМЕР 1`, `РАЗМЕР 2`, `БРОЙ`*,
 `КАНТ РАЗМЕР 1 ОТПРЕД`, `КАНТ РАЗМЕР 1 ОТЗАД`, `КАНТ РАЗМЕР 2 ОТПРЕД`, `КАНТ РАЗМЕР 2 ОТЗАД`.
 
 The `itemize` checkbox toggles the two **mutually-exclusive** columns:
-- **off (merged)**: no ЕЛЕМЕНТ; **БРОЙ present**; identical panels merge **across the
-  whole project**; БРОЙ = quantity.
+- **off (merged)**: no ЕЛЕМЕНТ; **БРОЙ present**; identical panels (same material, kant
+  material, size and banding) merge **across the whole project**; БРОЙ = quantity.
 - **on (itemized)**: **ЕЛЕМЕНТ present** (the panel's role/label); **no БРОЙ**; one row
   per physical panel.
 
@@ -37,4 +43,6 @@ The `itemize` checkbox toggles the two **mutually-exclusive** columns:
 ## Extending
 
 To add a new family's panels to the cut-list, add a branch in `buildScheduleText`
-(webcad-schedule.ts) calling `addPanel(element, material, AB, BC, pvc, kant)` per panel.
+(webcad-schedule.ts) calling `addPanel(element, material, kantMaterial, AB, BC, pvc, kant)`
+per panel — `resolveMaterials(inst, panelName)` (`panelName: null` for a panel-less family)
+gets you the two material names.

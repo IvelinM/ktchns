@@ -311,6 +311,8 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
   // above — AB=ОТДОЛУ, BC=ОТДЯСНО, CD=ОТГОРЕ, DA=ОТЛЯВО. When a neighbouring panel's
   // own *_ВИДИМ_КАНТ_ОТПРЕД flag extends it flush with the front face on that side,
   // the door insets from that boundary by the panel's thickness + 1 mm gap instead.
+  // ДВОЙНА_ВРАТИЧКА splits this one opening into two leaves (see below) instead of
+  // widening/narrowing it — the opening's own xl/xr/yb/yt are unaffected either way.
   if (withDoor && hasDoor) {
     const xl = sideLeftFront ? -W / 2 + t + 1 : -W / 2 + (p['ВРАТИЧКА_ФУГА_ОТЛЯВО'] ?? 0);
     const xr = sideRightFront ? W / 2 - t - 1 : W / 2 - (p['ВРАТИЧКА_ФУГА_ОТДЯСНО'] ?? 0);
@@ -321,7 +323,21 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
     const yb = (dunFront ? -H / 2 + t + 1 : ybNominal) + offBotDoor;
     const yt = (tavFront ? H / 2 - t - 1 : H / 2 - (p['ВРАТИЧКА_ФУГА_ОТГОРЕ'] ?? 0)) + offTopDoor;
     const doorPvc = [b('ВРАТИЧКА_С_КАНТ_ОТДОЛУ'), true, b('ВРАТИЧКА_С_КАНТ_ОТГОРЕ'), true];
-    add('ВРАТИЧКА', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), (D / 2 - t / 2), doorPvc);
+    const doorZ = D / 2 - t / 2;
+    if (b('ДВОЙНА_ВРАТИЧКА')) {
+      // Split into two leaves separated by a small fixed reveal; ЛЯВА takes the chosen
+      // width (clamped to fit), ДЯСНА always takes whatever remains. Both leaves share
+      // the SAME 'ВРАТИЧКА' name (and so the same ВРАТИЧКА_* material/kant lookup) —
+      // only their size differs, like two schedule rows cut from the same spec.
+      const GAP = 2;
+      const totalW = xr - xl;
+      const leftW = Math.max(0, Math.min(p['ЛЯВА_ВРАТИЧКА_ШИРИНА'] ?? (totalW - GAP) / 2, totalW - GAP));
+      const splitX = xl + leftW;
+      add('ВРАТИЧКА', splitX - xl, yt - yb, 0, 0, 0, mid(xl, splitX), mid(yb, yt), doorZ, doorPvc);
+      add('ВРАТИЧКА', xr - (splitX + GAP), yt - yb, 0, 0, 0, mid(splitX + GAP, xr), mid(yb, yt), doorZ, doorPvc);
+    } else {
+      add('ВРАТИЧКА', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), doorZ, doorPvc);
+    }
   }
   return panels;
 }

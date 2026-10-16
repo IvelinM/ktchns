@@ -524,6 +524,35 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.accumDirty = true;
   }
 
+  /** This МАТЕРИАЛИ key's shared value across the whole multi-selection, or null if they differ. */
+  multiMaterialValue(key: string): string | null {
+    const insts = this.multiSelectedInstances;
+    if (insts.length === 0) return null;
+    const first = this.materialOf(insts[0], key);
+    return insts.every(i => this.materialOf(i, key) === first) ? first : null;
+  }
+
+  /** Multi-select material picker: apply one material to this key on every selected instance. */
+  setMultiMaterial(key: string, value: string) {
+    this.commitPendingEdit();
+    this.multiSelectedInstances.forEach(inst => {
+      if (!inst.materials) inst.materials = {};
+      inst.materials[key] = value;
+      if (this.renderMode) {
+        const obj = this.objectMap.get(inst.id);
+        if (obj) this.applyRenderMaterials(obj, inst);
+      }
+    });
+    if (this.renderMode) this.accumDirty = true;
+  }
+
+  /** Like materialParamVisible, but for a multi-selection: shown only while EVERY selected
+   *  instance has that ПОЛИЦА's toggle checked (mirrors multiToggleState's 'on' semantics). */
+  multiMaterialParamVisible(mp: MaterialParamDef): boolean {
+    const shelf = /^ПОЛИЦА_(\d+)_(?:КАНТ_)?МАТЕРИАЛ$/.exec(mp.key);
+    return !shelf || this.multiToggleState(`С_ПОЛИЦА_${shelf[1]}`) === 'on';
+  }
+
   /**
    * Live С КАНТ / БЕЗ КАНТ sizes for a selected Ploskost (null for other families).
    * A band reduces the dimension PERPENDICULAR to its edge: the AB/CD edges (which run
@@ -571,6 +600,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     ['РЕБРА ШИРИНА', 'ТАВАН'],
     ['РЕБРО ТАВАН 1 С КАНТ ОТПРЕД', 'ТАВАН'],
     ['РЕБРО ТАВАН 2 С КАНТ ОТПРЕД', 'ТАВАН'],
+    ['ДВОЙНА ВРАТИЧКА', 'ВРАТИЧКА'],
+    ['ЛЯВА ВРАТИЧКА ШИРИНА', 'ВРАТИЧКА'],
     ...Array.from({ length: 10 }, (_, i) => [`С ПОЛИЦА ${i + 1}`, 'ПОЛИЦИ'] as [string, string]),
   ]);
   private groupedCache = new Map<string, { top: ParamDef[]; sections: { title: string; params: ParamDef[] }[] }>();
@@ -624,6 +655,20 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   materialParamVisible(mp: MaterialParamDef, params: Record<string, number>): boolean {
     const shelf = /^ПОЛИЦА_(\d+)_(?:КАНТ_)?МАТЕРИАЛ$/.exec(mp.key);
     return !shelf || params[`С_ПОЛИЦА_${shelf[1]}`] === 1;
+  }
+
+  /**
+   * ЛЯВА ВРАТИЧКА ШИРИНА only matters once ДВОЙНА ВРАТИЧКА is checked (the right leaf
+   * always takes whatever width is left over) — hide its row until then. Every other
+   * param is always shown.
+   */
+  paramRowVisible(p: ParamDef, params: Record<string, number>): boolean {
+    return p.key !== 'ЛЯВА_ВРАТИЧКА_ШИРИНА' || params['ДВОЙНА_ВРАТИЧКА'] === 1;
+  }
+
+  /** Multi-select version: visible only while EVERY selected instance has ДВОЙНА ВРАТИЧКА checked. */
+  multiParamRowVisible(p: ParamDef): boolean {
+    return p.key !== 'ЛЯВА_ВРАТИЧКА_ШИРИНА' || this.multiToggleState('ДВОЙНА_ВРАТИЧКА') === 'on';
   }
 
   /**

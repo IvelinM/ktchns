@@ -51,6 +51,12 @@ const KORPUS_PARAMS: ParamDef[] = [
   { key: 'ВРАТИЧКА_С_КАНТ_ОТДОЛУ', label: 'ВРАТИЧКА С КАНТ ОТДОЛУ', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ВРАТИЧКА_ГОРЕН_РЪБ_ОФСЕТ', label: 'ВРАТИЧКА ГОРЕН РЪБ ОФСЕТ', defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ВРАТИЧКА_ДОЛЕН_РЪБ_ОФСЕТ', label: 'ВРАТИЧКА ДОЛЕН РЪБ ОФСЕТ', defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
+  // Splits the single ВРАТИЧКА into two leaves (ЛЯВА/ДЯСНА), separated by a small fixed
+  // reveal — ЛЯВА ВРАТИЧКА ШИРИНА only matters (and is only shown — see
+  // admin-page.component.ts paramRowVisible) once ДВОЙНА ВРАТИЧКА is checked; the right
+  // leaf always takes whatever width remains. See korpusPanels (webcad-geometry.ts).
+  { key: 'ДВОЙНА_ВРАТИЧКА',       label: 'ДВОЙНА ВРАТИЧКА',       defaultValue: 0,   min: 0, step: 1,   unit: '',   type: 'toggle' },
+  { key: 'ЛЯВА_ВРАТИЧКА_ШИРИНА',  label: 'ЛЯВА ВРАТИЧКА ШИРИНА',  defaultValue: 400, min: 1, step: 1,   unit: 'mm' },
   { key: 'ТАВАН_С_КАНТ_ОТПРЕД',  label: 'ТАВАН С КАНТ ОТПРЕД',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ТАВАН_С_КАНТ_ОТЛЯВО',  label: 'ТАВАН С КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ТАВАН_С_КАНТ_ОТДЯСНО', label: 'ТАВАН С КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
