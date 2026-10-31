@@ -31,6 +31,14 @@
             </svg>
             Open scene…
           </button>
+          <button class="menu-item" (click)="fileMenuOpen = false; fbxFileInput.click()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>
+            </svg>
+            Import FBX…
+          </button>
+          <input #fbxFileInput type="file" accept=".fbx" (change)="importFbx($event)" hidden>
           <div class="menu-sep"></div>
           <label class="menu-check">
             <input type="checkbox" [(ngModel)]="itemize">
@@ -156,6 +164,9 @@
         <span class="sel-dot"></span>
         <span class="sel-label">{{ selectedIds.size }} objects selected</span>
       </div>
+
+      <!-- Path-extrusion — see the toolbar's own "Path-extrusion" button; it's a
+           separate tool (gated on this same 2-Lines selection), not tied to drawing. -->
 
       <!-- Common parameters: editing one applies it to every selected instance. A
            param whose value differs across the selection shows an empty input/an
@@ -287,6 +298,87 @@
         </div>
       </div>
 
+      <!-- Line: per-vertex corner fillets. Extrude/Path-extrusion are separate
+           toolbar tools (gated on this selection), not shown here — a Line is free
+           to stay a Line forever. -->
+      <div class="detail-group" *ngIf="selectedInstance!.familyId === 'line'">
+        <span class="detail-title">Ъгли (радиус на заобляне)</span>
+        <div class="param-grid">
+          <ng-container *ngFor="let pt of selectedInstance!.path; let i = index">
+            <ng-container *ngIf="isFilletableVertex(i)">
+              <label class="param-label">Връх {{ i + 1 }}</label>
+              <div class="param-input-wrap">
+                <input type="number" min="0" step="0.5"
+                       [ngModel]="pt.r ?? 0"
+                       (focus)="beginEdit()"
+                       (ngModelChange)="pt.r = $event; rebuildSelected()">
+                <span class="param-unit">mm</span>
+              </div>
+            </ng-container>
+          </ng-container>
+        </div>
+      </div>
+
+      <!-- SOLID: IsVoid — when checked, this solid becomes a boolean cutter (subtracted
+           from every other instance it overlaps) instead of a normal visible solid. -->
+      <div class="detail-group" *ngIf="selectedInstance!.familyId === 'solid'">
+        <span class="detail-title">Void</span>
+        <label class="settings-check">
+          <input type="checkbox"
+                 [checked]="selectedInstance!.isVoid ?? false"
+                 (focus)="beginEdit()"
+                 (change)="selectedInstance!.isVoid = $any($event.target).checked; rebuildSelected()">
+          <span>IsVoid — изрязва останалата геометрия</span>
+        </label>
+      </div>
+
+      <!-- SOLID + IsVoid: the "Cuts" list — every other instance this void could cut,
+           each with an eye icon to exclude it (crossed-out eye = left uncut). -->
+      <div class="detail-group" *ngIf="selectedInstance!.familyId === 'solid' && selectedInstance!.isVoid">
+        <span class="detail-title">Cuts</span>
+        <div class="inst-list">
+          <div class="inst-row" *ngFor="let t of voidCuttableList(selectedInstance!.id); trackBy: trackById">
+            <button type="button" class="inst-vis" [class.off]="isVoidExcluded(selectedInstance!, t.id)"
+                    [title]="isVoidExcluded(selectedInstance!, t.id) ? 'Excluded — click to cut' : 'Cut — click to exclude'"
+                    (click)="toggleVoidExclude(t.id, $event)">
+              <svg *ngIf="!isVoidExcluded(selectedInstance!, t.id)" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+              <svg *ngIf="isVoidExcluded(selectedInstance!, t.id)" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
+                <circle cx="12" cy="12" r="3"/>
+                <line x1="2" y1="2" x2="22" y2="22"/>
+              </svg>
+            </button>
+            <span class="inst-name">{{ t.label }}</span>
+            <span class="inst-family">{{ getFamilyDef(t.familyId).name }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- SOLID (sweep/path-extrusion only): rotate the profile about its own centre
+           and offset it from the path, independently of the path itself. -->
+      <div class="detail-group" *ngIf="selectedInstance!.familyId === 'solid' && selectedInstance!.solidOp === 'sweep'">
+        <span class="detail-title">Профил — {{ selectedInstance!.params['ПРОФИЛ_ЗАВЪРТАНЕ'] ?? 0 }}°</span>
+        <input type="range" min="0" max="360" step="1" class="rot-slider"
+               [ngModel]="selectedInstance!.params['ПРОФИЛ_ЗАВЪРТАНЕ'] ?? 0"
+               (focus)="beginEdit()"
+               (ngModelChange)="selectedInstance!.params['ПРОФИЛ_ЗАВЪРТАНЕ'] = $event; rebuildSelected()">
+        <div class="xyz-row">
+          <label>хориз.<input type="number" step="1"
+                 [ngModel]="selectedInstance!.params['ПРОФИЛ_ОТСТЪП_ХОРИЗ'] ?? 0"
+                 (focus)="beginEdit()"
+                 (ngModelChange)="selectedInstance!.params['ПРОФИЛ_ОТСТЪП_ХОРИЗ'] = $event; rebuildSelected()"></label>
+          <label>верт.<input type="number" step="1"
+                 [ngModel]="selectedInstance!.params['ПРОФИЛ_ОТСТЪП_ВЕРТ'] ?? 0"
+                 (focus)="beginEdit()"
+                 (ngModelChange)="selectedInstance!.params['ПРОФИЛ_ОТСТЪП_ВЕРТ'] = $event; rebuildSelected()"></label>
+        </div>
+      </div>
+
       <!-- Family params -->
       <div class="detail-group">
         <span class="detail-title">Parameters</span>
@@ -411,40 +503,46 @@
 
     <!-- ── Scene list ── -->
     <section class="panel-section scene-section">
-      <div class="section-header">
-        <h2>SCENE</h2>
+      <div class="section-header collapsible" (click)="sceneSectionCollapsed = !sceneSectionCollapsed">
+        <svg class="section-chevron" [class.collapsed]="sceneSectionCollapsed" viewBox="0 0 24 24"
+             fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+        <h2>SCENE CONTENT</h2>
         <span class="badge">{{ instances.length }}</span>
       </div>
 
-      <div class="inst-list" *ngIf="instances.length > 0; else emptyScene">
-        <div class="inst-row"
-             *ngFor="let inst of instances; trackBy: trackById"
-             [class.active]="selectedIds.has(inst.id)"
-             [class.hidden-inst]="inst.hidden"
-             (click)="clickList(inst.id)">
-          <span class="inst-dot" [class.sel]="selectedIds.has(inst.id)"></span>
-          <button type="button" class="inst-vis" [class.off]="inst.hidden"
-                  [title]="inst.hidden ? 'Show' : 'Hide'"
-                  (click)="toggleVisibility(inst.id, $event)">
-            <svg *ngIf="!inst.hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
-              <circle cx="12" cy="12" r="3"/>
-            </svg>
-            <svg *ngIf="inst.hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
-              <circle cx="12" cy="12" r="3"/>
-              <line x1="2" y1="2" x2="22" y2="22"/>
-            </svg>
-          </button>
-          <span class="inst-name">{{ inst.label }}</span>
-          <span class="inst-family">{{ getFamilyDef(inst.familyId).name }}</span>
+      <ng-container *ngIf="!sceneSectionCollapsed">
+        <div class="inst-list" *ngIf="instances.length > 0; else emptyScene">
+          <div class="inst-row"
+               *ngFor="let inst of instances; trackBy: trackById"
+               [class.active]="selectedIds.has(inst.id)"
+               [class.hidden-inst]="inst.hidden"
+               (click)="clickList(inst.id)">
+            <span class="inst-dot" [class.sel]="selectedIds.has(inst.id)"></span>
+            <button type="button" class="inst-vis" [class.off]="inst.hidden"
+                    [title]="inst.hidden ? 'Show' : 'Hide'"
+                    (click)="toggleVisibility(inst.id, $event)">
+              <svg *ngIf="!inst.hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+              <svg *ngIf="inst.hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
+                <circle cx="12" cy="12" r="3"/>
+                <line x1="2" y1="2" x2="22" y2="22"/>
+              </svg>
+            </button>
+            <span class="inst-name">{{ inst.label }}</span>
+            <span class="inst-family">{{ getFamilyDef(inst.familyId).name }}</span>
+          </div>
         </div>
-      </div>
-      <ng-template #emptyScene>
-        <p class="empty-hint">Set parameters and click "Place in Scene".</p>
-      </ng-template>
+        <ng-template #emptyScene>
+          <p class="empty-hint">Set parameters and click "Place in Scene".</p>
+        </ng-template>
+      </ng-container>
     </section>
 
   </aside>
@@ -483,6 +581,16 @@
       <label class="tool-count" title="Array: number of copies">
         ×<input type="number" min="1" step="1" [(ngModel)]="arrayCount">
       </label>
+      <button class="tool-btn" title="Mirror — click two points for the mirror line" [disabled]="!canMirror" (click)="startMirror()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="12" y1="2" x2="12" y2="22" stroke-dasharray="2 2"/>
+          <path d="M8 6 4 12l4 6"/><path d="M16 6l4 6-4 6"/>
+        </svg>
+        Mirror
+      </button>
+      <label class="tool-count" title="Mirror: keep the original (add a mirrored copy) instead of flipping it in place">
+        <input type="checkbox" [(ngModel)]="mirrorKeepOriginal"> copy
+      </label>
       <button class="tool-btn" [class.active]="mode === 'match'"
               title="Match — select one object, then click others of the same type to copy its properties onto them"
               [disabled]="!canMatch && mode !== 'match'" (click)="mode === 'match' ? cancelMode() : startMatch()">
@@ -518,6 +626,32 @@
         </svg>
         Плоча
       </button>
+      <button class="tool-btn" [class.active]="mode === 'line-plane' || mode === 'line-from' || mode === 'line-to'"
+              title="Line — избери равнина (посочи повърхност) и нарисувай полилиния" [disabled]="!canLine && mode !== 'line-plane' && mode !== 'line-from' && mode !== 'line-to'"
+              (click)="(mode === 'line-plane' || mode === 'line-from' || mode === 'line-to') ? cancelMode() : startLine()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 18L10 10L14 14L20 6"/>
+          <circle cx="4" cy="18" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="14" cy="14" r="1.5"/><circle cx="20" cy="6" r="1.5"/>
+        </svg>
+        Line
+      </button>
+      <button class="tool-btn" title="Extrude — select one CLOSED Line, extrude it perpendicular to its own plane" [disabled]="!canExtrudeLine" (click)="extrudeLine()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 16V8l8-4 8 4v8l-8 4-8-4Z"/><path d="M4 8l8 4 8-4"/><path d="M12 12v8"/>
+        </svg>
+        Extrude
+      </button>
+      <label class="tool-count" title="Extrude depth (mm)">
+        <input type="number" min="1" step="1" [(ngModel)]="lineExtrudeDepth">
+      </label>
+      <button class="tool-btn" title="Path-extrusion — select two Lines: one CLOSED (the profile) and one open-or-closed (the path)" [disabled]="!canPathExtrude" (click)="sweepLines()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 17c4-8 8 8 12 0"/><circle cx="3" cy="17" r="1.5"/><circle cx="15" cy="17" r="1.5"/>
+          <rect x="17" y="4" width="5" height="5" rx="1"/>
+        </svg>
+        Path-extrusion
+      </button>
+      <span class="tool-sep"></span>
       <button class="tool-btn" title="Measure" [disabled]="!canMeasure" (click)="startMeasure()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M2 12 L12 2 L22 12 L12 22 Z"/><path d="M7 7l2 2"/><path d="M12 4l2 2"/><path d="M17 7l-2 2"/>
@@ -587,13 +721,14 @@
     <!-- Mode overlay -->
     <div class="mode-overlay" *ngIf="mode !== 'idle'">
       <span class="mode-pill"
-            [class.placing]="mode === 'placing' || mode === 'wall-from' || mode === 'wall-to' || mode === 'slab-from' || mode === 'slab-to'"
+            [class.placing]="mode === 'placing' || mode === 'wall-from' || mode === 'wall-to' || mode === 'slab-from' || mode === 'slab-to' || mode === 'line-plane' || mode === 'line-from' || mode === 'line-to'"
             [class.moving]="mode === 'move-from' || mode === 'move-to'"
             [class.measuring]="mode === 'measure-from' || mode === 'measure-to' || mode === 'match'">
         {{ mode === 'placing' ? 'PLACE'
            : mode === 'match' ? 'MATCH'
            : (mode === 'wall-from' || mode === 'wall-to') ? 'СТЕНА'
            : (mode === 'slab-from' || mode === 'slab-to') ? 'ПЛОЧА'
+           : (mode === 'line-plane' || mode === 'line-from' || mode === 'line-to') ? 'LINE'
            : (mode === 'measure-from' || mode === 'measure-to') ? 'MEASURE'
            : (isArray ? 'ARRAY' : (isCopy ? 'COPY' : 'MOVE')) }}
       </span>
@@ -608,6 +743,14 @@
       <!-- Slab dimensions (during a ПЛОЧА draw) -->
       <div class="wall-dims" *ngIf="mode === 'slab-from' || mode === 'slab-to'">
         <label>Дебелина<input type="number" min="1" step="1" [(ngModel)]="slabThickness"></label>
+      </div>
+
+      <!-- Quick-pick planes (during the Line tool's plane-pick step — hovering any
+           surface also works, this is just a shortcut for the common axis-aligned case) -->
+      <div class="plane-btns" *ngIf="mode === 'line-plane'">
+        <button class="plane-btn" (click)="quickPickLinePlane('XZ')">XZ</button>
+        <button class="plane-btn" (click)="quickPickLinePlane('XY')">XY</button>
+        <button class="plane-btn" (click)="quickPickLinePlane('YZ')">YZ</button>
       </div>
 
       <!-- Plane selector — during a move (measure auto-picks the camera-facing plane on Shift) -->
@@ -631,7 +774,7 @@
 
     <!-- Distance editor — follows the cursor; type a value + Enter to commit -->
     <div class="move-measure"
-         *ngIf="moveLabel && (mode === 'move-to' || mode === 'wall-to')"
+         *ngIf="moveLabel && (mode === 'move-to' || mode === 'wall-to' || mode === 'line-to')"
          [style.left.px]="moveLabel.x"
          [style.top.px]="moveLabel.y">
       <input #distInput type="number" min="0" step="1"
@@ -818,6 +961,21 @@
           </label>
           <p class="mat-hint">Вкл.: слънце с ясна сянка + меко дифузно осветление. Изкл.: само меко
             дифузно осветление с меки сенки (облачно). И двата режима хвърлят реалистични сенки.</p>
+
+          <label class="mat-field">
+            <span>Блясък (Bloom) <em>{{ bloomStrength.toFixed(2) }}</em></span>
+            <input type="range" min="0" max="1" step="0.05"
+                   [ngModel]="bloomStrength"
+                   (ngModelChange)="bloomStrength = +$event">
+          </label>
+          <p class="mat-hint">Леко сияние около силно осветените места в Render (слънце, бляскави отражения).</p>
+
+          <label class="settings-check">
+            <input type="checkbox" [ngModel]="floorReflections" (ngModelChange)="setFloorReflections($event)">
+            <span>Отражения на пода</span>
+          </label>
+          <p class="mat-hint">Огледален, леко размазан под в Render (допълнителен рендер на кадър — изключи
+            при по-слаба видеокарта).</p>
         </div>
       </div>
     </div>

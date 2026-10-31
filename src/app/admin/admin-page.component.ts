@@ -8,6 +8,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import type { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
+import type { Reflector } from 'three/examples/jsm/objects/Reflector.js';
 
 // The CAD engine is split into focused modules (see each file's header):
 //   webcad.model     — data model & shared constants (the vocabulary; read first)
@@ -19,14 +20,19 @@ import type { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 // scene<->data sync, the toolbar/panel UI, and every mouse/keyboard tool.
 import {
   ParamDef, MaterialParamDef, MaterialDef, FamilyDef, BasePoint, WallPoint,
-  SceneInstance, SceneSnapshot, PanelInfo, InteractionMode, MovePlane,
-  COLOR_NORMAL, COLOR_SELECTED, EDGE_NORMAL, EDGE_SELECTED, EDGE_HOVER,
+  SceneInstance, SceneSnapshot, PanelInfo, InteractionMode, MovePlane, PlaneDesc,
+  COLOR_NORMAL, COLOR_SELECTED, EDGE_NORMAL, EDGE_SELECTED, EDGE_HOVER, LINE_IDLE_COLOR,
   CENTRE_ANCHOR, WALL_Y,
 } from './webcad.model';
-import { makeMesh, buildWallPath, buildSlabPath } from './webcad-geometry';
+import {
+  makeMesh, buildWallPath, buildSlabPath, buildLinePath, buildSolidExtrude, buildSolidSweep,
+  planePointToWorld, normalizePlaneDesc, planeBasis, setRenderBevel,
+} from './webcad-geometry';
 import { FAMILIES } from './webcad-families';
 import { disposeObj, normAnchor, anchorWrap, addEdges, colorObj, setEdgeColor, ghostify } from './webcad-object3d';
 import { buildScheduleText } from './webcad-schedule';
+import { applyVoidCuts } from './webcad-csg';
+import { parseFbxDataUrl } from './webcad-fbx';
 
 // Minimal File System Access API typings — not yet in this project's configured TS/DOM
 // lib, and only used for Save/Save as/Open (see the "Save / Load scene" section below).
@@ -78,6 +84,14 @@ const DEFAULT_MATERIALS: MaterialDef[] = [
   { name: 'НЕРЪЖДАВЕЙКА',   color: '#babec2', transparency: 0,  reflection: 85, glossiness: 58 },
   { name: 'ХРОМ',           color: '#dfe4e9', transparency: 0,  reflection: 98, glossiness: 97 },
 ];
+
+/** Families the Mirror tool refuses to touch: wall/slab/line are path-based geometry the
+ *  tool doesn't transform (see startMirror's own doc comment); module (МОДУЛ) is excluded
+ *  because a geometric mirror would flip its carcass without swapping handedness-specific
+ *  left/right coverage params, which would be silently wrong. `solid` IS mirrorable — its
+ *  own plane/path are mirrored as data (see mirrorPlane/mirrorWallPoints), not via a
+ *  cosmetic scale flip. */
+const MIRROR_EXCLUDED_FAMILIES = ['wall', 'slab', 'line', 'module'];
 
 /** localStorage key the in-progress scene is autosaved under, so a refresh doesn't lose it. */
 const AUTOSAVE_KEY = 'webcad-autosave-v1';
@@ -149,6 +163,10 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Render lighting: true = directional key + soft shadows + ray-cast AO; false = flat,
    *  shadowless diffuse light from the environment only (no directional light). */
   directLight = true;
+  bloomStrength = 0.35;           // glow strength on bright highlights, Render mode only (0–1)
+  /** Escape hatch for the reflective floor (an extra scene render/frame) — off falls back to
+   *  the plain matte floor at zero rebuild cost, in case it's too slow on a given GPU. */
+  floorReflections = true;
 
   instances  = [] as SceneInstance[];
   selectedIds = new Set<number>();
@@ -158,9 +176,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   movePlane: MovePlane = 'XZ';
   isCopy  = false;  // active move-from/move-to op is a Copy
   isArray = false;  // active move-from/move-to op is an Array
+  isMirror = false; // active move-from/move-to op is a Mirror
   arrayCount = 3;   // number of copies the Array tool lays down
+  mirrorKeepOriginal = true;  // Mirror: add a mirrored copy (true) vs flip in place (false)
   itemize = false;  // schedule export: list every panel separately (drop БРОЙ) vs merged quantities
   fileMenuOpen = false;   // the sidebar File dropdown
+  sceneSectionCollapsed = true;   // the sidebar "SCENE CONTENT" list — collapsed by default
   // The file this scene was last saved to (or opened from) via the File System Access
   // API — lets "Save" overwrite it silently. Null until a "Save as…"/Open succeeds with
   // that API, or in browsers that lack it (Firefox/Safari), where "Save" always falls
@@ -211,6 +232,18 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   // ПЛОЧА (slab) draw tool — draws a CLOSED polygon, finalised into ONE instance.
   slabThickness = 40;         // mm, applies to the slab being drawn
   private slabPath: THREE.Vector3[] = [];        // committed world vertices of the current polygon
+
+  // Line draw tool — generalises wall/slab to an arbitrary construction plane (picked
+  // by hovering any existing surface, or a quick XZ/XY/YZ axis pick), drawing a
+  // multi-segment polyline as ONE live-growing instance (wall's pattern, not slab's —
+  // a Line can stay open indefinitely). Closing the loop (click back on the first
+  // vertex) sets `closed = true` on that same instance; see `closeLine()`.
+  lineExtrudeDepth = 18;       // mm, used when Extrude is clicked on a selected closed Line
+  private linePath: THREE.Vector3[] = [];        // committed world vertices of the current polyline
+  private lineInstanceId: number | null = null;  // the single instance growing as points are added
+  private linePlane: PlaneDesc | null = null;    // committed once the plane-pick step finishes
+  private linePlanePreview: PlaneDesc | null = null;  // live candidate while in 'line-plane' mode
+  private planeGhost: THREE.Object3D | null = null;   // the translucent plane-pick indicator quad
 
   // TAB hover-cycle: highlight the hovered instance (index 0) then each sub-panel
   // under the cursor (1..N, nearest first), advancing on TAB.
@@ -276,9 +309,30 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private accumBlendQuad: FullScreenQuad | null = null;    // accum = mix(accum, frame, 1/(n+1))
   private accumShowQuad: FullScreenQuad | null = null;     // tone-map + sRGB to screen
   private accumN = 0;                                       // samples accumulated for this view
-  private readonly accumMax = 48;                           // stop refining after this many
+  private readonly accumMax = 64;                           // stop refining after this many
   private accumDirty = true;                                // view/scene changed → restart
   private ppLoading = false;
+  // Bloom: a quarter-res bright-pass + 2-tap-direction Gaussian blur, composited into
+  // accumShowQuad's display shader (once per shown frame, not once per accumulated sample —
+  // it runs on the already-averaged accumA). bloomBlurQuad is also reused, unmodified, by
+  // the floor-reflection blur below (it's just a full-screen quad; only its uniforms/target
+  // change between the two uses, both within the same synchronous frame).
+  private bloomBright: THREE.WebGLRenderTarget | null = null;
+  private bloomA: THREE.WebGLRenderTarget | null = null;
+  private bloomB: THREE.WebGLRenderTarget | null = null;
+  private bloomExtractQuad: FullScreenQuad | null = null;
+  private bloomBlurQuad: FullScreenQuad | null = null;
+  // Reflective floor (Render mode): THREE.Reflector does the proven, hard part (mirrored
+  // camera, self-visibility hiding, oblique clip plane); only its shader is swapped for one
+  // that blends a pre-blurred copy of its reflection (softer, satin look, not a sharp mirror)
+  // with a dark base tint via a view-angle Fresnel term. floorShadowCatcher is a second,
+  // coplanar THREE.ShadowMaterial mesh that composites the existing per-sample shadow-mapped
+  // AO/contact-shadow look on top, since a raw custom ShaderMaterial doesn't receive shadows.
+  private floorReflector: Reflector | null = null;
+  private floorShadowCatcher: THREE.Mesh | null = null;
+  private floorBlurA: THREE.WebGLRenderTarget | null = null;
+  private floorBlurB: THREE.WebGLRenderTarget | null = null;
+  private floorLoading = false;
   private keyLightBase = new THREE.Vector3();               // un-jittered key-light position
   private sunDir = new THREE.Vector3();                     // normalised sun direction (direct mode)
   private sunPerpA = new THREE.Vector3();                   // + two tangents, for the soft-sun cone
@@ -292,9 +346,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private hdriLoading = false;
   private objectMap = new Map<number, THREE.Object3D>();
   private nextId = 1;
+  private nextSolidNum = 1;   // drives generic "SOLID N" labeling — separate from nextId (see webcad.model.ts's SceneSnapshot doc)
   private moveFrom    = new THREE.Vector3();
   private moveOrigins = new Map<number, THREE.Vector3>(); // id → original world position
-  private copyGhosts  = new Map<number, THREE.Object3D>(); // id → translucent preview during a Copy
+  private moveOriginRot = new Map<number, number>();       // id → original rotY (Mirror's cancel-restore)
+  private moveOriginMirrored = new Map<number, boolean>(); // id → original `mirrored` flag (ditto)
+  private copyGhosts  = new Map<number, THREE.Object3D>(); // id → translucent preview during a Copy/Mirror
 
   // Undo history (snapshots of the data model, most-recent last).
   private undoStack: SceneSnapshot[] = [];
@@ -357,6 +414,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.navRenderer?.dispose();
     this.accumA?.dispose(); this.accumB?.dispose(); this.frameRT?.dispose();
     this.accumBlendQuad?.dispose(); this.accumShowQuad?.dispose();
+    this.bloomBright?.dispose(); this.bloomA?.dispose(); this.bloomB?.dispose();
+    this.bloomExtractQuad?.dispose(); this.bloomBlurQuad?.dispose();
+    this.floorReflector?.dispose();
+    this.floorBlurA?.dispose(); this.floorBlurB?.dispose();
+    if (this.floorShadowCatcher) { this.floorShadowCatcher.geometry.dispose(); (this.floorShadowCatcher.material as THREE.Material).dispose(); }
     this.bumpTexBySize.forEach(t => t.dispose());
     this.moveLine?.geometry.dispose();
     (this.moveLine?.material as THREE.Material | undefined)?.dispose();
@@ -400,9 +462,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const t = e.target as HTMLElement | null;
     const inField = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
 
-    // Enter finishes an in-progress polyline tool (closes a slab / ends a wall run).
+    // Enter finishes an in-progress polyline tool (closes a slab / ends a wall or
+    // line run — 'line-plane' is excluded, Enter means nothing before a plane exists).
     if (e.key === 'Enter' && !inField &&
-        (this.mode === 'slab-from' || this.mode === 'slab-to' || this.mode === 'wall-from' || this.mode === 'wall-to')) {
+        (this.mode === 'slab-from' || this.mode === 'slab-to' || this.mode === 'wall-from' || this.mode === 'wall-to' ||
+         this.mode === 'line-from' || this.mode === 'line-to')) {
       e.preventDefault();
       this.cancelMode();
       return;
@@ -904,6 +968,22 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (inst.familyId === 'slab' && inst.path && inst.path.length >= 3) {
       return buildSlabPath(inst.path, inst.params['ДЕБЕЛИНА'] ?? 40);
     }
+    if (inst.familyId === 'line' && inst.path && inst.path.length >= 2 && inst.plane) {
+      return buildLinePath(inst.path, inst.closed ?? false, inst.plane);
+    }
+    if (inst.familyId === 'solid' && inst.solidOp === 'sweep' &&
+        inst.path && inst.path.length >= 3 && inst.pathPoints && inst.pathPoints.length >= 2 && inst.pathPlane) {
+      return buildSolidSweep(inst.path, inst.pathPoints, inst.pathPlane, inst.closed ?? false,
+        inst.params['ПРОФИЛ_ЗАВЪРТАНЕ'] ?? 0, inst.params['ПРОФИЛ_ОТСТЪП_ХОРИЗ'] ?? 0, inst.params['ПРОФИЛ_ОТСТЪП_ВЕРТ'] ?? 0);
+    }
+    if (inst.familyId === 'solid' && inst.path && inst.path.length >= 3 && inst.plane) {
+      return buildSolidExtrude(inst.path, inst.params['ДЪЛБОЧИНА'] ?? 18, inst.plane);
+    }
+    if (inst.familyId === 'fbx-import' && inst.fbxData) {
+      try { return parseFbxDataUrl(inst.fbxData); } catch (err) {
+        console.warn('[FBX] failed to parse', inst.label, err);
+      }
+    }
     return this.getFamilyDef(inst.familyId).buildObject(inst.params);
   }
 
@@ -942,15 +1022,75 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.backfillParams(inst);
     this.backfillMaterials(inst);
     const built = this.buildInstanceObject(inst);
-    addEdges(built);
+    // A Line sketch IS its own edges already (buildLinePath returns a genuine
+    // isEdge-tagged LineSegments, same visual language as every other family's
+    // addEdges()-built wireframe, plus an invisible pick-target tube alongside it for
+    // raycasting) — skip addEdges (it would wireframe the pick-tube's own faceted
+    // geometry, polluting the snap system with junk candidates) and the face-tinting
+    // calls (a Line has no faces/material to tint). A void SOLID skips them for a
+    // different reason — see isVoidSolid below. An imported FBX skips them for yet
+    // another: it comes with its own materials/textures baked in (whatever the
+    // original file had), and the generic single-colour tint/wireframe this app
+    // applies to its own parametric families would just stomp that — same reasoning,
+    // different cause.
+    const isLineSketch = inst.familyId === 'line';
+    const isVoidSolid = inst.familyId === 'solid' && !!inst.isVoid;
+    const isFbxImport = inst.familyId === 'fbx-import';
     const obj = anchorWrap(built, inst.anchor, inst.rotY, this.nominalAnchorSize(inst));
+    // Cut BEFORE addEdges/position, while obj is still at its pre-placement identity
+    // transform (anchorWrap never sets obj's own position/rotation — see
+    // applyVoidCuts's own doc comment for why that matters) — so the wireframe outline
+    // traces the already-cut shape. A void itself is never cut by anything else. An
+    // FBX import is never cut either — CSG against an arbitrary imported mesh (often
+    // many sub-meshes, not necessarily watertight) isn't something this was built for.
+    if (!isVoidSolid && !isFbxImport) applyVoidCuts(obj, inst, this.instances);
+    if (!isLineSketch && !isVoidSolid && !isFbxImport) addEdges(obj);
     obj.position.set(inst.x, inst.y, inst.z);
     obj.rotation.y = inst.rotY * (Math.PI / 180);
+    obj.scale.x = inst.mirrored ? -1 : 1;   // true geometric mirror, set by the Mirror tool
     obj.visible = !inst.hidden;
-    if (this.renderMode) this.applyRenderMaterials(obj, inst);
-    else this.cadColorObj(obj, inst);          // CAD mode: tint faces by assigned material colour
+    if (isVoidSolid) {
+      // Invisible except while hovered/selected (setVoidPreview) — never the generic
+      // material tint, same reasoning as Line's own exclusion just above.
+      obj.traverse(child => {
+        if (child instanceof THREE.Mesh) {
+          const mat = child.material as THREE.MeshPhongMaterial;
+          mat.transparent = true; mat.opacity = 0; mat.depthWrite = false;
+        }
+      });
+    } else if (!isLineSketch && !isFbxImport) {
+      if (this.renderMode) this.applyRenderMaterials(obj, inst);
+      else this.cadColorObj(obj, inst);        // CAD mode: tint faces by assigned material colour
+    }
     this.objectMap.set(inst.id, obj);
     this.scene.add(obj);
+  }
+
+  /** A void SOLID's own mesh is otherwise always `opacity: 0` (see spawnObject) — this
+   *  is the only thing that ever touches that material, fading it in while hovered or
+   *  selected. */
+  private setVoidPreview(id: number, show: boolean) {
+    const obj = this.objectMap.get(id);
+    if (!obj) return;
+    obj.traverse(child => {
+      if (child instanceof THREE.Mesh) (child.material as THREE.MeshPhongMaterial).opacity = show ? 0.35 : 0;
+    });
+  }
+
+  /** Re-spawn every other instance — call this whenever a void SOLID's own shape,
+   *  position or isVoid flag changes, so holes appear/update/vanish immediately. */
+  private respawnAllVoidTargets() {
+    for (const inst of this.instances) {
+      if (inst.familyId === 'solid' && inst.isVoid) continue;
+      const wasSelected = this.selectedIds.has(inst.id);
+      const old = this.objectMap.get(inst.id);
+      if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
+      this.spawnObject(inst);
+      if (wasSelected) {
+        const obj = this.objectMap.get(inst.id);
+        if (obj && !this.renderMode) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+      }
+    }
   }
 
   /**
@@ -976,10 +1116,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const paint = !this.renderMode;
     this.selectedIds.forEach(id => {
       const obj = this.objectMap.get(id);
-      if (obj && paint) {
-        const inst = this.instances.find(i => i.id === id);
+      if (!obj) return;
+      const inst = this.instances.find(i => i.id === id);
+      if (inst?.familyId === 'solid' && inst.isVoid) { this.setVoidPreview(id, false); return; }
+      if (inst?.familyId === 'fbx-import') return;   // keep its own imported materials untouched
+      if (paint) {
         if (inst) this.cadColorObj(obj, inst); else colorObj(obj, COLOR_NORMAL);  // restore material tint
-        setEdgeColor(obj, EDGE_NORMAL);
+        setEdgeColor(obj, inst?.familyId === 'line' ? LINE_IDLE_COLOR : EDGE_NORMAL);
       }
     });
     this.selectedIds = new Set(ids);
@@ -995,7 +1138,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     });
     this.selectedIds.forEach(id => {
       const obj = this.objectMap.get(id);
-        if (obj && paint) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+      if (!obj) return;
+      const inst = this.instances.find(i => i.id === id);
+      if (inst?.familyId === 'solid' && inst.isVoid) { this.setVoidPreview(id, true); return; }
+      if (inst?.familyId === 'fbx-import') return;   // keep its own imported materials untouched
+      if (paint) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
     });
     this.updateWallHandles();   // show editable handles when a single wall is selected
   }
@@ -1050,7 +1197,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   /** Deep copy of the data model (the source of truth — the 3D scene is derived). */
   private snapshot(): SceneSnapshot {
-    return { instances: this.instances.map(i => ({ ...i, params: { ...i.params }, materials: i.materials ? { ...i.materials } : undefined, anchor: i.anchor ? { ...i.anchor } : undefined, path: i.path ? i.path.map(p => ({ ...p })) : undefined })), nextId: this.nextId };
+    return {
+      instances: this.instances.map(i => ({
+        ...i, params: { ...i.params }, materials: i.materials ? { ...i.materials } : undefined,
+        anchor: i.anchor ? { ...i.anchor } : undefined, path: i.path ? i.path.map(p => ({ ...p })) : undefined,
+        plane: i.plane ? { origin: { ...i.plane.origin }, normal: { ...i.plane.normal }, uAxis: { ...i.plane.uAxis } } : undefined,
+        pathPlane: i.pathPlane ? { origin: { ...i.pathPlane.origin }, normal: { ...i.pathPlane.normal }, uAxis: { ...i.pathPlane.uAxis } } : undefined,
+        pathPoints: i.pathPoints ? i.pathPoints.map(p => ({ ...p })) : undefined,
+      })),
+      nextId: this.nextId, nextSolidNum: this.nextSolidNum,
+    };
   }
 
   private record(snap: SceneSnapshot) {
@@ -1074,8 +1230,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.clearSubSelection();
     this.objectMap.forEach(o => { this.scene.remove(o); disposeObj(o); });
     this.objectMap.clear();
-    this.instances = snap.instances.map(i => ({ ...i, params: { ...i.params }, materials: i.materials ? { ...i.materials } : undefined, anchor: i.anchor ? { ...i.anchor } : undefined, path: i.path ? i.path.map(p => ({ ...p })) : undefined }));
+    this.instances = snap.instances.map(i => ({
+      ...i, params: { ...i.params }, materials: i.materials ? { ...i.materials } : undefined,
+      anchor: i.anchor ? { ...i.anchor } : undefined, path: i.path ? i.path.map(p => ({ ...p })) : undefined,
+      plane: i.plane ? { origin: { ...i.plane.origin }, normal: { ...i.plane.normal }, uAxis: { ...i.plane.uAxis } } : undefined,
+      pathPlane: i.pathPlane ? { origin: { ...i.pathPlane.origin }, normal: { ...i.pathPlane.normal }, uAxis: { ...i.pathPlane.uAxis } } : undefined,
+      pathPoints: i.pathPoints ? i.pathPoints.map(p => ({ ...p })) : undefined,
+    }));
     this.nextId = snap.nextId;
+    this.nextSolidNum = snap.nextSolidNum;
     this.instances.forEach(inst => this.spawnObject(inst));
     this.selectedIds = new Set();
     this.pendingSnapshot = null;
@@ -1098,6 +1261,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       version: 2,
       savedAt: new Date().toISOString(),
       nextId: this.nextId,
+      nextSolidNum: this.nextSolidNum,
       // Family instances: position, rotation, anchor, every parameter value, the module
       // material name, per-panel МАТЕРИАЛИ picks, and any wall/slab polyline.
       instances: this.instances,
@@ -1108,6 +1272,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         theme: this.lightTheme ? 'light' : 'dark',
         cameraBrightness: this.cameraBrightness,
         directLight: this.directLight,
+        bloomStrength: this.bloomStrength,
+        floorReflections: this.floorReflections,
         camera: {
           position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
           target:   { x: tgt.x, y: tgt.y, z: tgt.z },
@@ -1197,6 +1363,35 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (file) this.loadSceneFile(file);
   }
 
+  /** File menu's "Import FBX…" — change handler for its own hidden `<input type=file>`.
+   *  Reads the .fbx as a base64 data URL (embedded in `fbxData`, not just referenced —
+   *  see that field's own doc comment) and places one new instance, named after the
+   *  file, selected and ready to Move into place. */
+  importFbx(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';   // allow re-importing the same file next time
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const fbxData = String(reader.result);
+      this.ngZone.run(() => {
+        this.pushHistory();
+        const id = this.nextId++;
+        const inst: SceneInstance = {
+          id, familyId: 'fbx-import', label: file.name.replace(/\.fbx$/i, ''),
+          params: {}, material: '', x: 0, y: 0, z: 0, rotY: 0,
+          anchor: { ...CENTRE_ANCHOR }, fbxData,
+        };
+        this.instances.push(inst);
+        this.spawnObject(inst);
+        this.applySelect([id]);
+      });
+    };
+    reader.onerror = () => this.ngZone.run(() => alert(`Could not read ${file.name}.`));
+    reader.readAsDataURL(file);
+  }
+
   /** Parse a scene JSON file and recreate every object, coordinate and property. */
   private loadSceneFile(file: File) {
     const reader = new FileReader();
@@ -1221,6 +1416,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const doc = JSON.parse(text);
     const instances = Array.isArray(doc) ? doc : doc.instances;   // accept a bare array too
     if (!Array.isArray(instances)) throw new Error('no instances array');
+    const normWallPoints = (pts: unknown): WallPoint[] | undefined =>
+      Array.isArray(pts)
+        ? pts.map((p: Partial<WallPoint>) => ({
+            x: Number(p?.x) || 0, z: Number(p?.z) || 0,
+            ...(Number(p?.r) > 0 ? { r: Number(p!.r) } : {}),
+          }))
+        : undefined;
     // Normalise + validate each instance; coerce missing fields to safe defaults.
     const clean: SceneInstance[] = instances.map((i: Partial<SceneInstance>) => {
       // Migrate scenes saved before КОРПУС С ВРАТА / КОРПУС С РЕБРА were unified into
@@ -1253,16 +1455,30 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         materials: i.materials && typeof i.materials === 'object' ? { ...i.materials } : undefined,
         x: Number(i.x) || 0, y: Number(i.y) || 0, z: Number(i.z) || 0,
         rotY: Number(i.rotY) || 0,
+        mirrored: Boolean(i.mirrored) || undefined,
         anchor: normAnchor(i.anchor),
-        path: Array.isArray(i.path)
-          ? i.path.map((p: Partial<WallPoint>) => ({ x: Number(p?.x) || 0, z: Number(p?.z) || 0 }))
-          : undefined,
+        path: normWallPoints(i.path),
         hidden: Boolean(i.hidden) || undefined,
+        plane: i.plane ? normalizePlaneDesc(i.plane) : undefined,
+        closed: Boolean(i.closed) || undefined,
+        solidOp: (i.solidOp === 'sweep' ? 'sweep' : i.solidOp === 'extrude' ? 'extrude' : undefined) as 'extrude' | 'sweep' | undefined,
+        pathPlane: i.pathPlane ? normalizePlaneDesc(i.pathPlane) : undefined,
+        pathPoints: normWallPoints(i.pathPoints),
+        isVoid: Boolean(i.isVoid) || undefined,
+        voidExcludeIds: Array.isArray(i.voidExcludeIds)
+          ? i.voidExcludeIds.map(Number).filter(Number.isFinite)
+          : undefined,
+        fbxData: typeof i.fbxData === 'string' ? i.fbxData : undefined,
       };
     }).filter(i => Number.isFinite(i.id) && this.getFamilyDef(i.familyId));
     const maxId = clean.reduce((m, i) => Math.max(m, i.id), 0);
     const nextId = Number(doc.nextId) > maxId ? Number(doc.nextId) : maxId + 1;
-    return { snap: { instances: clean, nextId }, materials: doc.materials, view: doc.view };
+    const maxSolidLabel = clean.reduce((m, i) => {
+      const match = /^SOLID (\d+)$/.exec(i.label);
+      return match ? Math.max(m, Number(match[1])) : m;
+    }, 0);
+    const nextSolidNum = Math.max(Number(doc.nextSolidNum) > 0 ? Number(doc.nextSolidNum) : 1, maxSolidLabel + 1);
+    return { snap: { instances: clean, nextId, nextSolidNum }, materials: doc.materials, view: doc.view };
   }
 
   // ── Autosave (localStorage) ──────────────────────────────────────────────────
@@ -1351,6 +1567,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.applyLighting();
     }
     if (typeof view.directLight === 'boolean') this.directLight = view.directLight;
+    if (Number.isFinite(view.bloomStrength)) this.bloomStrength = Math.min(1, Math.max(0, Number(view.bloomStrength)));
+    if (typeof view.floorReflections === 'boolean') this.floorReflections = view.floorReflections;
     const cp = view.camera?.position, ct = view.camera?.target;
     if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y) && Number.isFinite(cp.z)) {
       this.camera.position.set(cp.x, cp.y, cp.z);
@@ -1460,13 +1678,47 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const old = this.objectMap.get(inst.id);
     if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
     this.spawnObject(inst);
-    const obj = this.objectMap.get(inst.id)!;
+    if (inst.familyId === 'solid' && inst.isVoid) {
+      this.setVoidPreview(inst.id, true);
+    } else {
+      const obj = this.objectMap.get(inst.id)!;
       if (!this.renderMode) { colorObj(obj, COLOR_SELECTED); setEdgeColor(obj, EDGE_SELECTED); }
+    }
+    // Unconditional for any SOLID edit (not just while currently isVoid): toggling
+    // isVoid OFF needs this exactly as much as ON does, to un-cut/cut everyone else —
+    // and it's a harmless no-op (0 voids filtered) for an ordinary solid's own edits.
+    if (inst.familyId === 'solid') this.respawnAllVoidTargets();
     this.accumDirty = true;
+  }
+
+  /** Every instance a void SOLID could plausibly cut — everything except Lines (a
+   *  no-op cut target, see applyVoidCuts) and other void SOLIDs (never cut at all,
+   *  see spawnObject's isVoidSolid branch) — for the selected void's "Cuts" list. */
+  voidCuttableList(voidId: number): SceneInstance[] {
+    return this.instances.filter(i =>
+      i.id !== voidId && i.familyId !== 'line' && !(i.familyId === 'solid' && i.isVoid));
+  }
+
+  isVoidExcluded(voidInst: SceneInstance, targetId: number): boolean {
+    return voidInst.voidExcludeIds?.includes(targetId) ?? false;
+  }
+
+  /** Toggle whether the selected void cuts `targetId` — the "Cuts" list's eye icon. */
+  toggleVoidExclude(targetId: number, event: Event) {
+    event.stopPropagation();
+    const inst = this.selectedInstance;
+    if (!inst || inst.familyId !== 'solid' || !inst.isVoid) return;
+    this.beginEdit();
+    const excluded = inst.voidExcludeIds ?? [];
+    inst.voidExcludeIds = excluded.includes(targetId)
+      ? excluded.filter(id => id !== targetId)
+      : [...excluded, targetId];
+    this.rebuildSelected();
   }
 
   deleteSelected() {
     this.pushHistory();
+    const anyVoidDeleted = this.instances.some(i => this.selectedIds.has(i.id) && i.familyId === 'solid' && i.isVoid);
     this.selectedIds.forEach(id => {
       const obj = this.objectMap.get(id);
       if (obj) { this.scene.remove(obj); disposeObj(obj); this.objectMap.delete(id); }
@@ -1474,6 +1726,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (this.hoveredInst && this.selectedIds.has(this.hoveredInst.id)) this.hoveredInst = null;
     this.instances = this.instances.filter(i => !this.selectedIds.has(i.id));
     this.applySelect([]);
+    // Un-cut whatever any deleted void used to target, now that it's gone.
+    if (anyVoidDeleted) this.respawnAllVoidTargets();
   }
 
   // ── Schedule export ──────────────────────────────────────────────────────────
@@ -1685,6 +1939,24 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (Math.abs(p.x - from.x) >= Math.abs(p.z - from.z)) p.z = from.z;
     else p.x = from.x;
     return p;
+  }
+
+  /**
+   * Shift-lock for the Line tool: the arbitrary-plane generalisation of `lockAxisXZ` —
+   * pins the new point to whichever of the PLANE's OWN two axes (u or v) the drag
+   * deviates along more, so the segment runs purely along one of them instead of at
+   * a free angle. For the quick-picked XZ/XY/YZ planes this is exactly a lock to two
+   * of the three world axes (their u/v ARE world axes by construction — see
+   * `quickPickPlane`); for an arbitrary face-picked plane it locks to that plane's own
+   * natural in-plane directions instead, the closest sensible analogue.
+   */
+  private lockAxisOnPlane(to: THREE.Vector3, from: THREE.Vector3, plane: PlaneDesc): THREE.Vector3 {
+    const { uAxis, vAxis } = planeBasis(plane);
+    const delta = to.clone().sub(from);
+    const du = delta.dot(uAxis), dv = delta.dot(vAxis);
+    return Math.abs(du) >= Math.abs(dv)
+      ? from.clone().addScaledVector(uAxis, du)
+      : from.clone().addScaledVector(vAxis, dv);
   }
 
   /**
@@ -2100,37 +2372,373 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     return id;
   }
 
+  // ── Line tool (arbitrary-plane sketch → Extrude) ────────────────────────────
+
+  /** Available whenever idle (no selection needed). */
+  get canLine(): boolean { return this.mode === 'idle'; }
+
+  /** Start the Line tool: first pick a construction plane, then draw on it. */
+  startLine() {
+    this.cancelMode();
+    this.removeWallHandles();
+    this.linePath = [];
+    this.lineInstanceId = null;
+    this.linePlane = null;
+    this.linePlanePreview = null;
+    this.mode = 'line-plane';
+    this.modeLabel = 'Hover a surface to pick its plane (or pick XZ/XY/YZ) — click to confirm';
+    // Deliberately NOT disabling OrbitControls here (unlike wall/slab/measure): an
+    // arbitrary-plane tool benefits far more from being able to look around while
+    // placing points, and it's conflict-free — OrbitControls only owns right-drag
+    // (orbit) and middle-drag (pan); left-click stays reserved for this app's own
+    // click handling (`controls.mouseButtons.LEFT = null`, set up in ngAfterViewInit).
+  }
+
+  /** Deterministic in-plane "u" axis for any normal — `cross(worldUp, normal)`,
+   *  falling back to `cross(worldX, normal)` only when that's degenerate (normal is
+   *  parallel to world up/down). For the ground plane this reduces to exactly world
+   *  +X, matching СТЕНА/ПЛОЧА's own convention. */
+  private stableUAxis(normal: THREE.Vector3): THREE.Vector3 {
+    let u = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), normal);
+    if (u.lengthSq() < 1e-6) u = new THREE.Vector3().crossVectors(new THREE.Vector3(1, 0, 0), normal);
+    return u.normalize();
+  }
+
+  /** The three quick-pick planes — hand-tuned (not run through `stableUAxis`) so each
+   *  vertical one's "v" (second path coordinate) points world-up, which reads more
+   *  intuitively while drawing than whatever a generic fallback would produce. XZ
+   *  matches СТЕНА/ПЛОЧА's own ground convention exactly (u = +X, v = +Z). */
+  private quickPickPlane(axis: 'XZ' | 'XY' | 'YZ', origin: THREE.Vector3): PlaneDesc {
+    const o = { x: origin.x, y: origin.y, z: origin.z };
+    switch (axis) {
+      case 'XZ': return { origin: o, normal: { x: 0, y: 1, z: 0 }, uAxis: { x: 1, y: 0, z: 0 } };
+      case 'XY': return { origin: o, normal: { x: 0, y: 0, z: 1 }, uAxis: { x: -1, y: 0, z: 0 } };
+      case 'YZ': return { origin: o, normal: { x: 1, y: 0, z: 0 }, uAxis: { x: 0, y: 0, z: 1 } };
+    }
+  }
+
+  /** Toolbar quick-pick (during 'line-plane'): skip the hover/raycast step entirely. */
+  quickPickLinePlane(axis: 'XZ' | 'XY' | 'YZ') {
+    if (this.mode !== 'line-plane') return;
+    this.commitLinePlane(this.quickPickPlane(axis, this.controls.target.clone()));
+  }
+
+  /** Raycast the cursor against every visible mesh (same mesh-collection idiom as
+   *  `pickInstance`) for a candidate construction plane: the hit face's world normal
+   *  (the same extraction already proven at `tryStartWallFaceDimension`, but — unlike
+   *  there — valid for ANY orientation, not just near-vertical). Empty space falls
+   *  back to the ground plane at the cursor's ground intersection. */
+  private pickFacePlane(e: MouseEvent): PlaneDesc {
+    this.raycaster.setFromCamera(this.ndc(e), this.camera);
+    const meshes: THREE.Mesh[] = [];
+    this.objectMap.forEach(obj => {
+      if (!obj.visible) return;
+      obj.traverse(child => { if (child instanceof THREE.Mesh && !child.userData['isEdge']) meshes.push(child); });
+    });
+    const hits = this.raycaster.intersectObjects(meshes, false).filter(h => h.face);
+    if (hits.length) {
+      const hit = hits[0];
+      const normal = hit.face!.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+      const uAxis = this.stableUAxis(normal);
+      return {
+        origin: { x: hit.point.x, y: hit.point.y, z: hit.point.z },
+        normal: { x: normal.x, y: normal.y, z: normal.z },
+        uAxis: { x: uAxis.x, y: uAxis.y, z: uAxis.z },
+      };
+    }
+    const pos = new THREE.Vector3();
+    const onGround = this.raycaster.ray.intersectPlane(this.groundPlane, pos);
+    return this.quickPickPlane('XZ', onGround ? pos : new THREE.Vector3());
+  }
+
+  /** Live indicator quad + normal arrow for the candidate plane, following the cursor. */
+  private updatePlaneGhost(plane: PlaneDesc) {
+    if (this.planeGhost) { this.scene.remove(this.planeGhost); disposeObj(this.planeGhost); this.planeGhost = null; }
+    const { origin, normal } = planeBasis(plane);
+    const group = new THREE.Group();
+    const quad = new THREE.Mesh(
+      new THREE.PlaneGeometry(400, 400),
+      new THREE.MeshBasicMaterial({ color: 0x29b6f6, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    quad.position.copy(origin);
+    quad.lookAt(origin.clone().add(normal));
+    group.add(quad);
+    const arrow = new THREE.ArrowHelper(normal, origin, 150, 0x29b6f6, 40, 20);
+    group.add(arrow);
+    this.planeGhost = group;
+    this.scene.add(this.planeGhost);
+  }
+
+  /** Commit the candidate plane and move on to drawing. */
+  private commitLinePlane(plane: PlaneDesc) {
+    if (this.planeGhost) { this.scene.remove(this.planeGhost); disposeObj(this.planeGhost); this.planeGhost = null; }
+    this.linePlane = plane;
+    this.linePath = [];
+    this.lineInstanceId = null;
+    this.ngZone.run(() => {
+      this.mode = 'line-from';
+      this.modeLabel = 'Click the line start point — Esc to finish';
+    });
+  }
+
+  /** World point → local (u, v) pair on `this.linePlane`, rounded to mm (matches the
+   *  convention every other path-based family stores `path` in). */
+  private worldToLineLocal(w: THREE.Vector3): WallPoint {
+    const { origin, uAxis, vAxis } = planeBasis(this.linePlane!);
+    const delta = w.clone().sub(origin);
+    return { x: Math.round(delta.dot(uAxis)), z: Math.round(delta.dot(vAxis)) };
+  }
+
+  /** Live translucent preview of the in-progress segment `from`→`to`. */
+  private updateLineGhost(from: THREE.Vector3, to: THREE.Vector3) {
+    if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
+    const dist = from.distanceTo(to);
+    if (dist < 1) { this.ngZone.run(() => { this.moveLabel = null; }); return; }
+    const pts: WallPoint[] = [...this.linePath, to].map(p => this.worldToLineLocal(p));
+    const obj = buildLinePath(pts, false, this.linePlane!);
+    // buildLinePath builds relative to LOCAL (0,0,0) — planeBasisMatrix is deliberately
+    // rotation-only (see its own doc comment), so the caller must still place the
+    // result at the plane's own origin, exactly like spawnObject does via inst.x/y/z
+    // for a real instance. This step was missing here: the ghost rendered on a plane
+    // with the right ORIENTATION but passing through world (0,0,0) instead of the
+    // plane's actual origin — a second, phantom line parallel to the real one, through
+    // the scene's centre, visible the whole time you're drawing.
+    const { origin } = this.linePlane!;
+    obj.position.set(origin.x, origin.y, origin.z);
+    ghostify(obj);
+    this.ghost = obj;
+    this.scene.add(this.ghost);
+
+    this.moveDir.copy(to).sub(from).normalize();
+    const { x, y } = this.worldToPx(to);
+    this.ngZone.run(() => {
+      this.moveLabel = { x, y };
+      if (!this.distanceLocked) this.distanceStr = String(Math.round(dist));
+      if (this.distFocusPending) {
+        this.distFocusPending = false;
+        setTimeout(() => this.distInputRef?.nativeElement.focus());
+      }
+    });
+  }
+
+  /** True when the cursor is within ~12 px of the polyline's first vertex (close gesture). */
+  private nearFirstLineVertex(e: MouseEvent): boolean {
+    if (this.linePath.length < 3) return false;
+    const { x, y } = this.worldToPx(this.linePath[0]);
+    const canvas = this.canvasRef.nativeElement;
+    const r = canvas.getBoundingClientRect();
+    return Math.hypot(x - (e.clientX - r.left), y - (e.clientY - r.top)) < 12;
+  }
+
+  /** Append a vertex to the current polyline and create/grow the single Line instance
+   *  (wall's live-growing pattern — a Line can stay open indefinitely). The FIRST
+   *  vertex re-bases `linePlane`'s origin onto itself, so the stored path keeps the
+   *  usual "first vertex is local (0,0)" convention every other family already uses. */
+  private addLinePoint(p: THREE.Vector3) {
+    if (this.linePath.length === 0) {
+      this.linePlane = { ...this.linePlane!, origin: { x: p.x, y: p.y, z: p.z } };
+    }
+    this.linePath.push(p.clone());
+    this.distanceLocked = false; this.distanceStr = ''; this.distFocusPending = true;
+    if (this.linePath.length < 2) return;
+    this.pushHistory();
+    const localPath: WallPoint[] = this.linePath.map(v => this.worldToLineLocal(v));
+    const p0 = this.linePath[0];
+    if (this.lineInstanceId === null) {
+      const id = this.nextId++;
+      const inst: SceneInstance = {
+        id, familyId: 'line', label: `Line ${id}`,
+        params: {}, material: '', path: localPath, plane: this.linePlane!, closed: false,
+        x: p0.x, y: p0.y, z: p0.z, rotY: 0, anchor: { ...CENTRE_ANCHOR },
+      };
+      this.instances.push(inst);
+      this.spawnObject(inst);
+      this.lineInstanceId = id;
+    } else {
+      const inst = this.instances.find(i => i.id === this.lineInstanceId);
+      if (!inst) return;
+      inst.path = localPath;
+      const old = this.objectMap.get(inst.id);
+      if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
+      this.spawnObject(inst);
+    }
+  }
+
+  /** Close the loop (click back on the first vertex): mark the live instance closed
+   *  and return to idle — a third pattern distinct from wall's "just stop" and slab's
+   *  "finalize on close," since a Line is already a live instance that can ALSO close. */
+  private closeLine() {
+    // The live "next segment" ghost preview (updateLineGhost, driven by every line-to
+    // mousemove) is never removed by anything else on THIS exit path — cancelMode()
+    // cleans it up for Esc/Enter, but closing the loop by clicking back on the first
+    // vertex routes here instead, a separate path that forgot to do the same. Left
+    // uncleaned, the last preview segment stays in the scene forever, rendered right
+    // alongside the real, now-closed line — i.e. exactly a visible "duplicate line".
+    if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
+    if (this.planeGhost) { this.scene.remove(this.planeGhost); disposeObj(this.planeGhost); this.planeGhost = null; }
+    const inst = this.lineInstanceId !== null ? this.instances.find(i => i.id === this.lineInstanceId) : null;
+    if (inst) {
+      inst.closed = true;
+      const old = this.objectMap.get(inst.id);
+      if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
+      this.spawnObject(inst);
+    }
+    this.linePath = []; this.linePlane = null;
+    const id = this.lineInstanceId; this.lineInstanceId = null;
+    this.clearCopyGhosts();
+    this.isMarqueeing = false; this.marqueeRect = null;
+    this.hideMoveMeasure();
+    this.mode = 'idle'; this.modeLabel = '';
+    this.controls.enabled = true;
+    if (id !== null) this.applySelect([id]);
+  }
+
+  /** Which vertices of a Line can take a fillet radius: every vertex if `closed`
+   *  (the closing vertex has two incident edges too), else only the interior ones —
+   *  the two open endpoints have just one incident edge each, nothing to round. */
+  isFilletableVertex(i: number): boolean {
+    const inst = this.selectedInstance;
+    if (!inst?.path) return false;
+    return !!inst.closed || (i > 0 && i < inst.path.length - 1);
+  }
+
+  /** "Extrude" — a separate toolbar tool, gated on exactly one selected CLOSED Line
+   *  (not tied to drawing: a Line is free to stay a Line forever). */
+  get canExtrudeLine(): boolean {
+    return this.mode === 'idle' && !!this.selectedInstance && this.selectedInstance.familyId === 'line' && !!this.selectedInstance.closed;
+  }
+
+  /** "Extrude" on a selected, closed Line → a new independent `SOLID N` instance. */
+  extrudeLine() {
+    const src = this.selectedInstance;
+    if (!src || src.familyId !== 'line' || !src.closed || !src.plane || !src.path) return;
+    this.pushHistory();
+    const id = this.nextId++;
+    const num = this.nextSolidNum++;
+    const inst: SceneInstance = {
+      id, familyId: 'solid', label: `SOLID ${num}`, solidOp: 'extrude',
+      params: { 'ДЪЛБОЧИНА': this.lineExtrudeDepth }, material: src.material,
+      path: src.path.map(p => ({ ...p })),
+      plane: { origin: { ...src.plane.origin }, normal: { ...src.plane.normal }, uAxis: { ...src.plane.uAxis } },
+      // x/y/z must equal plane.origin — spawnObject places the geometry there, since
+      // buildSolidExtrude builds relative to LOCAL (0,0,0), not plane.origin (see
+      // planeBasisMatrix's doc comment).
+      closed: true, x: src.plane.origin.x, y: src.plane.origin.y, z: src.plane.origin.z,
+      rotY: 0, anchor: { ...CENTRE_ANCHOR },
+    };
+    this.instances.push(inst);
+    this.spawnObject(inst);
+    src.hidden = true;
+    const srcObj = this.objectMap.get(src.id);
+    if (srcObj) srcObj.visible = false;
+    this.applySelect([id]);
+  }
+
+  /** "Path-extrusion" is available only with exactly two Line instances selected,
+   *  one closed (the profile) and the other — open or closed — the path. */
+  get canPathExtrude(): boolean {
+    if (this.mode !== 'idle' || this.selectedIds.size !== 2) return false;
+    const insts = [...this.selectedIds].map(id => this.instances.find(i => i.id === id));
+    if (insts.some(i => !i || i.familyId !== 'line')) return false;
+    return insts.filter(i => i!.closed).length === 1;
+  }
+
+  /** Sweep the selected pair's CLOSED Line (the profile) along the OTHER one (the
+   *  path) → a new independent `SOLID N` instance, same "self-contained snapshot, no
+   *  live re-link" convention as `extrudeLine`. */
+  sweepLines() {
+    if (!this.canPathExtrude) return;
+    const insts = [...this.selectedIds].map(id => this.instances.find(i => i.id === id)!);
+    const profile = insts.find(i => i.closed)!;
+    const path = insts.find(i => i.id !== profile.id)!;
+    if (!profile.plane || !profile.path || !path.plane || !path.path) return;
+    this.pushHistory();
+    const id = this.nextId++;
+    const num = this.nextSolidNum++;
+    const origin = planePointToWorld(path.plane, path.path[0]);
+    const inst: SceneInstance = {
+      id, familyId: 'solid', label: `SOLID ${num}`, solidOp: 'sweep',
+      params: {}, material: profile.material,
+      path: profile.path.map(p => ({ ...p })),
+      plane: { origin: { ...profile.plane.origin }, normal: { ...profile.plane.normal }, uAxis: { ...profile.plane.uAxis } },
+      pathPoints: path.path.map(p => ({ ...p })),
+      pathPlane: { origin: { ...path.plane.origin }, normal: { ...path.plane.normal }, uAxis: { ...path.plane.uAxis } },
+      // closed here means the PATH's closedness (see SceneInstance's doc comment) —
+      // x/y/z must equal the path's first point, same reasoning as extrudeLine.
+      closed: path.closed ?? false, x: origin.x, y: origin.y, z: origin.z,
+      rotY: 0, anchor: { ...CENTRE_ANCHOR },
+    };
+    this.instances.push(inst);
+    this.spawnObject(inst);
+    for (const src of [profile, path]) {
+      src.hidden = true;
+      const obj = this.objectMap.get(src.id);
+      if (obj) obj.visible = false;
+    }
+    this.applySelect([id]);
+  }
+
   // ── Move / Copy / Array (two-step snap) ────────────────────────────────────
 
   /** Toolbar tools are available only when something is selected and nothing else is in progress. */
   get canEdit(): boolean { return this.mode === 'idle' && this.selectedIds.size > 0; }
 
+  /** The Mirror button is only enabled when at least one selected instance is actually
+   *  mirrorable (see MIRROR_EXCLUDED_FAMILIES) — a selection of only МОДУЛ/wall/slab/line
+   *  instances leaves it disabled rather than clickable-then-rejected. */
+  get canMirror(): boolean {
+    return this.canEdit && [...this.selectedIds].some(id => {
+      const inst = this.instances.find(i => i.id === id);
+      return inst && !MIRROR_EXCLUDED_FAMILIES.includes(inst.familyId);
+    });
+  }
+
   startMove()  { this.beginMoveOp('move'); }
   startCopy()  { this.beginMoveOp('copy'); }
   startArray() { this.beginMoveOp('array'); }
 
-  private beginMoveOp(kind: 'move' | 'copy' | 'array') {
-    if (this.selectedIds.size === 0) return;
+  /** `solid` mirrors its plane/path as data (mirrorPlane/mirrorWallPoints) — see
+   *  commitDisplacement's isMirror branch. wall/slab/line remain unsupported (their
+   *  geometry isn't touched by Move/Copy/Array either — a separate, pre-existing gap).
+   *  module (МОДУЛ) is excluded — see MIRROR_EXCLUDED_FAMILIES. */
+  startMirror() {
+    const ids = [...this.selectedIds].filter(id => {
+      const inst = this.instances.find(i => i.id === id);
+      return inst && !MIRROR_EXCLUDED_FAMILIES.includes(inst.familyId);
+    });
+    if (ids.length === 0) { alert('Mirror does not support walls, slabs, lines or МОДУЛ — select a different family instead.'); return; }
+    this.beginMoveOp('mirror', ids);
+  }
+
+  private beginMoveOp(kind: 'move' | 'copy' | 'array' | 'mirror', ids: number[] = [...this.selectedIds]) {
+    if (ids.length === 0) return;
     this.clearWallDims();
     this.removeWallHandles();
     this.arrayCount = Math.max(1, Math.floor(Number(this.arrayCount) || 1));
-    this.isCopy  = kind === 'copy';
-    this.isArray = kind === 'array';
+    this.isCopy   = kind === 'copy';
+    this.isArray  = kind === 'array';
+    this.isMirror = kind === 'mirror';
     this.movePlane = 'XZ';
     this.mode = 'move-from';
-    this.modeLabel = 'Click reference point — Esc to cancel';
+    this.modeLabel = this.isMirror ? 'Click the first point of the mirror line — Esc to cancel'
+                                    : 'Click reference point — Esc to cancel';
     this.distanceLocked = false;
     this.distanceStr = '';
     this.moveOrigins.clear();
+    this.moveOriginRot.clear();
+    this.moveOriginMirrored.clear();
     this.clearCopyGhosts();
-    this.selectedIds.forEach(id => {
+    ids.forEach(id => {
       const inst = this.instances.find(i => i.id === id);
       if (!inst) return;
       this.moveOrigins.set(id, new THREE.Vector3(inst.x, inst.y, inst.z));
+      this.moveOriginRot.set(id, inst.rotY);
+      this.moveOriginMirrored.set(id, !!inst.mirrored);
       const makeGhost = (key: number) => {
         const ghost = anchorWrap(this.buildInstanceObject(inst), inst.anchor, inst.rotY, this.nominalAnchorSize(inst));
         ghost.position.set(inst.x, inst.y, inst.z);
         ghost.rotation.y = inst.rotY * (Math.PI / 180);
+        ghost.scale.x = inst.mirrored ? -1 : 1;
         ghostify(ghost);
         ghost.visible = false;
         this.copyGhosts.set(key, ghost);
@@ -2138,6 +2746,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       };
       if (this.isCopy) makeGhost(id);
       else if (this.isArray) for (let n = 1; n <= this.arrayCount; n++) makeGhost(this.arrayKey(id, n));
+      else if (this.isMirror && this.mirrorKeepOriginal) makeGhost(id);
     });
     this.controls.enabled = false;
   }
@@ -2145,7 +2754,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Finish a move-to: commit, reset state, leave idle. Used by both click and typed distance. */
   private finishMoveTo(pos: THREE.Vector3) {
     this.commitDisplacement(pos);
-    this.isCopy = false; this.isArray = false;
+    this.isCopy = false; this.isArray = false; this.isMirror = false;
     this.mode = 'idle'; this.modeLabel = '';
     this.controls.enabled = true;
     this.snapDot.visible = false;
@@ -2171,6 +2780,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.addWallPoint(last.clone().addScaledVector(this.moveDir, d));
       return;
     }
+    if (this.mode === 'line-to') {
+      const d = parseFloat(this.distanceStr);
+      if (!isFinite(d) || d <= 0 || this.moveDir.lengthSq() < 1e-9) return;
+      const last = this.linePath[this.linePath.length - 1];
+      this.addLinePoint(last.clone().addScaledVector(this.moveDir, d));
+      return;
+    }
     if (this.mode !== 'move-to') return;
     const d = parseFloat(this.distanceStr);
     if (!isFinite(d) || d <= 0 || this.moveDir.lengthSq() < 1e-9) return;
@@ -2187,12 +2803,21 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   cancelMode() {
     this.clearWallDims();
     if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
-    // Only a real Move shifts the originals (and so must restore them); Copy/Array don't.
-    if (this.mode === 'move-to' && !this.isCopy && !this.isArray) {
+    if (this.planeGhost) { this.scene.remove(this.planeGhost); disposeObj(this.planeGhost); this.planeGhost = null; }
+    // Only a real Move or an in-place Mirror shifts the originals (and so must restore
+    // them); Copy/Array and a copy-mode Mirror only ever touched ghosts, nothing to undo.
+    if (this.mode === 'move-to' && !this.isCopy && !this.isArray && !(this.isMirror && this.mirrorKeepOriginal)) {
       this.moveOrigins.forEach((origin, id) => {
         const inst = this.instances.find(i => i.id === id);
         const obj  = this.objectMap.get(id);
-        if (inst && obj) { inst.x = origin.x; inst.y = origin.y; inst.z = origin.z; obj.position.copy(origin); }
+        if (!inst || !obj) return;
+        inst.x = origin.x; inst.y = origin.y; inst.z = origin.z; obj.position.copy(origin);
+        if (this.isMirror) {
+          const rot = this.moveOriginRot.get(id) ?? inst.rotY;
+          const wasMirrored = this.moveOriginMirrored.get(id) ?? false;
+          inst.rotY = rot; obj.rotation.y = rot * (Math.PI / 180);
+          inst.mirrored = wasMirrored; obj.scale.x = wasMirrored ? -1 : 1;
+        }
       });
     }
     // Cancelling a wall vertex/segment edit restores the original polyline.
@@ -2212,14 +2837,22 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     // live instance; a slab is finalised here from its committed polygon.
     const finishedWallId = (this.mode === 'wall-from' || this.mode === 'wall-to') ? this.wallInstanceId : null;
     const finishedSlabId = (this.mode === 'slab-from' || this.mode === 'slab-to') ? this.finalizeSlab() : null;
+    // A Line already has a live instance like a wall does (closing it is a separate,
+    // explicit gesture — see `closeLine()`) — Esc/Enter here just keeps it open.
+    const finishedLineId = (this.mode === 'line-from' || this.mode === 'line-to') ? this.lineInstanceId : null;
     this.wallPath = [];
     this.wallInstanceId = null;
     this.slabPath = [];
+    this.linePath = [];
+    this.lineInstanceId = null;
+    this.linePlane = null;
+    this.linePlanePreview = null;
     this.clearCopyGhosts();
     this.clearHover();
     this.clearSubSelection();
     this.isCopy = false;
     this.isArray = false;
+    this.isMirror = false;
     this.matchSourceId = null;
     this.distanceLocked = false; this.distanceStr = '';
     this.isMarqueeing = false;
@@ -2230,7 +2863,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.hideMeasure();
     this.mode = 'idle'; this.modeLabel = '';
     this.controls.enabled = true;
-    const finishedId = finishedWallId !== null ? finishedWallId : finishedSlabId;
+    const finishedId = finishedWallId !== null ? finishedWallId : finishedSlabId !== null ? finishedSlabId : finishedLineId;
     if (finishedId !== null) this.applySelect([finishedId]);
     this.updateWallHandles();
   }
@@ -2430,12 +3063,68 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   /** New position for an object starting at `origin`, applying the plane-allowed delta. */
   private displaced(origin: THREE.Vector3, toPos: THREE.Vector3): THREE.Vector3 {
+    // Mirror ignores `toPos` — the mirror line is already fully fixed by moveFrom/moveDir
+    // (any point further along the same line reflects identically), so this also means
+    // commitTypedDistance's existing "commit at a typed distance" path keeps working for
+    // Mirror unmodified: whatever `pos` it computes is simply unused here.
+    if (this.isMirror) return this.mirrorPoint(origin);
     const fx = this.moveFrom.x, fy = this.moveFrom.y, fz = this.moveFrom.z;
     switch (this.movePlane) {
       case 'XZ': return new THREE.Vector3(origin.x + toPos.x - fx, origin.y,                origin.z + toPos.z - fz);
       case 'XY': return new THREE.Vector3(origin.x + toPos.x - fx, origin.y + toPos.y - fy, origin.z);
       case 'YZ': return new THREE.Vector3(origin.x,                origin.y + toPos.y - fy, origin.z + toPos.z - fz);
     }
+  }
+
+  /** Reflect a world point (X/Z only — Y untouched) across the mirror line through
+   *  `moveFrom` with unit direction `moveDir` (both captured by the existing move-from/
+   *  move-to click pair, reused as a line rather than a translation vector). */
+  private mirrorPoint(p: THREE.Vector3): THREE.Vector3 {
+    const A = this.moveFrom, D = this.moveDir;
+    const vx = p.x - A.x, vz = p.z - A.z;
+    const dot = vx * D.x + vz * D.z;
+    return new THREE.Vector3(A.x + (2 * dot * D.x - vx), p.y, A.z + (2 * dot * D.z - vz));
+  }
+
+  /** Reflect a heading (rotY, degrees) across the same mirror line's own angle — the
+   *  angle convention matches how `rotY` is turned into a direction elsewhere
+   *  (`obj.rotation.y = rotY * Math.PI/180`, a plain Y-axis rotation). */
+  private mirrorRotY(rotYDeg: number): number {
+    const lineAngleDeg = Math.atan2(this.moveDir.x, this.moveDir.z) * 180 / Math.PI;
+    return 2 * lineAngleDeg - rotYDeg;
+  }
+
+  /** Reflect a free vector (direction, not a point — no translation) across the mirror
+   *  line's vertical plane. Used on a construction plane's `normal`/`uAxis`, never on a
+   *  world point (use `mirrorPoint` for those). */
+  private mirrorVectorXZ(v: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
+    const D = this.moveDir;
+    const dot = v.x * D.x + v.z * D.z;
+    return { x: 2 * dot * D.x - v.x, y: v.y, z: 2 * dot * D.z - v.z };
+  }
+
+  /**
+   * Mirror a Line/SOLID construction plane. `uAxis` is reflected as a free vector, but the
+   * derived `vAxis` (= `uAxis × normal`, see PlaneDesc's own doc comment) of the reflected
+   * basis ends up NEGATED relative to a faithfully-reflected original `vAxis` — any
+   * reflection flips a cross product's sign (det = -1). `mirrorWallPoints` compensates by
+   * negating each point's `z` (its local v-coordinate) to match, while `x` (the
+   * u-coordinate) stays as-is since `uAxis` itself was already reflected. Verified by hand
+   * against a direct world-point reflection during implementation, not just derived.
+   */
+  private mirrorPlane(plane: PlaneDesc): PlaneDesc {
+    const o = this.mirrorPoint(new THREE.Vector3(plane.origin.x, plane.origin.y, plane.origin.z));
+    return {
+      origin: { x: o.x, y: o.y, z: o.z },
+      normal: this.mirrorVectorXZ(plane.normal),
+      uAxis: this.mirrorVectorXZ(plane.uAxis),
+    };
+  }
+
+  /** Mirror a Line/SOLID's local (x, z) path points for use with a plane already mirrored
+   *  by `mirrorPlane` — see that method's doc comment for why `z` (not `x`) is negated. */
+  private mirrorWallPoints(points: WallPoint[]): WallPoint[] {
+    return points.map(p => ({ x: p.x, z: -p.z, r: p.r }));
   }
 
   /**
@@ -2445,6 +3134,19 @@ export class AdminPageComponent implements OnInit, OnDestroy {
    * - Array: show `arrayCount` ghosts per object, stepped by the same delta.
    */
   private previewDisplacement(toPos: THREE.Vector3) {
+    if (this.isMirror) {
+      this.moveOrigins.forEach((origin, id) => {
+        const inst = this.instances.find(i => i.id === id);
+        if (!inst) return;
+        const obj = this.mirrorKeepOriginal ? this.copyGhosts.get(id) : this.objectMap.get(id);
+        if (!obj) return;
+        if (this.mirrorKeepOriginal) obj.visible = true;
+        obj.position.copy(this.mirrorPoint(origin));
+        obj.rotation.y = this.mirrorRotY(this.moveOriginRot.get(id) ?? inst.rotY) * (Math.PI / 180);
+        obj.scale.x = inst.mirrored ? 1 : -1;   // flip of the source's current handedness
+      });
+      return;
+    }
     if (this.isArray) {
       // copyGhosts is keyed by a composite "id#step" for array previews.
       this.moveOrigins.forEach((origin, id) => {
@@ -2469,14 +3171,35 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   private arrayKey(id: number, step: number) { return id * 1000 + step; }
 
-  /** Spawn a duplicate of `src` at (x,y,z), select-tracked via its returned id. */
-  private spawnCopyAt(src: SceneInstance, x: number, y: number, z: number): number {
+  /**
+   * Spawn a duplicate of `src` at (x,y,z), select-tracked via its returned id. Copy/Array
+   * omit `rotY`/`mirrored` (keep the source's own); Mirror passes the reflected values.
+   * Deep-copies every path-based field too (plane/closed/solidOp/pathPlane/pathPoints/
+   * isVoid/voidExcludeIds) so a Copy/Array of a wall/line/SOLID carries its full geometry
+   * (previously silently dropped here) — `overrides` lets Mirror substitute the already-
+   * mirrored plane/path for a SOLID instead of the source's own.
+   */
+  private spawnCopyAt(
+    src: SceneInstance, x: number, y: number, z: number,
+    rotY: number = src.rotY, mirrored: boolean | undefined = src.mirrored,
+    overrides: Partial<SceneInstance> = {},
+  ): number {
     const nid = this.nextId++;
+    const clonePlane = (pl?: PlaneDesc) => pl ? { origin: { ...pl.origin }, normal: { ...pl.normal }, uAxis: { ...pl.uAxis } } : undefined;
     const inst: SceneInstance = {
       id: nid, familyId: src.familyId, label: `МОДУЛ ${nid}`,
-      params: { ...src.params }, material: src.material, materials: src.materials ? { ...src.materials } : undefined, x, y, z, rotY: src.rotY,
+      params: { ...src.params }, material: src.material, materials: src.materials ? { ...src.materials } : undefined, x, y, z, rotY,
+      mirrored,
       anchor: src.anchor ? { ...src.anchor } : { ...CENTRE_ANCHOR },
       path: src.path ? src.path.map(p => ({ ...p })) : undefined,
+      plane: clonePlane(src.plane),
+      closed: src.closed,
+      solidOp: src.solidOp,
+      pathPlane: clonePlane(src.pathPlane),
+      pathPoints: src.pathPoints ? src.pathPoints.map(p => ({ ...p })) : undefined,
+      isVoid: src.isVoid,
+      voidExcludeIds: src.voidExcludeIds ? [...src.voidExcludeIds] : undefined,
+      ...overrides,
     };
     this.instances.push(inst);
     this.spawnObject(inst);
@@ -2486,6 +3209,56 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Commit: Move writes positions; Copy spawns one duplicate; Array spawns N stepped duplicates. */
   private commitDisplacement(toPos: THREE.Vector3) {
     this.pushHistory();
+    // A void SOLID being moved/copied/arrayed changes what it cuts — recut everyone
+    // else once the operation below is done, for whichever of these three paths runs.
+    const anyVoidMoved = [...this.moveOrigins.keys()].some(id => {
+      const i = this.instances.find(x => x.id === id);
+      return i?.familyId === 'solid' && i.isVoid;
+    });
+    if (this.isMirror) {
+      const newIds: number[] = [];
+      this.moveOrigins.forEach((origin, id) => {
+        const src = this.instances.find(i => i.id === id);
+        if (!src) return;
+        const p = this.mirrorPoint(origin);
+        const rot = this.mirrorRotY(this.moveOriginRot.get(id) ?? src.rotY);
+        // SOLID's shape is explicit world-space data (plane + local path points), so it's
+        // mirrored by transforming THAT data (mirrorPlane/mirrorWallPoints) — correct for
+        // any orientation, including a tilted/face-picked plane — rather than the cosmetic
+        // scale.x flip the other families use (which only works because their geometry is
+        // fixed local params around a world anchor point, with no equivalent for an
+        // explicit path/plane). `mirrored` stays unset for SOLID; the flip is already baked
+        // into its data, so no render-level flip is needed (or correct) on top of it.
+        const isSolid = src.familyId === 'solid';
+        const solidOverrides: Partial<SceneInstance> = !isSolid ? {} : {
+          path: src.path ? this.mirrorWallPoints(src.path) : undefined,
+          plane: src.plane ? this.mirrorPlane(src.plane) : undefined,
+          pathPlane: src.pathPlane ? this.mirrorPlane(src.pathPlane) : undefined,
+          pathPoints: src.pathPoints ? this.mirrorWallPoints(src.pathPoints) : undefined,
+        };
+        if (this.mirrorKeepOriginal) {
+          newIds.push(this.spawnCopyAt(src, p.x, p.y, p.z, rot, isSolid ? src.mirrored : !src.mirrored, solidOverrides));
+        } else {
+          const obj = this.objectMap.get(id);
+          src.x = p.x; src.y = p.y; src.z = p.z; src.rotY = rot;
+          if (isSolid) Object.assign(src, solidOverrides);
+          else src.mirrored = !src.mirrored;
+          if (obj) {
+            if (isSolid) {
+              // The geometry itself changed (not just its transform) — rebuild rather than
+              // try to re-transform the existing mesh.
+              this.scene.remove(obj); disposeObj(obj); this.objectMap.delete(id);
+              this.spawnObject(src);
+            } else {
+              obj.position.copy(p); obj.rotation.y = rot * (Math.PI / 180); obj.scale.x = src.mirrored ? -1 : 1;
+            }
+          }
+        }
+      });
+      if (this.mirrorKeepOriginal) { this.clearCopyGhosts(); this.applySelect(newIds); }
+      if (anyVoidMoved) this.respawnAllVoidTargets();
+      return;
+    }
     if (this.isArray) {
       const newIds: number[] = [];
       this.moveOrigins.forEach((origin, id) => {
@@ -2497,6 +3270,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         }
       });
       this.clearCopyGhosts();
+      if (anyVoidMoved) this.respawnAllVoidTargets();
       this.applySelect(newIds);
       return;
     }
@@ -2509,6 +3283,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         newIds.push(this.spawnCopyAt(src, p.x, p.y, p.z));
       });
       this.clearCopyGhosts();
+      if (anyVoidMoved) this.respawnAllVoidTargets();
       this.applySelect(newIds);
       return;
     }
@@ -2520,6 +3295,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       inst.x = p.x; inst.y = p.y; inst.z = p.z;
       obj.position.copy(p);
     });
+    if (anyVoidMoved) this.respawnAllVoidTargets();
   }
 
   // ── Revit-style snap ──────────────────────────────────────────────────────
@@ -2650,6 +3426,30 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     return { pos, type: onAxis ? 'axis' : 'grid' };
   }
 
+  /**
+   * Plane-correct wrapper around `getSnap` for an ARBITRARY (non-axis-aligned) plane
+   * — used by the Line tool. `getSnap`'s object-snap branch (`plane.projectPoint`) is
+   * already plane-agnostic, but its grid-fallback branch rounds each WORLD axis
+   * independently, which only coincidentally stays on-plane when the plane IS
+   * axis-aligned (exactly one axis is actually constrained there). For a tilted
+   * plane that independent rounding generally knocks the point off-plane entirely —
+   * only the grid-snap case needs correcting, by re-rounding in the plane's own
+   * local (u, v) coordinates instead.
+   */
+  private getSnapOnPlane(
+    e: MouseEvent, plane: PlaneDesc, skip: Set<number> | null,
+  ): { pos: THREE.Vector3; type: 'endpoint' | 'midpoint' | 'origin' | 'axis' | 'grid' } | null {
+    const { origin, normal, uAxis, vAxis } = planeBasis(plane);
+    const threePlane = new THREE.Plane(normal, -normal.dot(origin));
+    const snap = this.getSnap(e, threePlane, skip);
+    if (!snap || snap.type !== 'grid') return snap;
+    const delta = snap.pos.clone().sub(origin);
+    const u = Math.round(delta.dot(uAxis));
+    const v = Math.round(delta.dot(vAxis));
+    const pos = origin.clone().addScaledVector(uAxis, u).addScaledVector(vAxis, v);
+    return { pos, type: 'grid' };
+  }
+
   /** Screen-space pixel position of a world point. */
   private worldToPx(v: THREE.Vector3): { x: number; y: number } {
     const canvas = this.canvasRef.nativeElement;
@@ -2766,7 +3566,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const key = new THREE.DirectionalLight(0xffffff, 1.4);
     key.position.set(3000, 5000, 3000);
     key.castShadow = true;
-    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.mapSize.set(4096, 4096);   // paired with fitShadowFrustum() shrinking the frustum to the scene
     key.shadow.camera.near = 10; key.shadow.camera.far = 30000;
     key.shadow.camera.left = key.shadow.camera.bottom = -8000;
     key.shadow.camera.right = key.shadow.camera.top   =  8000;
@@ -2826,7 +3626,21 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.controls.mouseButtons.RIGHT  = THREE.MOUSE.ROTATE;
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.06;
-    this.controls.minDistance = 50;
+    // Both OrbitControls' native dolly (wheel) and pan (middle-drag) are already
+    // distance-proportional by design (dolly multiplies the camera's offset by a
+    // ratio; pan scales with distance-to-target via the FOV) — that's correct, it's
+    // what keeps a drag feeling the same on screen at any zoom level. But the
+    // defaults (1.0 each) move so little per tick/pixel that at this app's full
+    // zoom range (3mm–50000mm, after lowering minDistance) it reads as "barely
+    // moving" rather than "fine control". Bumping both keeps the same proportional
+    // behaviour, just faster.
+    this.controls.zoomSpeed = 1;
+    this.controls.panSpeed = 2;
+    // 50mm used to be the closest the camera could dolly to its target — too far to
+    // inspect small detail (edge bands, fillets, the IsVoid cut channels, etc.), which
+    // are often just a few mm across. 3mm stays safely above camera.near (1mm) so
+    // nothing clips, while letting the user get genuinely close.
+    this.controls.minDistance = 3;
     this.controls.maxDistance = 50000;
     // Keep the wall-face dimension labels glued to their 3D anchors while the user
     // orbits/pans/zooms (idle — OrbitControls stays enabled while they're shown).
@@ -2865,6 +3679,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w, h);
       this.accumDirty = true;          // resized back-buffer → restart accumulation (renderAccum resizes RTs)
+      if (this.bloomBright) {
+        const [dw, dh] = this.accumSize();
+        const bw = Math.max(1, Math.ceil(dw / 4)), bh = Math.max(1, Math.ceil(dh / 4));
+        this.bloomBright.setSize(bw, bh); this.bloomA?.setSize(bw, bh); this.bloomB?.setSize(bw, bh);
+      }
+      if (this.floorReflector) {
+        const [rw, rh] = this.floorReflectionSize();
+        this.floorReflector.getRenderTarget().setSize(rw, rh);
+        this.floorBlurA?.setSize(rw, rh); this.floorBlurB?.setSize(rw, rh);
+      }
     });
     this.resizeObserver.observe(canvas.parentElement!);
 
@@ -3024,6 +3848,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
    */
   toggleRender() {
     this.renderMode = !this.renderMode;
+    setRenderBevel(this.renderMode);   // cosmetic edge chamfer — Render only, rebuilt below
     if (this.renderMode) {
       this.cancelMode();
       this.applySelect([]);                       // clean, unhighlighted view
@@ -3046,6 +3871,14 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     }
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.viewHelpers.forEach(h => h.visible = false);
+    // A real camera/room-interior shot uses a narrower, more "normal lens" field of view
+    // than the wide FOV that's convenient for CAD navigation (which needs to see more of
+    // the model at once) — the wide FOV is what makes a perspective shot look bulged/
+    // fisheye-y near the edges. camera.up is never rotated anywhere in this app (orbit,
+    // the custom selection-pivot orbit and the nav-cube tween all preserve it), so
+    // verticals already stay vertical on screen regardless of FOV.
+    this.camera.fov = 42;
+    this.camera.updateProjectionMatrix();
     if (!this.renderFloor) {
       const geo = new THREE.PlaneGeometry(200000, 200000);
       geo.rotateX(-Math.PI / 2);
@@ -3055,7 +3888,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.renderFloor.position.y = -0.2;          // just under y=0 so slabs/walls aren't z-fought
       this.renderFloor.receiveShadow = true;
     }
-    this.scene.add(this.renderFloor);
+    this.updateFloorVisibility();   // plain floor until/unless the reflective one finishes building
+    this.ensureFloorReflection();   // lazy-build the reflective floor (async; falls back silently on failure)
     // Env intensity depends on the lighting mode (see applyRenderEnv): low in direct-light mode
     // (the shadowed samples carry the diffuse + AO), high in diffuse-only mode (env lights all).
     this.applyRenderEnv();
@@ -3064,23 +3898,173 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.sunDir.copy(this.keyLightBase).normalize();
     this.sunPerpA.crossVectors(this.sunDir, Math.abs(this.sunDir.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize();
     this.sunPerpB.crossVectors(this.sunDir, this.sunPerpA).normalize();
-    this.keyLight.shadow.normalBias = 3;              // hide acne as the light swings around
+    // Small, not the old flat 3mm — that was enough to "peter-pan" contact shadows away
+    // from the base of an object (exactly the tight AO crease that reads as a grounded,
+    // real edge); fitShadowFrustum() below shrinks the shadow camera to the scene's own
+    // size, so the per-texel world size drops enough that a small bias still hides acne.
+    this.keyLight.shadow.normalBias = 0.5;
+    // fitShadowFrustum() runs from refreshAllObjects() instead (below, same toggleRender()
+    // call) — objectMap here still holds the pre-rebuild CAD objects.
     this.accumDirty = true;
     this.ensureAccum();     // lazy-build the progressive-accumulation targets (async, safe if it fails)
     this.loadHdri();        // upgrade RoomEnvironment → studio HDRI once it loads (async)
   }
 
+  /**
+   * Shrink the key light's orthographic shadow frustum to fit the current scene's own
+   * bounding sphere (instead of a fixed ±8000mm box sized for a worst-case large scene).
+   * The light swings to a different hemisphere/sun direction every accumulated sample, so
+   * a *sphere* (not just the camera-facing extent) is what has to stay covered. A tighter
+   * frustum raises the shadow map's effective resolution per mm, which is what actually
+   * resolves tight contact shadows at panel/door seams — at the old ±8000mm box and 2048
+   * texels, each texel was ~7.8mm, coarser than most of the gaps/reveals it needed to
+   * shadow, which is why contact shadows (and the edges they sit at) read as flat.
+   */
+  private fitShadowFrustum() {
+    const box = new THREE.Box3();
+    this.objectMap.forEach(o => { o.updateMatrixWorld(true); box.union(new THREE.Box3().setFromObject(o)); });
+    const cam = this.keyLight.shadow.camera;
+    const half = box.isEmpty() ? 4000 : Math.max(1500, box.getBoundingSphere(new THREE.Sphere()).radius * 1.15);
+    cam.left = cam.bottom = -half;
+    cam.right = cam.top = half;
+    cam.updateProjectionMatrix();
+  }
+
   private exitRenderScene() {
     this.scene.environment = null;
     this.renderer.toneMapping = THREE.NoToneMapping;
+    this.camera.fov = 55;
+    this.camera.updateProjectionMatrix();
     this.viewHelpers.forEach(h => h.visible = true);
     if (this.renderFloor) this.scene.remove(this.renderFloor);
+    if (this.floorReflector) this.scene.remove(this.floorReflector);
+    if (this.floorShadowCatcher) this.scene.remove(this.floorShadowCatcher);
     // Restore the key light to its plain CAD state (renderAccum leaves it coloured/rotated).
     this.keyLight.position.copy(this.keyLightBase);
     this.keyLight.color.setRGB(1, 1, 1);
     this.keyLight.target.position.set(0, 0, 0);
     this.keyLight.target.updateMatrixWorld();
     this.renderer.setRenderTarget(null);
+  }
+
+  /** Shows exactly one floor look: the reflective one (once built) when `floorReflections`
+   *  is on, otherwise the plain matte fallback — a free, no-rebuild toggle either way. */
+  private updateFloorVisibility() {
+    if (!this.renderMode) return;
+    if (this.floorReflections && this.floorReflector) {
+      this.scene.add(this.floorReflector);
+      this.scene.add(this.floorShadowCatcher!);
+      this.scene.remove(this.renderFloor!);
+    } else {
+      this.scene.add(this.renderFloor!);
+      if (this.floorReflector) this.scene.remove(this.floorReflector);
+      if (this.floorShadowCatcher) this.scene.remove(this.floorShadowCatcher);
+    }
+  }
+
+  /** The floor-reflections escape-hatch checkbox. */
+  setFloorReflections(on: boolean) {
+    this.floorReflections = on;
+    this.updateFloorVisibility();
+    this.accumDirty = true;
+  }
+
+  /**
+   * Lazy-build the reflective floor once: a `THREE.Reflector` (mirrored-camera render-to-
+   * texture, self-visibility hiding and the oblique clip plane are all its proven logic,
+   * untouched) with a custom shader that samples a pre-blurred copy of its reflection
+   * (softer, satin look) blended with a dark base tint via a view-angle Fresnel term. The
+   * blur reuses `bloomBlurQuad` (built in `ensureAccum`) — it's just a full-screen quad;
+   * only its uniforms/target change between the two uses, both within the same frame.
+   */
+  private async ensureFloorReflection() {
+    if (this.floorReflector || this.floorLoading) return;
+    this.floorLoading = true;
+    try {
+      await this.ensureAccum();
+      if (!this.bloomBlurQuad) return;   // accumulation pipeline unavailable — keep the plain floor
+      const { Reflector } = await import('three/examples/jsm/objects/Reflector.js');
+      const [rw, rh] = this.floorReflectionSize();
+
+      const geo = new THREE.PlaneGeometry(200000, 200000);
+      geo.rotateX(-Math.PI / 2);
+      const vert = `
+        uniform mat4 textureMatrix;
+        varying vec4 vUv;
+        varying vec3 vWorldPosition;
+        #include <common>
+        #include <logdepthbuf_pars_vertex>
+        void main() {
+          vUv = textureMatrix * vec4( position, 1.0 );
+          vWorldPosition = ( modelMatrix * vec4( position, 1.0 ) ).xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+          #include <logdepthbuf_vertex>
+        }`;
+      const frag = `
+        uniform vec3 color;
+        uniform sampler2D tDiffuse;
+        uniform sampler2D tBlurred;
+        varying vec4 vUv;
+        varying vec3 vWorldPosition;
+        #include <logdepthbuf_pars_fragment>
+        void main() {
+          #include <logdepthbuf_fragment>
+          vec3 refl = texture2DProj( tBlurred, vUv ).rgb;
+          float fresnel = pow( 1.0 - max( dot( normalize( cameraPosition - vWorldPosition ), vec3( 0.0, 1.0, 0.0 ) ), 0.0 ), 4.0 );
+          float mixAmt = mix( 0.35, 0.95, fresnel );
+          gl_FragColor = vec4( mix( color, refl, mixAmt ), 1.0 );
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`;
+
+      this.floorBlurA = new THREE.WebGLRenderTarget(rw, rh, { type: THREE.HalfFloatType, depthBuffer: false });
+      this.floorBlurB = new THREE.WebGLRenderTarget(rw, rh, { type: THREE.HalfFloatType, depthBuffer: false });
+
+      const reflector = new Reflector(geo, {
+        textureWidth: rw, textureHeight: rh, clipBias: 0.003, color: 0x3a3d42,
+        shader: {
+          name: 'KitchenFloorReflector',
+          uniforms: { color: { value: null }, tDiffuse: { value: null }, textureMatrix: { value: null }, tBlurred: { value: null } },
+          vertexShader: vert, fragmentShader: frag,
+        },
+      });
+      reflector.position.y = -0.2;
+      (reflector.material as THREE.ShaderMaterial).uniforms['tBlurred'].value = this.floorBlurB.texture;
+
+      // Chain our own 2-pass blur onto the reflector's own per-frame render — it fires
+      // automatically as part of the main scene's r.render(scene, cam) call already in
+      // renderAccum (once per shown frame, same as everything else there), so this needs
+      // no extra render-loop wiring. Must restore whatever render target was bound before
+      // (renderAccum's frameRT) — the outer render call still has more objects to draw.
+      const origOBR = (reflector.onBeforeRender as unknown as (...a: any[]) => void).bind(reflector);
+      reflector.onBeforeRender = ((renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, ...rest: any[]) => {
+        origOBR(renderer, scene, camera, ...rest);
+        const prevTarget = renderer.getRenderTarget();
+        const bm = this.bloomBlurQuad!.material as THREE.ShaderMaterial;
+        bm.uniforms['uRadius'].value = 2.5;   // softer than bloom's — a satin reflection, not a mirror
+        bm.uniforms['tInput'].value = reflector.getRenderTarget().texture;
+        bm.uniforms['uDir'].value.set(1 / rw, 0);
+        renderer.setRenderTarget(this.floorBlurA!);
+        this.bloomBlurQuad!.render(renderer);
+        bm.uniforms['tInput'].value = this.floorBlurA!.texture;
+        bm.uniforms['uDir'].value.set(0, 1 / rh);
+        renderer.setRenderTarget(this.floorBlurB!);
+        this.bloomBlurQuad!.render(renderer);
+        renderer.setRenderTarget(prevTarget);
+      }) as any;
+      this.floorReflector = reflector;
+
+      this.floorShadowCatcher = new THREE.Mesh(geo.clone(), new THREE.ShadowMaterial({ opacity: 0.35 }));
+      this.floorShadowCatcher.position.y = -0.15;   // just above the reflector, just below real geometry
+      this.floorShadowCatcher.receiveShadow = true;
+
+      this.updateFloorVisibility();
+      this.accumDirty = true;
+    } catch (e) {
+      console.error('[render] floor reflection unavailable — keeping the plain floor', e);
+    } finally {
+      this.floorLoading = false;
+    }
   }
 
   /**
@@ -3109,18 +4093,52 @@ export class AdminPageComponent implements OnInit, OnDestroy {
           void main(){ gl_FragColor = mix(texture2D(tAccum, vUv), texture2D(tFrame, vUv), uWeight); }`,
       }));
       this.accumShowQuad = new FullScreenQuad(new THREE.ShaderMaterial({
-        uniforms: { tDiffuse: { value: null }, uExposure: { value: 1 } },
+        uniforms: { tDiffuse: { value: null }, tBloom: { value: null }, uExposure: { value: 1 }, uBloomStrength: { value: 0 } },
         vertexShader: vert,
         fragmentShader: `
-          varying vec2 vUv; uniform sampler2D tDiffuse; uniform float uExposure;
+          varying vec2 vUv; uniform sampler2D tDiffuse; uniform sampler2D tBloom;
+          uniform float uExposure; uniform float uBloomStrength;
           void main(){
-            vec3 c = texture2D(tDiffuse, vUv).rgb * uExposure;
+            vec3 c = (texture2D(tDiffuse, vUv).rgb + texture2D(tBloom, vUv).rgb * uBloomStrength) * uExposure;
             c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);  // ACES filmic (Narkowicz)
             c = clamp(c, 0.0, 1.0);
             c = pow(c, vec3(1.0 / 2.2));                                    // linear → sRGB
+            float vig = smoothstep(0.95, 0.35, length(vUv - 0.5));        // subtle camera-lens vignette
+            c *= mix(0.78, 1.0, vig);
             gl_FragColor = vec4(c, 1.0);
           }`,
       }));
+
+      // Bloom: quarter-res bright-pass + a reusable separable-Gaussian blur quad (also used,
+      // unmodified, by the floor reflection's blur — see ensureFloorReflection).
+      const [bw, bh] = [Math.max(1, Math.ceil(w / 4)), Math.max(1, Math.ceil(h / 4))];
+      this.bloomBright = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType, depthBuffer: false });
+      this.bloomA = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType, depthBuffer: false });
+      this.bloomB = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType, depthBuffer: false });
+      this.bloomExtractQuad = new FullScreenQuad(new THREE.ShaderMaterial({
+        uniforms: { tInput: { value: null }, uThreshold: { value: 1 } },
+        vertexShader: vert,
+        fragmentShader: `
+          varying vec2 vUv; uniform sampler2D tInput; uniform float uThreshold;
+          void main(){ gl_FragColor = vec4(max(texture2D(tInput, vUv).rgb - uThreshold, 0.0), 1.0); }`,
+      }));
+      this.bloomBlurQuad = new FullScreenQuad(new THREE.ShaderMaterial({
+        uniforms: { tInput: { value: null }, uDir: { value: new THREE.Vector2() }, uRadius: { value: 1 } },
+        vertexShader: vert,
+        fragmentShader: `
+          varying vec2 vUv; uniform sampler2D tInput; uniform vec2 uDir; uniform float uRadius;
+          void main(){
+            float w0 = 0.227027, w1 = 0.1945946, w2 = 0.1216216, w3 = 0.054054, w4 = 0.016216;
+            vec3 sum = texture2D(tInput, vUv).rgb * w0;
+            vec2 o1 = uDir * uRadius, o2 = uDir * uRadius * 2.0, o3 = uDir * uRadius * 3.0, o4 = uDir * uRadius * 4.0;
+            sum += (texture2D(tInput, vUv + o1).rgb + texture2D(tInput, vUv - o1).rgb) * w1;
+            sum += (texture2D(tInput, vUv + o2).rgb + texture2D(tInput, vUv - o2).rgb) * w2;
+            sum += (texture2D(tInput, vUv + o3).rgb + texture2D(tInput, vUv - o3).rgb) * w3;
+            sum += (texture2D(tInput, vUv + o4).rgb + texture2D(tInput, vUv - o4).rgb) * w4;
+            gl_FragColor = vec4(sum, 1.0);
+          }`,
+      }));
+
       this.accumDirty = true;
     } catch (e) {
       console.error('[render] accumulation unavailable — using basic render', e);
@@ -3133,6 +4151,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private accumSize(): [number, number] {
     const v = this.renderer.getDrawingBufferSize(new THREE.Vector2());
     return [Math.max(1, v.x), Math.max(1, v.y)];
+  }
+
+  /** Reflection render-target size: half the back buffer (plenty for a blurred, non-mirror
+   *  reflection), capped so it stays cheap at very large/high-DPI canvas sizes. */
+  private floorReflectionSize(): [number, number] {
+    const [w, h] = this.accumSize();
+    return [Math.min(1536, Math.max(256, Math.round(w / 2))), Math.min(1536, Math.max(256, Math.round(h / 2)))];
   }
 
   /** Van der Corput / Halton low-discrepancy sample in a given base. */
@@ -3275,10 +4300,30 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.accumN++;
     }
 
-    // Tone-map the current average to screen.
+    // Bloom: bright-pass + 2-pass (H, V) blur of the current average, run once per shown
+    // frame (not once per sample — it reads the already-averaged accumA).
+    const ebm = this.bloomExtractQuad!.material as THREE.ShaderMaterial;
+    ebm.uniforms['tInput'].value = this.accumA!.texture;
+    ebm.uniforms['uThreshold'].value = 1;
+    r.setRenderTarget(this.bloomBright!);
+    this.bloomExtractQuad!.render(r);
+    const gbm = this.bloomBlurQuad!.material as THREE.ShaderMaterial;
+    gbm.uniforms['uRadius'].value = 1;
+    gbm.uniforms['tInput'].value = this.bloomBright!.texture;
+    gbm.uniforms['uDir'].value.set(1 / this.bloomBright!.width, 0);
+    r.setRenderTarget(this.bloomA!);
+    this.bloomBlurQuad!.render(r);
+    gbm.uniforms['tInput'].value = this.bloomA!.texture;
+    gbm.uniforms['uDir'].value.set(0, 1 / this.bloomA!.height);
+    r.setRenderTarget(this.bloomB!);
+    this.bloomBlurQuad!.render(r);
+
+    // Tone-map the current average (+ bloom) to screen.
     const sm = this.accumShowQuad!.material as THREE.ShaderMaterial;
     sm.uniforms['tDiffuse'].value = this.accumA!.texture;
+    sm.uniforms['tBloom'].value = this.bloomB!.texture;
     sm.uniforms['uExposure'].value = this.cameraBrightness;
+    sm.uniforms['uBloomStrength'].value = this.bloomStrength;
     r.setRenderTarget(null);
     this.accumShowQuad!.render(r);
   }
@@ -3346,6 +4391,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.objectMap.clear();
     this.instances.forEach(inst => this.spawnObject(inst));
     this.applySelect(sel);
+    if (this.renderMode) this.fitShadowFrustum();   // scene may have changed shape/extent
     this.accumDirty = true;   // scene changed → restart Render-mode accumulation
   }
 
@@ -3440,13 +4486,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         ? this.materialDef(inst.materials?.[toKantKey(panelName)])
         : (inst.materials?.['МАТЕРИАЛ_КАНТ'] ? this.materialDef(inst.materials['МАТЕРИАЛ_КАНТ']) : boardDef);
 
-      const conv = (m: THREE.MeshPhongMaterial): THREE.MeshStandardMaterial => {
+      const conv = (m: THREE.MeshPhongMaterial): THREE.MeshPhysicalMaterial => {
         const isBand = !!m.userData['edgeBand'];
         const def = isBand ? kantDef : boardDef;
         // A flat board face (no .map) may take the material's JPG texture; the chipboard
         // edge (which already has m.map) keeps its own look.
         const defTex = !m.map ? this.materialTexture(def) : null;
-        const std = new THREE.MeshStandardMaterial({
+        const std = new THREE.MeshPhysicalMaterial({
           // With a texture the colour is white (show the image faithfully); otherwise a
           // flat face takes the def colour, and a textured edge keeps its own colour.
           color: defTex ? new THREE.Color(0xffffff)
@@ -3470,6 +4516,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         if (def?.bump) {
           std.bumpMap = this.bumpTexture(def.bumpSize ?? 24);
           std.bumpScale = (def.bump / 100) * 1.4;
+        }
+        // Clearcoat: a thin, perfectly-smooth lacquer layer over the textured/coloured base —
+        // the "glossy painted MDF door" look a single roughness value can't reproduce (it has
+        // to pick one: either the bump relief shows, or the highlight is mirror-sharp, never
+        // both). Only for glossy, non-metal finishes — metals already get a sharp highlight
+        // from their own low roughness and don't wear a separate coat.
+        if (def && def.glossiness > 50 && def.reflection < 50) {
+          std.clearcoat = 1;
+          std.clearcoatRoughness = Math.max(0.02, 1 - (def.glossiness - 50) / 50 * 0.95);
         }
         std.userData = { ...m.userData };   // keep edgeBand tag so colorObj still skips bands
         if (dispose) m.dispose();           // skip when converting throwaway clones (shared mats)
@@ -3617,6 +4672,30 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (this.mode === 'line-plane') {
+      const plane = this.pickFacePlane(e);
+      this.linePlanePreview = plane;
+      this.updatePlaneGhost(plane);
+      return;
+    }
+
+    if (this.mode === 'line-from') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (!snap) return;
+      this.showSnap(snap.pos, snap.type);
+      return;
+    }
+
+    if (this.mode === 'line-to') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (!snap) return;
+      const last = this.linePath[this.linePath.length - 1];
+      const pos = e.shiftKey ? this.lockAxisOnPlane(snap.pos, last, this.linePlane!) : snap.pos;
+      this.showSnap(pos, snap.type);
+      this.updateLineGhost(last, pos);
+      return;
+    }
+
     if (this.mode === 'measure-to') {
       // Shift locks the segment parallel to an axis (0x / 0y / 0z) through the first point.
       if (e.shiftKey) {
@@ -3723,7 +4802,10 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   // ── TAB hover-cycle highlight ────────────────────────────────────────────────
 
-  private baseEdgeColor(id: number) { return this.selectedIds.has(id) ? EDGE_SELECTED : EDGE_NORMAL; }
+  private baseEdgeColor(id: number): number {
+    if (this.selectedIds.has(id)) return EDGE_SELECTED;
+    return this.instances.find(i => i.id === id)?.familyId === 'line' ? LINE_IDLE_COLOR : EDGE_NORMAL;
+  }
 
   /**
    * Tagged panel nodes (`userData['panel']`) of instance `id` hit by the cursor ray,
@@ -3759,10 +4841,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Restore the hovered instance's edges and drop the hover state. */
   private clearHover() {
     if (this.hoverId !== null) {
-      const g = this.objectMap.get(this.hoverId);
-      if (g) setEdgeColor(g, this.baseEdgeColor(this.hoverId));
-      // keep a persistently sub-selected panel highlighted
-      if (this.selectedPanelNode) setEdgeColor(this.selectedPanelNode, EDGE_SELECTED);
+      const inst = this.instances.find(i => i.id === this.hoverId);
+      if (inst?.familyId === 'solid' && inst.isVoid) {
+        if (!this.selectedIds.has(this.hoverId)) this.setVoidPreview(this.hoverId, false);
+      } else {
+        const g = this.objectMap.get(this.hoverId);
+        if (g) setEdgeColor(g, this.baseEdgeColor(this.hoverId));
+        // keep a persistently sub-selected panel highlighted
+        if (this.selectedPanelNode) setEdgeColor(this.selectedPanelNode, EDGE_SELECTED);
+      }
     }
     this.hoverId = null; this.hoverPanels = []; this.tabIndex = 0;
   }
@@ -3775,6 +4862,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.hoverId = id; this.tabIndex = 0;
       const inst = id === null ? null : (this.instances.find(i => i.id === id) ?? null);
       this.ngZone.run(() => { this.hoveredInst = inst; });
+      if (inst?.familyId === 'solid' && inst.isVoid && id !== null && !this.selectedIds.has(id)) this.setVoidPreview(id, true);
     }
     if (id === null) return;
     this.hoverPanels = this.panelsUnderCursor(e, id);
@@ -3863,6 +4951,37 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       const last = this.slabPath[this.slabPath.length - 1];
       const pos = e.shiftKey ? this.lockAxisXZ(snap.pos, last) : snap.pos;
       if (Math.hypot(pos.x - last.x, pos.z - last.z) >= 1) this.addSlabPoint(pos);
+      return;
+    }
+
+    if (this.mode === 'line-plane') {
+      const plane = this.linePlanePreview ?? this.pickFacePlane(e);
+      this.ngZone.run(() => this.commitLinePlane(plane));
+      return;
+    }
+
+    if (this.mode === 'line-from') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (snap) {
+        this.ngZone.run(() => {
+          this.addLinePoint(snap.pos);
+          this.mode = 'line-to';
+          this.modeLabel = 'Click the next corner or type a length — click the first point or Enter to finish';
+        });
+      }
+      return;
+    }
+
+    if (this.mode === 'line-to') {
+      // Clicking back on the first vertex closes the loop.
+      if (this.nearFirstLineVertex(e)) { this.ngZone.run(() => this.closeLine()); return; }
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (!snap) return;
+      const last = this.linePath[this.linePath.length - 1];
+      const pos = e.shiftKey ? this.lockAxisOnPlane(snap.pos, last, this.linePlane!) : snap.pos;
+      if (pos.distanceTo(last) >= 1) {
+        this.ngZone.run(() => this.addLinePoint(pos));
+      }
       return;
     }
 

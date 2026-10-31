@@ -74,8 +74,25 @@ export interface FamilyDef {
  */
 export interface BasePoint { x: number; y: number; z: number; }
 
-/** A ground-plane vertex of a wall polyline, in the instance's LOCAL frame (mm). */
-export interface WallPoint { x: number; z: number; }
+/** A ground-plane vertex of a wall polyline, in the instance's LOCAL frame (mm).
+ *  Reused by СТЕНА/ПЛОЧА/Line as a generic (a, b) in-plane pair — not necessarily
+ *  literal world x/z (see `PlaneDesc`, used by Line/SOLID). `r` is an optional corner
+ *  fillet radius (mm) — СТЕНА/ПЛОЧА never set it. */
+export interface WallPoint { x: number; z: number; r?: number; }
+
+/**
+ * A construction plane: an origin point + unit normal + an in-plane "u" axis
+ * (⟂ normal) — together these fully pin down how a Line/SOLID's local (a, b) path
+ * points map onto world 3D. The "v" axis is always DERIVED as `uAxis × normal` at the
+ * point of use, never stored, so a loaded/edited save can't drift out of
+ * orthonormality (re-normalise/re-orthogonalise on load regardless — see
+ * `parseSceneJson`).
+ */
+export interface PlaneDesc {
+  origin: { x: number; y: number; z: number };
+  normal: { x: number; y: number; z: number };
+  uAxis:  { x: number; y: number; z: number };
+}
 
 /** One placed object: a family id + its parameter/material values + world transform. */
 export interface SceneInstance {
@@ -88,14 +105,42 @@ export interface SceneInstance {
   y: number;
   z: number;
   rotY: number;
+  mirrored?: boolean; // true ⇒ a true geometric mirror (local-X flip, obj.scale.x = -1),
+                      // set by the Mirror tool. Pure shape handedness flip only — it does
+                      // NOT swap handedness-specific params (e.g. ЛЯВА_*/ДЯСНА_* coverage
+                      // toggles); same limitation Revit's own Mirror has, adjust those
+                      // manually afterward if a mirrored cabinet needs them swapped.
   anchor?: BasePoint;  // which bbox point x/y/z refers to; absent ⇒ centre {0,0,0}
-  path?: WallPoint[];  // СТЕНА / ПЛОЧА only: the polyline (local coords, first vertex at origin)
+  path?: WallPoint[];  // СТЕНА / ПЛОЧА / Line / SOLID: the polyline (local coords, first vertex at origin)
   materials?: Record<string, string>;  // per-panel material choices (МАТЕРИАЛИ section)
   hidden?: boolean;    // toggled from the scene list's eye icon; hides it from the viewport and picking
+  plane?: PlaneDesc;   // Line / SOLID only: the construction plane `path` is drawn/extruded on
+  // Line: whether the polyline loops back to its first vertex. SOLID: depends on
+  // `solidOp` — 'extrude' (or absent): always true, `path`/`plane` describe the
+  // (closed) profile being extruded. 'sweep': whether the PATH loops (`pathPoints`/
+  // `pathPlane`), not the profile (a sweep's profile — `path`/`plane` — is always closed).
+  closed?: boolean;
+  solidOp?: 'extrude' | 'sweep';   // SOLID only: which operation produced it (absent ⇒ 'extrude')
+  pathPlane?: PlaneDesc;    // SOLID (sweep only): the PATH's own construction plane
+  pathPoints?: WallPoint[]; // SOLID (sweep only): the PATH's local (u, v) points on pathPlane
+  isVoid?: boolean;         // SOLID only: when true, this solid is a boolean cutter —
+                            // subtracted from every other instance it overlaps instead
+                            // of being a normal visible solid (invisible except while
+                            // hovered/selected; see applyVoidCuts in webcad-csg.ts).
+  voidExcludeIds?: number[]; // SOLID+isVoid only: ids of instances this void must NOT
+                             // cut, even though they overlap it (the "Cuts" list's eye
+                             // icons in the void's detail panel toggle membership here).
+  fbxData?: string;         // 'fbx-import' only: the imported .fbx file's raw bytes as
+                            // a base64 data URL — embedded (not just referenced) so a
+                            // saved scene stays one self-contained JSON file, the same
+                            // convention MaterialDef.texture already uses for a JPG.
+                            // Re-parsed back into a THREE.Group on every spawn by
+                            // parseFbxDataUrl (webcad-fbx.ts) — there is no separate
+                            // cached geometry to keep in sync.
 }
 
 /** A restorable copy of the scene's data model for the undo history. */
-export interface SceneSnapshot { instances: SceneInstance[]; nextId: number; }
+export interface SceneSnapshot { instances: SceneInstance[]; nextId: number; nextSolidNum: number; }
 
 /** Read-only info shown when a single panel of a family instance is sub-selected. */
 export interface PanelInfo {
@@ -106,7 +151,7 @@ export interface PanelInfo {
 }
 
 /** The viewport interaction state machine (drives canvas handlers + the mode overlay). */
-export type InteractionMode = 'idle' | 'placing' | 'move-from' | 'move-to' | 'measure-from' | 'measure-to' | 'match' | 'wall-from' | 'wall-to' | 'slab-from' | 'slab-to';
+export type InteractionMode = 'idle' | 'placing' | 'move-from' | 'move-to' | 'measure-from' | 'measure-to' | 'match' | 'wall-from' | 'wall-to' | 'slab-from' | 'slab-to' | 'line-plane' | 'line-from' | 'line-to';
 export type MovePlane      = 'XZ' | 'XY' | 'YZ';
 
 // ── Colours ─────────────────────────────────────────────────────────────────────
@@ -117,6 +162,12 @@ export const EDGE_NORMAL    = 0x333333;
 export const EDGE_SELECTED  = 0xffffff;
 export const EDGE_HOVER     = 0xffaa00;   // TAB hover-cycle highlight (orange)
 export const EDGE_PVC       = 0x888888;   // slightly lighter edge for PVC faces
+// Line's own idle edge colour: EDGE_NORMAL (0x333333) is deliberately subtle because
+// every other family's edges sit ON a visible, lit face that provides the real
+// contrast — a Line has no face at all, so that same dark grey is nearly invisible
+// against this app's near-black canvas (confirmed live). Selected/hovering states
+// still use the ordinary EDGE_SELECTED/EDGE_HOVER, exactly like every other family.
+export const LINE_IDLE_COLOR = 0x7ecbff;
 
 // ── Anchors ─────────────────────────────────────────────────────────────────────
 

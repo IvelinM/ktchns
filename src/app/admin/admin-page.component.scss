@@ -443,6 +443,21 @@
   gap: 8px;
   margin-bottom: 10px;
   h2 { margin: 0; }
+
+  &.collapsible {
+    cursor: pointer;
+    user-select: none;
+    &:hover h2 { color: var(--c-text-5); }
+  }
+}
+
+.section-chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--c-text-7);
+  transition: transform 0.15s ease;
+  &.collapsed { transform: rotate(-90deg); }
 }
 
 .badge {

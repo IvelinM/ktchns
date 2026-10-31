@@ -6,8 +6,12 @@
  * `hidden` are created by a dedicated toolbar tool (СТЕНА/ПЛОЧА) rather than the picker,
  * and build their geometry from `inst.path` via buildWallPath/buildSlabPath instead.
  */
-import { FamilyDef, ParamDef, MaterialParamDef } from './webcad.model';
-import { makeMesh, buildKorpus, buildWallPath, buildSlabPath } from './webcad-geometry';
+import * as THREE from 'three';
+import { FamilyDef, ParamDef, MaterialParamDef, PlaneDesc } from './webcad.model';
+import { makeMesh, buildKorpus, buildWallPath, buildSlabPath, buildLinePath, buildSolidExtrude } from './webcad-geometry';
+
+/** Fallback ground plane for the degenerate (path-less) Line/SOLID buildObject() below. */
+const GROUND_PLANE: PlaneDesc = { origin: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, uAxis: { x: 1, y: 0, z: 0 } };
 
 /**
  * Shared parameter list for the МОДУЛ family (carcass with a front door). С_ТАВАН and
@@ -40,6 +44,13 @@ const KORPUS_PARAMS: ParamDef[] = [
   { key: 'ТАВАН_ВИДИМ_КАНТ_ОТЛЯВО',  label: 'ТАВАН ВИДИМ КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ТАВАН_ВИДИМ_КАНТ_ОТДЯСНО', label: 'ТАВАН ВИДИМ КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ТАВАН_ВИДИМ_КАНТ_ОТПРЕД',  label: 'ТАВАН ВИДИМ КАНТ ОТПРЕД',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  // With a full С_ТАВАН panel: negative pulls its FRONT edge inward (shrinking depth
+  // by that many mm) while the back edge — against ГРЪБ, or the module's rear face —
+  // stays put; positive extends it forward instead. With С_РЕБРА instead (mutually
+  // exclusive with С_ТАВАН): slides the front rib (РЕБРО ТАВАН 1) along its depth axis
+  // by that many mm — negative toward the back, positive toward the front — the back
+  // rib is never affected. See korpusPanels (webcad-geometry.ts).
+  { key: 'ТАВАН_ОФСЕТ_ОТПРЕД',       label: 'ТАВАН ОФСЕТ ОТПРЕД',       defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ДЪНО_ВИДИМ_КАНТ_ОТЛЯВО',  label: 'ДЪНО ВИДИМ КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ДЪНО_ВИДИМ_КАНТ_ОТДЯСНО', label: 'ДЪНО ВИДИМ КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ДЪНО_ВИДИМ_КАНТ_ОТПРЕД',  label: 'ДЪНО ВИДИМ КАНТ ОТПРЕД',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
@@ -237,5 +248,50 @@ export const FAMILIES: FamilyDef[] = [
     ],
     // Degenerate fallback (path-less slab): a 600×600 square. Real slabs go through buildSlabPath.
     buildObject(p) { return buildSlabPath([{ x: 0, z: 0 }, { x: 600, z: 0 }, { x: 600, z: 600 }, { x: 0, z: 600 }], p['ДЕБЕЛИНА']); },
+  },
+
+  // ── Line — a generic polyline sketch drawn on an ARBITRARY construction plane
+  // (`inst.plane`), picked by hovering any existing surface (or a quick XZ/XY/YZ pick)
+  // when the Line toolbar tool starts. No numeric params of its own — geometry is
+  // fully path/plane/fillet driven, built by buildLinePath (not buildObject). A
+  // closed Line can be turned into a SOLID via the "Extrude" button when selected.
+  {
+    id: 'line',
+    name: 'Line',
+    hidden: true,
+    params: [],
+    // Degenerate fallback (path-less line): a single 1 m segment on the ground.
+    buildObject() { return buildLinePath([{ x: 0, z: 0 }, { x: 1000, z: 0 }], false, GROUND_PLANE); },
+  },
+
+  // ── SOLID — the generic result of extruding a closed Line (see `extrudeLine` in
+  // admin-page.component.ts). Self-contained: its own copy of the source Line's
+  // path/plane, independent of it from then on (no live re-link back to the sketch).
+  // Labeled sequentially ("SOLID 1", "SOLID 2", …) rather than per-family, since any
+  // number of different sketches can produce one. Hidden — only ever created by
+  // Extrude, never the FAMILY picker.
+  {
+    id: 'solid',
+    name: 'SOLID',
+    hidden: true,
+    params: [
+      { key: 'ДЪЛБОЧИНА', label: 'ДЪЛБОЧИНА', defaultValue: 18, min: 1, step: 1, unit: 'mm' },
+    ],
+    // Degenerate fallback (path-less solid): a small square on the ground.
+    buildObject(p) { return buildSolidExtrude([{ x: 0, z: 0 }, { x: 300, z: 0 }, { x: 300, z: 300 }, { x: 0, z: 300 }], p['ДЪЛБОЧИНА'], GROUND_PLANE); },
+  },
+
+  // ── FBX import — a single instance wrapping an imported .fbx file's whole scene
+  // graph, labelled after the imported filename. Its real geometry is parsed fresh
+  // from `inst.fbxData` on every spawn (see parseFbxDataUrl, webcad-fbx.ts), not built
+  // from `params` like every other family here — `buildObject` below is purely the
+  // degenerate fallback for a corrupt/missing fbxData. Hidden — only ever created by
+  // the File menu's "Import FBX…", never the FAMILY picker.
+  {
+    id: 'fbx-import',
+    name: 'FBX',
+    hidden: true,
+    params: [],
+    buildObject() { return new THREE.Group(); },
   },
 ];
