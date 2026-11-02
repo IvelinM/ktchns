@@ -58,6 +58,10 @@ const KORPUS_PARAMS: ParamDef[] = [
   { key: 'ВРАТИЧКА_ФУГА_ОТДЯСНО', label: 'ВРАТИЧКА ФУГА ОТДЯСНО', defaultValue: 1, min: 0, step: 0.5, unit: 'mm' },
   { key: 'ВРАТИЧКА_ФУГА_ОТГОРЕ',  label: 'ВРАТИЧКА ФУГА ОТГОРЕ',  defaultValue: 0, min: 0, step: 0.5, unit: 'mm' },
   { key: 'ВРАТИЧКА_ФУГА_ОТДОЛУ',  label: 'ВРАТИЧКА ФУГА ОТДОЛУ',  defaultValue: 0, min: 0, step: 0.5, unit: 'mm' },
+  // Width of the reveal between the two ДВОЙНА_ВРАТИЧКА leaves — only matters (and is
+  // only shown — see admin-page.component.ts paramRowVisible) once ДВОЙНА ВРАТИЧКА is
+  // checked. See korpusPanels (webcad-geometry.ts).
+  { key: 'ФУГА_МЕЖДУ_ВРАТИЧКИ', label: 'ФУГА МЕЖДУ ВРАТИЧКИ', defaultValue: 3, min: 0, step: 0.5, unit: 'mm' },
   { key: 'ВРАТИЧКА_С_КАНТ_ОТГОРЕ', label: 'ВРАТИЧКА С КАНТ ОТГОРЕ', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ВРАТИЧКА_С_КАНТ_ОТДОЛУ', label: 'ВРАТИЧКА С КАНТ ОТДОЛУ', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ВРАТИЧКА_ГОРЕН_РЪБ_ОФСЕТ', label: 'ВРАТИЧКА ГОРЕН РЪБ ОФСЕТ', defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
@@ -67,6 +71,11 @@ const KORPUS_PARAMS: ParamDef[] = [
   // admin-page.component.ts paramRowVisible) once ДВОЙНА ВРАТИЧКА is checked; the right
   // leaf always takes whatever width remains. See korpusPanels (webcad-geometry.ts).
   { key: 'ДВОЙНА_ВРАТИЧКА',       label: 'ДВОЙНА ВРАТИЧКА',       defaultValue: 0,   min: 0, step: 1,   unit: '',   type: 'toggle' },
+  // true (default) = the two leaves sit side by side, divided by a VERTICAL fugue
+  // (ЛЯВА/ДЯСНА, split along X — the original/only behaviour); false = they're stacked
+  // one above the other instead, divided by a HORIZONTAL fugue (split along Y). Only
+  // matters once ДВОЙНА ВРАТИЧКА is checked. See korpusPanels (webcad-geometry.ts).
+  { key: 'ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА', label: 'ДВОЙНА ВРАТИЧКА С ВЕРТИКАЛНА ФУГА', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ЛЯВА_ВРАТИЧКА_ШИРИНА',  label: 'ЛЯВА ВРАТИЧКА ШИРИНА',  defaultValue: 400, min: 1, step: 1,   unit: 'mm' },
   { key: 'ТАВАН_С_КАНТ_ОТПРЕД',  label: 'ТАВАН С КАНТ ОТПРЕД',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ТАВАН_С_КАНТ_ОТЛЯВО',  label: 'ТАВАН С КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
@@ -276,6 +285,14 @@ export const FAMILIES: FamilyDef[] = [
     hidden: true,
     params: [
       { key: 'ДЪЛБОЧИНА', label: 'ДЪЛБОЧИНА', defaultValue: 18, min: 1, step: 1, unit: 'mm' },
+    ],
+    // A SOLID has no panels for `cadColorObj`/`applyRenderMaterials` to tag by name
+    // (unlike ПЛОСКОСТ/МОДУЛ's per-panel picks) — a single library pick under this
+    // exact key is already their own panel-less fallback lookup
+    // (`inst.materials?.['МАТЕРИАЛ'] ?? inst.material`), so this is the only entry
+    // needed to make a SOLID's own "МАТЕРИАЛИ" section appear and actually take effect.
+    materialParams: [
+      { key: 'МАТЕРИАЛ', label: 'МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
     ],
     // Degenerate fallback (path-less solid): a small square on the ground.
     buildObject(p) { return buildSolidExtrude([{ x: 0, z: 0 }, { x: 300, z: 0 }, { x: 300, z: 300 }, { x: 0, z: 300 }], p['ДЪЛБОЧИНА'], GROUND_PLANE); },

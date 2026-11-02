@@ -3,6 +3,10 @@
   <!-- ── Control panel ── -->
   <aside class="control-panel">
 
+    <!-- Name of the file this scene is tracking (Save silently overwrites it) — absent
+         for a brand-new unsaved scene or one opened via the no-write-access fallback. -->
+    <div class="opened-file-name" *ngIf="openedFileName" [title]="openedFileName">{{ openedFileName }}</div>
+
     <!-- ── File menu ── -->
     <div class="menubar">
       <div #fileMenu class="menu" [class.open]="fileMenuOpen">
@@ -53,6 +57,16 @@
         </div>
       </div>
       <input #sceneFileInput type="file" accept="application/json,.json" (change)="loadScene($event)" hidden>
+
+      <!-- 2D plan/elevation view switcher -->
+      <div class="view-plane-btns" title="Switch between the 3D view and a flattened 2D line drawing in a plane">
+        <button class="view-plane-btn" [class.active]="viewPlane === '3D'" title="3D" (click)="setViewPlane('3D')">3D</button>
+        <button class="view-plane-btn" [class.active]="viewPlane === 'XZ'" title="XZ — Top" (click)="setViewPlane('XZ')">XZ</button>
+        <button class="view-plane-btn" [class.active]="viewPlane === 'YZ'" title="YZ — Side" (click)="setViewPlane('YZ')">YZ</button>
+        <button class="view-plane-btn" [class.active]="viewPlane === 'XY'" title="XY — Front" (click)="setViewPlane('XY')">XY</button>
+        <button class="view-plane-btn" [class.active]="viewPlane === 'current'" title="Current Plane"
+                [disabled]="!currentPlane && !selectedInstance?.plane" (click)="setViewPlane('current')">CP</button>
+      </div>
     </div>
 
     <!-- One collapsible section's body: the ТАВАН section mixes full-panel params
@@ -101,7 +115,7 @@
       <!-- one param row for the "place new" grid -->
       <ng-template #placeParam let-p>
         <ng-container *ngIf="paramRowVisible(p, currentParams)">
-          <label class="param-label">{{ p.label }}</label>
+          <label class="param-label">{{ paramLabel(p, currentParams) }}</label>
           <ng-container [ngSwitch]="p.type ?? 'number'">
             <div class="toggle-wrap" *ngSwitchCase="'toggle'">
               <input type="checkbox"
@@ -176,7 +190,7 @@
 
         <ng-template #multiParam let-p>
           <ng-container *ngIf="multiParamRowVisible(p)">
-            <label class="param-label">{{ p.label }}</label>
+            <label class="param-label">{{ multiParamLabel(p) }}</label>
             <ng-container [ngSwitch]="p.type ?? 'number'">
               <div class="toggle-wrap" *ngSwitchCase="'toggle'">
                 <input type="checkbox"
@@ -301,24 +315,6 @@
       <!-- Line: per-vertex corner fillets. Extrude/Path-extrusion are separate
            toolbar tools (gated on this selection), not shown here — a Line is free
            to stay a Line forever. -->
-      <div class="detail-group" *ngIf="selectedInstance!.familyId === 'line'">
-        <span class="detail-title">Ъгли (радиус на заобляне)</span>
-        <div class="param-grid">
-          <ng-container *ngFor="let pt of selectedInstance!.path; let i = index">
-            <ng-container *ngIf="isFilletableVertex(i)">
-              <label class="param-label">Връх {{ i + 1 }}</label>
-              <div class="param-input-wrap">
-                <input type="number" min="0" step="0.5"
-                       [ngModel]="pt.r ?? 0"
-                       (focus)="beginEdit()"
-                       (ngModelChange)="pt.r = $event; rebuildSelected()">
-                <span class="param-unit">mm</span>
-              </div>
-            </ng-container>
-          </ng-container>
-        </div>
-      </div>
-
       <!-- SOLID: IsVoid — when checked, this solid becomes a boolean cutter (subtracted
            from every other instance it overlaps) instead of a normal visible solid. -->
       <div class="detail-group" *ngIf="selectedInstance!.familyId === 'solid'">
@@ -386,7 +382,7 @@
         <!-- one param row for the "selected object" grid -->
         <ng-template #selParam let-p>
           <ng-container *ngIf="paramRowVisible(p, selectedInstance!.params)">
-            <label class="param-label">{{ p.label }}</label>
+            <label class="param-label">{{ paramLabel(p, selectedInstance!.params) }}</label>
             <ng-container [ngSwitch]="p.type ?? 'number'">
               <div class="toggle-wrap" *ngSwitchCase="'toggle'">
                 <input type="checkbox"
@@ -551,8 +547,10 @@
   <main class="viewport">
     <canvas #rendererCanvas></canvas>
 
-    <!-- Navigation cube (Revit-style): click a face to snap the view to it -->
-    <canvas #navCubeCanvas class="nav-cube" title="Click a face to align the view"></canvas>
+    <!-- Navigation cube (Revit-style): click a face to snap the view to it. Hidden (not
+         *ngIf'd) while not in 3D — it has a live WebGL context that *ngIf would destroy
+         and never correctly recreate on switching back. -->
+    <canvas #navCubeCanvas class="nav-cube" [class.hidden]="viewPlane !== '3D'" title="Click a face to align the view"></canvas>
 
     <!-- Toolbar -->
     <div class="toolbar">
@@ -626,14 +624,106 @@
         </svg>
         Плоча
       </button>
-      <button class="tool-btn" [class.active]="mode === 'line-plane' || mode === 'line-from' || mode === 'line-to'"
-              title="Line — избери равнина (посочи повърхност) и нарисувай полилиния" [disabled]="!canLine && mode !== 'line-plane' && mode !== 'line-from' && mode !== 'line-to'"
-              (click)="(mode === 'line-plane' || mode === 'line-from' || mode === 'line-to') ? cancelMode() : startLine()">
+      <div class="sketch-anchor">
+      <button class="tool-btn" [class.active]="lineSessionActive"
+              [title]="canEditLine ? 'Edit — modify the selected Line: draw more on its plane, or select segments to delete' : 'Line — pick a plane, then draw Line/Circle/Curve shapes on it'"
+              [disabled]="!canLine && !lineSessionActive"
+              (click)="onLineEditButtonClick()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M4 18L10 10L14 14L20 6"/>
           <circle cx="4" cy="18" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="14" cy="14" r="1.5"/><circle cx="20" cy="6" r="1.5"/>
         </svg>
-        Line
+        {{ lineButtonLabel }}
+      </button>
+      <div class="sketch-panel" *ngIf="lineSessionActive">
+        <button class="sketch-tool" [class.active]="(mode === 'line-from' || mode === 'line-to' || mode === 'line-arc-mid') && !isDrawingCircle && !isDrawingCurve"
+                title="Line" [disabled]="mode !== 'line-session'" (click)="beginDrawLine()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 18L10 10L14 14L20 6"/>
+            <circle cx="4" cy="18" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="14" cy="14" r="1.5"/><circle cx="20" cy="6" r="1.5"/>
+          </svg>
+          Line
+        </button>
+        <button class="sketch-tool" [class.active]="isDrawingCircle && (mode === 'circle-center' || mode === 'circle-radius')"
+                title="Circle" [disabled]="mode !== 'line-session'" (click)="beginDrawCircle()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><line x1="12" y1="12" x2="19" y2="12"/>
+          </svg>
+          Circle
+        </button>
+        <button class="sketch-tool" [class.active]="isDrawingCurve && (mode === 'line-from' || mode === 'line-to' || mode === 'line-arc-mid')"
+                title="Curve" [disabled]="mode !== 'line-session'" (click)="beginDrawCurve()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 18C4 10 20 10 20 18"/>
+            <circle cx="4" cy="18" r="1.5"/><circle cx="20" cy="18" r="1.5"/>
+          </svg>
+          Curve
+        </button>
+        <span class="tool-sep"></span>
+        <button class="sketch-tool" [class.active]="mode === 'copy-seg-from' || mode === 'copy-seg-to'"
+                title="Copy selected segment(s) — click a from-point, then a to-point to set the move"
+                [disabled]="!canCopySelectedSegments && mode !== 'copy-seg-from' && mode !== 'copy-seg-to'"
+                (click)="(mode === 'copy-seg-from' || mode === 'copy-seg-to') ? cancelMode() : startCopySegments()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="12" height="12" rx="1"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>
+          </svg>
+          Copy
+        </button>
+        <button class="sketch-tool" title="Rotate the selected segment around its pivot endpoint" [disabled]="!canRotateSelectedSegment" (click)="rotateSelectedSegment()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4h4"/>
+          </svg>
+          Rotate
+        </button>
+        <label class="tool-count" title="Rotate angle (degrees)">
+          <input type="number" step="1" [disabled]="!canRotateSelectedSegment" [(ngModel)]="segmentRotateAngle">
+        </label>
+        <div class="plane-btns">
+          <button class="plane-btn" [class.active]="segmentRotatePivot === 'start'" [disabled]="!canRotateSelectedSegment" (click)="segmentRotatePivot = 'start'">Pivot: Start</button>
+          <button class="plane-btn" [class.active]="segmentRotatePivot === 'end'" [disabled]="!canRotateSelectedSegment" (click)="segmentRotatePivot = 'end'">Pivot: End</button>
+        </div>
+        <span class="tool-sep"></span>
+        <button class="sketch-tool" title="Offset the selected segment(s) sideways by a precise distance" [disabled]="!canOffsetSelectedSegments" (click)="offsetSelectedSegments()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 17h18"/><path d="M3 7h18"/><path d="M7 7v10"/>
+          </svg>
+          Offset
+        </button>
+        <label class="tool-count" title="Offset distance (mm)">
+          <input type="number" min="1" step="1" [disabled]="!canOffsetSelectedSegments" [(ngModel)]="segmentOffsetDistance">
+        </label>
+        <div class="plane-btns">
+          <button class="plane-btn" [class.active]="segmentOffsetSide === 'left'" [disabled]="!canOffsetSelectedSegments" (click)="segmentOffsetSide = 'left'">Left</button>
+          <button class="plane-btn" [class.active]="segmentOffsetSide === 'right'" [disabled]="!canOffsetSelectedSegments" (click)="segmentOffsetSide = 'right'">Right</button>
+        </div>
+        <label class="sketch-check" title="Keep the originals and add parallel copies, instead of moving them">
+          <input type="checkbox" [disabled]="!canOffsetSelectedSegments" [(ngModel)]="segmentOffsetCopy">
+          Copy
+        </label>
+        <span class="tool-sep"></span>
+        <button class="sketch-tool" title="Trim/extend the two selected segments to meet at their intersection" [disabled]="!canTrimSelectedSegments" (click)="trimSelectedSegments()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 20 20 4"/><path d="M4 4l7 7"/><path d="M13 13l7 7"/>
+          </svg>
+          Trim
+        </button>
+        <label class="tool-count" title="Corner radius (mm) — 0 for a sharp corner">
+          <input type="number" min="0" step="1" [disabled]="!canTrimSelectedSegments" [(ngModel)]="segmentTrimRadius">
+        </label>
+        <span class="tool-sep"></span>
+        <button class="sketch-tool danger" title="Delete selected segments" [disabled]="!canDeleteSelectedSegments" (click)="deleteSelectedSegments()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+          </svg>
+          Delete
+        </button>
+      </div>
+      </div>
+      <button class="tool-btn" title="Unite — select two Lines; joins them end-to-end if they touch, otherwise merges them into one instance" [disabled]="!canUniteLines" (click)="uniteLines()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M8.5 15.5 15.5 8.5"/>
+        </svg>
+        Unite
       </button>
       <button class="tool-btn" title="Extrude — select one CLOSED Line, extrude it perpendicular to its own plane" [disabled]="!canExtrudeLine" (click)="extrudeLine()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -650,6 +740,15 @@
           <rect x="17" y="4" width="5" height="5" rx="1"/>
         </svg>
         Path-extrusion
+      </button>
+      <button class="tool-btn" [class.active]="mode === 'pick-plane'"
+              title="Select Current Plane — hover a surface (or pick XZ/XY/YZ) to set the view-plane buttons' 'CP'"
+              [disabled]="mode !== 'idle' && mode !== 'pick-plane'"
+              (click)="mode === 'pick-plane' ? cancelMode() : startPickCurrentPlane()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 8l9-5 9 5-9 5-9-5Z"/><path d="M3 8v8l9 5 9-5V8"/>
+        </svg>
+        Select Current Plane
       </button>
       <span class="tool-sep"></span>
       <button class="tool-btn" title="Measure" [disabled]="!canMeasure" (click)="startMeasure()">
@@ -721,18 +820,32 @@
     <!-- Mode overlay -->
     <div class="mode-overlay" *ngIf="mode !== 'idle'">
       <span class="mode-pill"
-            [class.placing]="mode === 'placing' || mode === 'wall-from' || mode === 'wall-to' || mode === 'slab-from' || mode === 'slab-to' || mode === 'line-plane' || mode === 'line-from' || mode === 'line-to'"
-            [class.moving]="mode === 'move-from' || mode === 'move-to'"
+            [class.placing]="mode === 'placing' || mode === 'wall-from' || mode === 'wall-to' || mode === 'slab-from' || mode === 'slab-to' || mode === 'line-plane' || mode === 'line-session' || mode === 'line-from' || mode === 'line-to' || mode === 'line-arc-mid' || mode === 'pick-plane' || mode === 'circle-center' || mode === 'circle-radius'"
+            [class.moving]="mode === 'move-from' || mode === 'move-to' || mode === 'copy-seg-from' || mode === 'copy-seg-to'"
             [class.measuring]="mode === 'measure-from' || mode === 'measure-to' || mode === 'match'">
         {{ mode === 'placing' ? 'PLACE'
            : mode === 'match' ? 'MATCH'
            : (mode === 'wall-from' || mode === 'wall-to') ? 'СТЕНА'
            : (mode === 'slab-from' || mode === 'slab-to') ? 'ПЛОЧА'
-           : (mode === 'line-plane' || mode === 'line-from' || mode === 'line-to') ? 'LINE'
+           : (mode === 'circle-center' || mode === 'circle-radius') ? 'CIRCLE'
+           : mode === 'line-arc-mid' ? 'CURVE'
+           : (mode === 'copy-seg-from' || mode === 'copy-seg-to') ? 'COPY SEG'
+           : (mode === 'line-plane' || mode === 'line-session' || mode === 'line-from' || mode === 'line-to') ? (lineSessionEditId !== null ? 'EDIT' : 'LINE')
+           : mode === 'pick-plane' ? 'PLANE'
            : (mode === 'measure-from' || mode === 'measure-to') ? 'MEASURE'
            : (isArray ? 'ARRAY' : (isCopy ? 'COPY' : 'MOVE')) }}
       </span>
       {{ modeLabel }}
+
+      <!-- Next-segment type toggle — shown while clicking points for ANY Line/Curve
+           session (fresh or resumed via Edit): decides whether the NEXT click pair
+           draws a straight segment or a 3-point arc, independent of which tool
+           started the session — this is what lets a gap left by Delete Segment be
+           refilled with either kind. -->
+      <div class="plane-btns" *ngIf="mode === 'line-to'">
+        <button class="plane-btn" [class.active]="!lineNextSegmentCurved" (click)="lineNextSegmentCurved = false">Line</button>
+        <button class="plane-btn" [class.active]="lineNextSegmentCurved" (click)="lineNextSegmentCurved = true">Arc</button>
+      </div>
 
       <!-- Wall dimensions (during a СТЕНА draw) -->
       <div class="wall-dims" *ngIf="mode === 'wall-from' || mode === 'wall-to'">
@@ -751,6 +864,13 @@
         <button class="plane-btn" (click)="quickPickLinePlane('XZ')">XZ</button>
         <button class="plane-btn" (click)="quickPickLinePlane('XY')">XY</button>
         <button class="plane-btn" (click)="quickPickLinePlane('YZ')">YZ</button>
+      </div>
+
+      <!-- Quick-pick planes (during "Select Current Plane"'s pick step) -->
+      <div class="plane-btns" *ngIf="mode === 'pick-plane'">
+        <button class="plane-btn" (click)="quickPickCurrentPlane('XZ')">XZ</button>
+        <button class="plane-btn" (click)="quickPickCurrentPlane('XY')">XY</button>
+        <button class="plane-btn" (click)="quickPickCurrentPlane('YZ')">YZ</button>
       </div>
 
       <!-- Plane selector — during a move (measure auto-picks the camera-facing plane on Shift) -->
@@ -774,7 +894,7 @@
 
     <!-- Distance editor — follows the cursor; type a value + Enter to commit -->
     <div class="move-measure"
-         *ngIf="moveLabel && (mode === 'move-to' || mode === 'wall-to' || mode === 'line-to')"
+         *ngIf="moveLabel && (mode === 'move-to' || mode === 'wall-to' || mode === 'line-to' || mode === 'copy-seg-to')"
          [style.left.px]="moveLabel.x"
          [style.top.px]="moveLabel.y">
       <input #distInput type="number" min="0" step="1"

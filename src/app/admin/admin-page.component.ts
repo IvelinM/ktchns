@@ -26,7 +26,8 @@ import {
 } from './webcad.model';
 import {
   makeMesh, buildWallPath, buildSlabPath, buildLinePath, buildSolidExtrude, buildSolidSweep,
-  planePointToWorld, normalizePlaneDesc, planeBasis, setRenderBevel,
+  planePointToWorld, normalizePlaneDesc, planeBasis, setRenderBevel, circlePoints,
+  filletedPolylineShape,
 } from './webcad-geometry';
 import { FAMILIES } from './webcad-families';
 import { disposeObj, normAnchor, anchorWrap, addEdges, colorObj, setEdgeColor, ghostify } from './webcad-object3d';
@@ -38,6 +39,7 @@ import { parseFbxDataUrl } from './webcad-fbx';
 // lib, and only used for Save/Save as/Open (see the "Save / Load scene" section below).
 declare global {
   interface FileSystemFileHandle {
+    readonly name: string;
     getFile(): Promise<File>;
     createWritable(): Promise<FileSystemWritableFileStream>;
   }
@@ -154,6 +156,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   materialsDialogOpen = false;
   editingMaterialIndex = 0;
 
+  // ── 2D plan/elevation view ──────────────────────────────────────────────────────
+  /** '3D' = the normal perspective CAD view. Any other value is a true flattened 2D
+   *  line drawing (orthographic camera locked to that plane, faces hidden, only the
+   *  existing isEdge wireframe shown) — see setViewPlane. 'current' uses whatever
+   *  Line/SOLID is selected's own construction plane. */
+  viewPlane: MovePlane | '3D' | 'current' = '3D';
+
   // ── Visualisation menu / theme / settings ────────────────────────────────────
   /** Light vs dark UI theme; bound to the host so the SCSS variable overrides apply. */
   @HostBinding('class.light') lightTheme = false;
@@ -187,6 +196,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   // that API, or in browsers that lack it (Firefox/Safari), where "Save" always falls
   // back to "Save as…" (a fresh download) since the page can't get write access otherwise.
   private savedFileHandle: FileSystemFileHandle | null = null;
+  /** The currently tracked file's name, for the sidebar header — null whenever
+   *  `savedFileHandle` is (a brand-new unsaved scene, or opened via the classic
+   *  `<input type=file>` fallback, which never gets write access to overwrite it). A
+   *  getter, not a parallel field, so there's nothing to keep in sync by hand at
+   *  every one of `savedFileHandle`'s own assignment sites. */
+  get openedFileName(): string | null { return this.savedFileHandle?.name ?? null; }
   marqueeRect: { left: number; top: number; width: number; height: number } | null = null;
   // Distance editor shown next to the cursor during a move/copy/array.
   moveLabel: { x: number; y: number } | null = null;
@@ -240,10 +255,88 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   // vertex) sets `closed = true` on that same instance; see `closeLine()`.
   lineExtrudeDepth = 18;       // mm, used when Extrude is clicked on a selected closed Line
   private linePath: THREE.Vector3[] = [];        // committed world vertices of the current polyline
+  // Parallel to linePath (same indices): the world-space arc-mid-point for the segment
+  // STARTING at that index, or null for a straight segment — kept alongside linePath
+  // (not just folded into inst.path's local `arc` once) because addLinePoint rebuilds
+  // `localPath` fresh from linePath on every call, same as it always has for x/z; this
+  // is that same rebuild's source of truth for `arc`, not a one-off side effect.
+  private lineArcMids: (THREE.Vector3 | null)[] = [];
   private lineInstanceId: number | null = null;  // the single instance growing as points are added
   private linePlane: PlaneDesc | null = null;    // committed once the plane-pick step finishes
   private linePlanePreview: PlaneDesc | null = null;  // live candidate while in 'line-plane' mode
   private planeGhost: THREE.Object3D | null = null;   // the translucent plane-pick indicator quad
+  /** True from the single merged "Line"/"Edit" toolbar button's click until Esc (or
+   *  re-clicking that same button) ends the whole session — covers every sub-mode
+   *  ('line-plane', 'line-session', 'line-from', 'line-to', 'line-arc-mid',
+   *  'circle-center', 'circle-radius'). The persistent Line/Circle/Curve/Delete panel
+   *  (the Revit-"Draw"-panel-style UI) shows whenever this is true. Not `private`: the
+   *  template reads it for the panel's `*ngIf` and the toolbar button's active state. */
+  lineSessionActive = false;
+  /** The existing Line instance this session is editing (segment select/delete
+   *  target, AND the instance the panel's Line/Curve tools continue appending to — see
+   *  `seedFromEditTarget`), or `null` for a fresh session with nothing to edit — set
+   *  once by `startEditSession()`, read by `canDeleteSelectedSegments`/
+   *  `deleteSelectedSegments` and by the mode-pill's Line/Edit label. Circle is the one
+   *  exception: it's always a brand-new separate instance even during an Edit session
+   *  (a closed shape has nothing to "continue" into — see `beginDrawCircle`). */
+  lineSessionEditId: number | null = null;
+  /** Segment indices of `lineSessionEditId`'s instance currently toggled on by
+   *  clicking them in the viewport (while `mode === 'line-session'`) — removed
+   *  together by the panel's Delete button (`deleteSelectedSegments`). */
+  private selectedSegmentIndices = new Set<number>();
+  /** The segment index currently under the cursor (while `mode === 'line-session'`),
+   *  or `null` — a transient hover highlight, distinct from `selectedSegmentIndices`. */
+  private hoverSegIndex: number | null = null;
+  /** The point clicked first after the panel's Copy button starts a 2-click
+   *  translate-copy ('copy-seg-from' → 'copy-seg-to') — the point FROM which the
+   *  move is measured; the second click's point minus this one is the vector the
+   *  duplicate segments translate by. `null` outside that flow. */
+  private segmentCopyFrom: THREE.Vector3 | null = null;
+  /** Live preview of the translated duplicate(s) while in 'copy-seg-to' — built fresh
+   *  each mousemove by `updateSegmentCopyGhost`, same "transient, mode-scoped, cleaned
+   *  up by cancelMode" pattern as `ghost`/`planeGhost`. */
+  private segmentCopyGhost: THREE.Object3D | null = null;
+  /** Degrees the panel's Rotate button swings a selected segment by per click, and
+   *  which of its two endpoints stays fixed — both user-adjustable next to the
+   *  button. See `rotateSelectedSegment`. */
+  segmentRotateAngle = 15;
+  segmentRotatePivot: 'start' | 'end' = 'end';
+  /** Panel's Offset button — perpendicular distance (mm), which side, and whether to
+   *  keep the original (new parallel run, like Copy) or move it in place. See
+   *  `offsetSelectedSegment`. */
+  segmentOffsetDistance = 50;
+  segmentOffsetSide: 'left' | 'right' = 'right';
+  segmentOffsetCopy = true;
+  /** Panel's Trim button — optional fillet radius (mm) for the corner the two
+   *  selected segments get trimmed/extended to meet at; 0 (or left blank) is a sharp
+   *  corner. See `trimSelectedSegments`. */
+  segmentTrimRadius = 0;
+  /** Transient per-segment pick+highlight overlay for `lineSessionEditId`'s instance,
+   *  built only while a line session with an edit target is active — see
+   *  `buildSegmentOverlay`'s own doc comment. Cleaned up by `cancelMode`. */
+  private segmentOverlay: THREE.Group | null = null;
+  /** True while the Circle sub-tool (not plain Line) is running — set by startCircle(),
+   *  read by commitLinePlane() to decide 'circle-center' vs 'line-from' next. Not
+   *  `private`: the template reads it directly for the button's active/disabled state
+   *  and the mode-pill label. */
+  isDrawingCircle = false;
+  private circleCenter: THREE.Vector3 | null = null;  // world point, set once 'circle-radius' begins
+  /** True while the Curve sub-tool is running — every segment of THIS session is a
+   *  3-point arc (no mixing within one Curve sketch). Also not `private`, same reason
+   *  as `isDrawingCircle` above. */
+  isDrawingCurve = false;
+  private pendingArcMid: THREE.Vector3 | null = null;   // world point, set once 'line-arc-mid' begins
+  /** "Edit"/append-while-drawing's next-segment toggle — shown whenever `mode ===
+   *  'line-to'` (covers a fresh Curve draw AND a resumed Edit alike, since both use
+   *  that same mode): true means the NEXT click pair draws a 3-point arc regardless of
+   *  which tool started the session, independent of `isDrawingCurve`. This is what
+   *  actually lets a gap left by Delete Segment be refilled with either kind. */
+  lineNextSegmentCurved = false;
+  /** Explicitly picked via "Select Current Plane" — drives the view-plane dropdown's
+   *  'current' option. Falls back to the selected Line/SOLID's own `.plane` when null
+   *  (setViewPlane), so picking one is additive, not a replacement for that. */
+  currentPlane: PlaneDesc | null = null;
+  private pickPlanePreview: PlaneDesc | null = null;  // live candidate while in 'pick-plane' mode
 
   // TAB hover-cycle: highlight the hovered instance (index 0) then each sub-panel
   // under the cursor (1..N, nearest first), advancing on TAB.
@@ -257,7 +350,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   // ── Three.js ───────────────────────────────────────────────────────────────
   private scene!: THREE.Scene;
-  private camera!: THREE.PerspectiveCamera;
+  // Widened from a strict PerspectiveCamera to support the 2D plan/elevation views
+  // (viewPlane) below — the ~48 other reads of `this.camera` in this file only ever
+  // touch base Camera/Object3D members (position/up/lookAt/project, and
+  // THREE.Raycaster.setFromCamera, which already branches on camera type internally),
+  // so only the handful of PerspectiveCamera-only reads (`.fov`, `.aspect`) need an
+  // `instanceof THREE.PerspectiveCamera` guard — see setViewPlane/toggleRender/the
+  // canvas ResizeObserver.
+  private camera!: THREE.PerspectiveCamera | THREE.OrthographicCamera;
+  private perspectiveCamera!: THREE.PerspectiveCamera;   // the one true 3D camera, never disposed
+  private orthoCamera: THREE.OrthographicCamera | null = null;   // lazily built, reused/reconfigured
   private renderer!: THREE.WebGLRenderer;
   private controls!: OrbitControls;
   private animFrameId = 0;
@@ -379,6 +481,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   // Independent of Save/Save as/Open — it just mirrors whatever is currently on screen.
   private boundBeforeUnload!: () => void;
   private autosaveIntervalId = 0;
+  private autosaveDebounceId = 0;   // short debounce after each change — see pushHistory
 
   constructor(private ngZone: NgZone) {}
 
@@ -665,7 +768,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     ['РЕБРО ТАВАН 1 С КАНТ ОТПРЕД', 'ТАВАН'],
     ['РЕБРО ТАВАН 2 С КАНТ ОТПРЕД', 'ТАВАН'],
     ['ДВОЙНА ВРАТИЧКА', 'ВРАТИЧКА'],
+    ['ДВОЙНА ВРАТИЧКА С ВЕРТИКАЛНА ФУГА', 'ВРАТИЧКА'],
     ['ЛЯВА ВРАТИЧКА ШИРИНА', 'ВРАТИЧКА'],
+    ['ФУГА МЕЖДУ ВРАТИЧКИ', 'ВРАТИЧКА'],
     ...Array.from({ length: 10 }, (_, i) => [`С ПОЛИЦА ${i + 1}`, 'ПОЛИЦИ'] as [string, string]),
   ]);
   private groupedCache = new Map<string, { top: ParamDef[]; sections: { title: string; params: ParamDef[] }[] }>();
@@ -722,17 +827,39 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * ЛЯВА ВРАТИЧКА ШИРИНА only matters once ДВОЙНА ВРАТИЧКА is checked (the right leaf
-   * always takes whatever width is left over) — hide its row until then. Every other
-   * param is always shown.
+   * ЛЯВА ВРАТИЧКА ШИРИНА, ДВОЙНА ВРАТИЧКА С ВЕРТИКАЛНА ФУГА and ФУГА МЕЖДУ ВРАТИЧКИ only
+   * matter once ДВОЙНА ВРАТИЧКА is checked (the right/second leaf always takes whatever
+   * space is left over, and there's no second leaf — so no fugue orientation or width —
+   * otherwise) — hide their rows until then. Every other param is always shown.
    */
+  private static readonly DOUBLE_DOOR_ONLY_PARAMS = new Set([
+    'ЛЯВА_ВРАТИЧКА_ШИРИНА', 'ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА', 'ФУГА_МЕЖДУ_ВРАТИЧКИ',
+  ]);
+
   paramRowVisible(p: ParamDef, params: Record<string, number>): boolean {
-    return p.key !== 'ЛЯВА_ВРАТИЧКА_ШИРИНА' || params['ДВОЙНА_ВРАТИЧКА'] === 1;
+    return !AdminPageComponent.DOUBLE_DOOR_ONLY_PARAMS.has(p.key) || params['ДВОЙНА_ВРАТИЧКА'] === 1;
   }
 
   /** Multi-select version: visible only while EVERY selected instance has ДВОЙНА ВРАТИЧКА checked. */
   multiParamRowVisible(p: ParamDef): boolean {
-    return p.key !== 'ЛЯВА_ВРАТИЧКА_ШИРИНА' || this.multiToggleState('ДВОЙНА_ВРАТИЧКА') === 'on';
+    return !AdminPageComponent.DOUBLE_DOOR_ONLY_PARAMS.has(p.key) || this.multiToggleState('ДВОЙНА_ВРАТИЧКА') === 'on';
+  }
+
+  /**
+   * ЛЯВА ВРАТИЧКА ШИРИНА sizes whichever leaf comes first in ДВОЙНА_ВРАТИЧКА's split —
+   * the LEFT leaf when the fugue is vertical (default), the TOP leaf when it's
+   * horizontal (see korpusPanels, webcad-geometry.ts) — relabel the row so it reads as
+   * a height, not a width, once ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА is unchecked.
+   */
+  paramLabel(p: ParamDef, params: Record<string, number>): string {
+    return p.key === 'ЛЯВА_ВРАТИЧКА_ШИРИНА' && params['ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА'] === 0
+      ? 'ГОРНА ВРАТИЧКА ВИСОЧИНА' : p.label;
+  }
+
+  /** Multi-select version: relabels only while EVERY selected instance has the horizontal fugue. */
+  multiParamLabel(p: ParamDef): string {
+    return p.key === 'ЛЯВА_ВРАТИЧКА_ШИРИНА' && this.multiToggleState('ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА') === 'off'
+      ? 'ГОРНА ВРАТИЧКА ВИСОЧИНА' : p.label;
   }
 
   /**
@@ -969,7 +1096,18 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       return buildSlabPath(inst.path, inst.params['ДЕБЕЛИНА'] ?? 40);
     }
     if (inst.familyId === 'line' && inst.path && inst.path.length >= 2 && inst.plane) {
-      return buildLinePath(inst.path, inst.closed ?? false, inst.plane);
+      if (!inst.extraPaths || inst.extraPaths.length === 0) {
+        return buildLinePath(inst.path, inst.closed ?? false, inst.plane);
+      }
+      // "Disjoined" Line (has extra runs from a segment Copy) — render the main path
+      // plus every extra run, all on the same shared plane, grouped as one object so
+      // the whole thing still moves/selects/highlights as a single instance.
+      const group = new THREE.Group();
+      group.add(buildLinePath(inst.path, inst.closed ?? false, inst.plane));
+      for (const run of inst.extraPaths) {
+        if (run.pts.length >= 2) group.add(buildLinePath(run.pts, run.closed, inst.plane));
+      }
+      return group;
     }
     if (inst.familyId === 'solid' && inst.solidOp === 'sweep' &&
         inst.path && inst.path.length >= 3 && inst.pathPoints && inst.pathPoints.length >= 2 && inst.pathPlane) {
@@ -1061,6 +1199,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     } else if (!isLineSketch && !isFbxImport) {
       if (this.renderMode) this.applyRenderMaterials(obj, inst);
       else this.cadColorObj(obj, inst);        // CAD mode: tint faces by assigned material colour
+    }
+    if (this.viewPlane !== '3D') {
+      // A 2D plan/elevation view: hide this object's shaded faces too (see
+      // setMeshFacesVisible/applyViewPlaneVisuals, which handle everything already in
+      // objectMap — this mirrors it for a single freshly-spawned object not yet
+      // registered there).
+      this.setMeshFacesVisible(obj, false);
     }
     this.objectMap.set(inst.id, obj);
     this.scene.add(obj);
@@ -1204,6 +1349,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         plane: i.plane ? { origin: { ...i.plane.origin }, normal: { ...i.plane.normal }, uAxis: { ...i.plane.uAxis } } : undefined,
         pathPlane: i.pathPlane ? { origin: { ...i.pathPlane.origin }, normal: { ...i.pathPlane.normal }, uAxis: { ...i.pathPlane.uAxis } } : undefined,
         pathPoints: i.pathPoints ? i.pathPoints.map(p => ({ ...p })) : undefined,
+        extraPaths: i.extraPaths ? i.extraPaths.map(r => ({ closed: r.closed, pts: r.pts.map(p => ({ ...p })) })) : undefined,
       })),
       nextId: this.nextId, nextSolidNum: this.nextSolidNum,
     };
@@ -1213,6 +1359,21 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.undoStack.push(snap);
     if (this.undoStack.length > this.UNDO_LIMIT) this.undoStack.shift();
     this.pendingSnapshot = null;
+    this.scheduleAutosave();
+  }
+
+  /** Debounced autosave, fired shortly after each change (every `record()` — covers
+   *  both pushHistory's discrete actions and commitPendingEdit's coalesced live edits).
+   *  By the time the timer actually fires, the mutation that triggered it has long since
+   *  completed (this only ever runs the snapshot taken BEFORE a change), so reading
+   *  buildSceneDoc() then correctly captures the resulting, post-change state. Rapid
+   *  successive changes (e.g. dragging a slider) collapse into a single write once
+   *  things go quiet, instead of one write per tick. */
+  private scheduleAutosave() {
+    clearTimeout(this.autosaveDebounceId);
+    this.ngZone.runOutsideAngular(() => {
+      this.autosaveDebounceId = window.setTimeout(() => this.persistAutosave(), 1000);
+    });
   }
 
   /** Record the current state right before a discrete action (place/delete/move/copy). */
@@ -1236,6 +1397,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       plane: i.plane ? { origin: { ...i.plane.origin }, normal: { ...i.plane.normal }, uAxis: { ...i.plane.uAxis } } : undefined,
       pathPlane: i.pathPlane ? { origin: { ...i.pathPlane.origin }, normal: { ...i.pathPlane.normal }, uAxis: { ...i.pathPlane.uAxis } } : undefined,
       pathPoints: i.pathPoints ? i.pathPoints.map(p => ({ ...p })) : undefined,
+      extraPaths: i.extraPaths ? i.extraPaths.map(r => ({ closed: r.closed, pts: r.pts.map(p => ({ ...p })) })) : undefined,
     }));
     this.nextId = snap.nextId;
     this.nextSolidNum = snap.nextSolidNum;
@@ -1274,9 +1436,18 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         directLight: this.directLight,
         bloomStrength: this.bloomStrength,
         floorReflections: this.floorReflections,
+        viewPlane: this.viewPlane,
+        currentPlane: this.currentPlane,
         camera: {
           position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
           target:   { x: tgt.x, y: tgt.y, z: tgt.z },
+          // Perspective zoom is implicit in position↔target distance (already saved
+          // above), but an orthographic 2D view's wheel-zoom scales THIS instead (its
+          // frustum left/right/top/bottom stay fixed — see updateSnapDotScale's own
+          // comment on the exact same distinction) — without it, reopening a saved 2D
+          // view always came back at whatever setViewPlane's fresh "fit everything"
+          // framing is, not wherever you'd actually zoomed to.
+          zoom: cam.zoom,
         },
       },
     };
@@ -1421,7 +1592,19 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         ? pts.map((p: Partial<WallPoint>) => ({
             x: Number(p?.x) || 0, z: Number(p?.z) || 0,
             ...(Number(p?.r) > 0 ? { r: Number(p!.r) } : {}),
+            // Round-trip a curved segment's 3-point arc too — this was missing before
+            // (only x/z/r were kept), so a saved Curve silently flattened back to
+            // straight on reload.
+            ...(p?.arc && typeof p.arc === 'object'
+              ? { arc: { x: Number((p.arc as Partial<{ x: number; z: number }>).x) || 0, z: Number((p.arc as Partial<{ x: number; z: number }>).z) || 0 } }
+              : {}),
           }))
+        : undefined;
+    const normExtraPaths = (runs: unknown): { pts: WallPoint[]; closed: boolean }[] | undefined =>
+      Array.isArray(runs)
+        ? runs
+            .map((r: { pts?: unknown; closed?: unknown }) => ({ pts: normWallPoints(r?.pts) ?? [], closed: Boolean(r?.closed) }))
+            .filter(r => r.pts.length >= 2)
         : undefined;
     // Normalise + validate each instance; coerce missing fields to safe defaults.
     const clean: SceneInstance[] = instances.map((i: Partial<SceneInstance>) => {
@@ -1464,6 +1647,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         solidOp: (i.solidOp === 'sweep' ? 'sweep' : i.solidOp === 'extrude' ? 'extrude' : undefined) as 'extrude' | 'sweep' | undefined,
         pathPlane: i.pathPlane ? normalizePlaneDesc(i.pathPlane) : undefined,
         pathPoints: normWallPoints(i.pathPoints),
+        extraPaths: normExtraPaths(i.extraPaths),
         isVoid: Boolean(i.isVoid) || undefined,
         voidExcludeIds: Array.isArray(i.voidExcludeIds)
           ? i.voidExcludeIds.map(Number).filter(Number.isFinite)
@@ -1487,8 +1671,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   // refresh, an accidental tab close, or a crash doesn't lose in-progress work. Written
   // on a timer and on `beforeunload`; restored once at startup if present.
 
-  /** Serialise the current scene and write it to localStorage; silently no-ops on failure
-   *  (storage full, private-browsing mode, or an unserialisable value). */
+  /**
+   * Serialise the current scene: always to localStorage (the refresh/crash safety net,
+   * independent of any file), and — when the scene was saved to or opened from a real
+   * file via the File System Access API — ALSO to that same file, so "autosave" means
+   * what it sounds like: the file you're actually working on stays current, not just a
+   * hidden fallback copy. Silently no-ops on failure (storage full, private-browsing
+   * mode, an unserialisable value, or a revoked file-write permission — exactly
+   * `saveScene()`'s own recovery: drop the stale handle and keep going with
+   * localStorage only).
+   */
   private persistAutosave() {
     let json: string;
     try {
@@ -1500,6 +1692,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       localStorage.setItem(AUTOSAVE_KEY, json);
     } catch {
       // quota exceeded or storage disabled — nothing we can do, just skip this tick
+    }
+    if (this.savedFileHandle) {
+      this.savedFileHandle.createWritable()
+        .then(w => w.write(json).then(() => w.close()))
+        .catch(() => { this.savedFileHandle = null; });
     }
   }
 
@@ -1569,12 +1766,36 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (typeof view.directLight === 'boolean') this.directLight = view.directLight;
     if (Number.isFinite(view.bloomStrength)) this.bloomStrength = Math.min(1, Math.max(0, Number(view.bloomStrength)));
     if (typeof view.floorReflections === 'boolean') this.floorReflections = view.floorReflections;
+    // Restore currentPlane BEFORE viewPlane — setViewPlane('current') reads it
+    // immediately, and this must run after the scene's own instances are already
+    // spawned (objectMap populated) for its bounding-sphere framing to work, which
+    // every caller of restoreView already guarantees (always called after restoreScene).
+    if (view.currentPlane && typeof view.currentPlane === 'object') {
+      try { this.currentPlane = normalizePlaneDesc(view.currentPlane); } catch { this.currentPlane = null; }
+    }
+    if (typeof view.viewPlane === 'string' && ['3D', 'XZ', 'XY', 'YZ', 'current'].includes(view.viewPlane)) {
+      this.setViewPlane(view.viewPlane as MovePlane | '3D' | 'current');
+    }
+    // Position/target/zoom restore AFTER viewPlane, not before: for any 2D mode,
+    // setViewPlane always (re)builds the orthographic camera's own default framing —
+    // centred on the scene's bounding sphere, not wherever you'd actually panned/
+    // zoomed to — which would otherwise silently overwrite whatever's set here. This
+    // was the exact bug: zoom alone survived a reload (applied after, as a plain
+    // scalar — see below) while position/target didn't (set before, then clobbered
+    // by setViewPlane's own computation). Landing all three here, after viewPlane, on
+    // whichever camera object ends up active, fixes it for 2D and changes nothing for
+    // 3D (setViewPlane('3D') never touches position/target itself anyway).
     const cp = view.camera?.position, ct = view.camera?.target;
     if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y) && Number.isFinite(cp.z)) {
       this.camera.position.set(cp.x, cp.y, cp.z);
     }
     if (ct && Number.isFinite(ct.x) && Number.isFinite(ct.y) && Number.isFinite(ct.z)) {
       this.controls.target.set(ct.x, ct.y, ct.z);
+    }
+    const cz = view.camera?.zoom;
+    if (Number.isFinite(cz) && cz > 0) {
+      this.camera.zoom = Number(cz);
+      this.camera.updateProjectionMatrix();
     }
     this.controls.update();
   }
@@ -2374,17 +2595,39 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   // ── Line tool (arbitrary-plane sketch → Extrude) ────────────────────────────
 
-  /** Available whenever idle (no selection needed). */
+  /** Available whenever idle (no selection needed) — drives the merged toolbar
+   *  button's enabled state when nothing editable is selected. */
   get canLine(): boolean { return this.mode === 'idle'; }
 
-  /** Start the Line tool: first pick a construction plane, then draw on it. */
-  startLine() {
+  /** The merged "Line"/"Edit" toolbar button shows "Edit" exactly when there's an
+   *  eligible Line selected to edit — see `canEditLine`. */
+  get lineButtonLabel(): 'Line' | 'Edit' { return this.canEditLine ? 'Edit' : 'Line'; }
+
+  /** The merged toolbar button's single click handler: cancel an active session,
+   *  otherwise start one — editing the current selection if there is one, else fresh
+   *  (plane-pick first). */
+  onLineEditButtonClick() {
+    if (this.lineSessionActive) { this.cancelMode(); return; }
+    if (this.canEditLine) this.startEditSession(); else this.startNewLineSession();
+  }
+
+  /** Start a brand-new Line/Circle/Curve session: pick a construction plane first,
+   *  then land in `'line-session'` (the persistent Draw-panel idle state — see
+   *  `commitLinePlane`) where Line/Circle/Curve can be picked explicitly. */
+  startNewLineSession() {
     this.cancelMode();
     this.removeWallHandles();
+    this.lineSessionActive = true;
+    this.lineSessionEditId = null;
     this.linePath = [];
+    this.lineArcMids = [];
     this.lineInstanceId = null;
     this.linePlane = null;
     this.linePlanePreview = null;
+    this.isDrawingCircle = false;
+    this.isDrawingCurve = false;
+    this.selectedSegmentIndices.clear();
+    this.hoverSegIndex = null;
     this.mode = 'line-plane';
     this.modeLabel = 'Hover a surface to pick its plane (or pick XZ/XY/YZ) — click to confirm';
     // Deliberately NOT disabling OrbitControls here (unlike wall/slab/measure): an
@@ -2392,6 +2635,122 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     // placing points, and it's conflict-free — OrbitControls only owns right-drag
     // (orbit) and middle-drag (pan); left-click stays reserved for this app's own
     // click handling (`controls.mouseButtons.LEFT = null`, set up in ngAfterViewInit).
+  }
+
+  /** Start an Edit session on the selected Line: reuse its own plane (skip the
+   *  plane-pick step entirely) and drop straight into `'line-session'` idle — NOT into
+   *  "click the next point" the way the old `editLine()` immediately did. From there
+   *  the panel's Line/Curve tools CONTINUE this same instance from its last vertex
+   *  once explicitly picked (`seedFromEditTarget`) — picking the tool is now a
+   *  deliberate choice instead of something that happens automatically — Circle is the
+   *  one exception, always a fresh separate instance. The instance's own segments can
+   *  also be clicked (building `segmentOverlay`) to select-then-Delete them. */
+  startEditSession() {
+    const inst = this.selectedInstance;
+    if (!inst || inst.familyId !== 'line' || !inst.plane || !inst.path) return;
+    this.cancelMode();
+    this.removeWallHandles();
+    this.lineSessionActive = true;
+    this.lineSessionEditId = inst.id;
+    this.linePlane = { origin: { ...inst.plane.origin }, normal: { ...inst.plane.normal }, uAxis: { ...inst.plane.uAxis } };
+    this.linePath = [];
+    this.lineArcMids = [];
+    this.lineInstanceId = null;
+    this.isDrawingCircle = false;
+    this.isDrawingCurve = false;
+    this.selectedSegmentIndices.clear();
+    this.hoverSegIndex = null;
+    this.buildSegmentOverlay(inst);
+    this.mode = 'line-session';
+    this.modeLabel = 'Pick Line/Circle/Curve to draw, click segments to select, Delete to remove them — Esc to finish';
+  }
+
+  /** When editing an existing Line (`lineSessionEditId` set), seed `linePath`/
+   *  `lineArcMids`/`lineInstanceId` from its already-saved plane+path (the exact same
+   *  trick the old `editLine()` used, via `planePointToWorld` — the inverse of
+   *  `worldToLineLocal`), so the panel's Line/Curve tools CONTINUE that same instance
+   *  from its last vertex instead of starting a disconnected new one — `addLinePoint`'s
+   *  existing "lineInstanceId !== null → update the existing instance" branch picks up
+   *  from there with zero other changes. Returns `false` (nothing seeded) when there's
+   *  no edit target, so the caller starts a brand-new shape instead. */
+  private seedFromEditTarget(): boolean {
+    const inst = this.lineSessionEditId !== null ? this.instances.find(i => i.id === this.lineSessionEditId) : null;
+    if (!inst || !inst.path || !inst.plane) return false;
+    this.linePath = inst.path.map(p => planePointToWorld(this.linePlane!, p));
+    // Seed existing arcs too — addLinePoint rebuilds `path` fresh from linePath AND
+    // lineArcMids on every call, so without this the first new point would silently
+    // flatten every already-curved segment back to straight.
+    this.lineArcMids = inst.path.map(p => p.arc ? planePointToWorld(this.linePlane!, p.arc) : null);
+    this.lineInstanceId = inst.id;
+    return true;
+  }
+
+  /** Flip a resumed edit's seeded `linePath`/`lineArcMids` so the NEXT point attaches
+   *  to what was the path's FIRST vertex instead of its last — used by the 'line-from'
+   *  click handler when that first post-edit click lands back on that other open end.
+   *  `arc` describes the curve from vertex i TOWARD i+1, so reversing the vertex order
+   *  also shifts which slot each arc lives in: the arc for original segment i (i.e.
+   *  `lineArcMids[i]`, i = 0..n-2) becomes the arc for reversed segment (n-2-i) — the
+   *  same physical curve, just now read in the opposite direction, which needs no
+   *  change to the arc-mid point itself (a 3-point arc is direction-agnostic). */
+  private reverseLinePathAndArcs() {
+    const n = this.linePath.length;
+    const newArcMids: (THREE.Vector3 | null)[] = new Array(n).fill(null);
+    for (let i = 0; i < n - 1; i++) newArcMids[n - 2 - i] = this.lineArcMids[i];
+    this.linePath.reverse();
+    this.lineArcMids = newArcMids;
+  }
+
+  /** The panel's "Line" tool — only live while `'line-session'` idle (plane already
+   *  known, whether from a fresh plane-pick or from the instance being edited). When
+   *  editing, seeds the edited instance (`seedFromEditTarget`) but STILL goes to
+   *  `'line-from'` — click anywhere on the plane for the new point, unconstrained
+   *  (no snapping onto the last vertex required); `addLinePoint` appends it onto the
+   *  already-seeded path either way. Deliberately NOT `'line-to'`: that mode's
+   *  mousemove draws a ghost already dangling from the last vertex to the cursor
+   *  before any click happens at all, which read as the next point being assumed
+   *  rather than chosen. `'line-from'` shows no such ghost until the first click. */
+  beginDrawLine() {
+    if (this.mode !== 'line-session') return;
+    this.isDrawingCircle = false;
+    this.isDrawingCurve = false;
+    const editing = this.seedFromEditTarget();
+    if (!editing) { this.linePath = []; this.lineArcMids = []; this.lineInstanceId = null; }
+    this.mode = 'line-from';
+    this.modeLabel = editing
+      ? 'Click the next point anywhere — Esc to finish'
+      : 'Click the line start point — Esc to finish';
+  }
+
+  /** The panel's "Circle" tool — click centre, click again to set the radius. A circle
+   *  is a fresh closed shape, not a continuation of an existing path, so — unlike
+   *  Line/Curve — it's always a brand-new separate instance even during an Edit
+   *  session. */
+  beginDrawCircle() {
+    if (this.mode !== 'line-session') return;
+    this.circleCenter = null;
+    this.isDrawingCircle = true;
+    this.isDrawingCurve = false;
+    this.mode = 'circle-center';
+    this.modeLabel = 'Click the circle centre — Esc to cancel';
+  }
+
+  /** The panel's "Curve" tool — click points exactly like Line except every segment
+   *  from the second point on is a 3-point arc (click the arc's mid-point, click its
+   *  end — see `addLinePoint`) — no mixing within one Curve shape. Continues the
+   *  edited instance exactly like `beginDrawLine`, when there is one — see its own
+   *  doc comment for why this goes to `'line-from'`, not `'line-to'`. */
+  beginDrawCurve() {
+    if (this.mode !== 'line-session') return;
+    this.pendingArcMid = null;
+    this.isDrawingCircle = false;
+    this.isDrawingCurve = true;
+    const editing = this.seedFromEditTarget();
+    if (!editing) { this.linePath = []; this.lineArcMids = []; this.lineInstanceId = null; }
+    this.mode = 'line-from';
+    this.modeLabel = editing
+      ? 'Click the next point anywhere — Esc to finish'
+      : 'Click the curve start point — Esc to finish';
   }
 
   /** Deterministic in-plane "u" axis for any normal — `cross(worldUp, normal)`,
@@ -2469,24 +2828,127 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.scene.add(this.planeGhost);
   }
 
-  /** Commit the candidate plane and move on to drawing. */
+  /** Commit the candidate plane for a fresh session and drop into `'line-session'`
+   *  idle — the Draw panel's Line/Circle/Curve tools (`beginDrawLine`/`beginDrawCircle`/
+   *  `beginDrawCurve`) take it from there; nothing starts drawing automatically. */
   private commitLinePlane(plane: PlaneDesc) {
     if (this.planeGhost) { this.scene.remove(this.planeGhost); disposeObj(this.planeGhost); this.planeGhost = null; }
     this.linePlane = plane;
     this.linePath = [];
+    this.lineArcMids = [];
     this.lineInstanceId = null;
     this.ngZone.run(() => {
-      this.mode = 'line-from';
-      this.modeLabel = 'Click the line start point — Esc to finish';
+      this.mode = 'line-session';
+      this.modeLabel = 'Pick Line, Circle or Curve to draw — Esc to finish';
     });
+  }
+
+  /** Circle centre clicked — re-base `linePlane`'s origin onto it (same trick
+   *  `addLinePoint` uses for a polyline's first vertex), so `worldToLineLocal` and
+   *  `buildLinePath` need zero changes to work for a circle too. */
+  private commitCircleCenter(pos: THREE.Vector3) {
+    this.linePlane = { ...this.linePlane!, origin: { x: pos.x, y: pos.y, z: pos.z } };
+    this.circleCenter = pos.clone();
+    this.mode = 'circle-radius';
+    this.modeLabel = 'Click to set the radius — Esc to cancel';
+  }
+
+  /** After a Line/Circle/Curve shape finishes (closeLine, commitCircle) — select it
+   *  and drop back into the session's own idle state ('line-session'), rebuilding
+   *  `lineSessionEditId`'s overlay (unaffected by drawing a separate new shape), so the
+   *  Draw panel stays open ready for another shape or a segment delete, instead of
+   *  exiting the whole session the way finishing used to. */
+  private returnToLineSession(finishedId: number | null) {
+    this.linePath = [];
+    this.lineArcMids = [];
+    this.lineInstanceId = null;
+    this.isDrawingCircle = false;
+    this.isDrawingCurve = false;
+    this.circleCenter = null;
+    this.pendingArcMid = null;
+    this.segmentCopyFrom = null;
+    if (this.segmentCopyGhost) { this.scene.remove(this.segmentCopyGhost); disposeObj(this.segmentCopyGhost); this.segmentCopyGhost = null; }
+    if (finishedId !== null) this.applySelect([finishedId]);
+    this.mode = 'line-session';
+    this.modeLabel = 'Pick Line, Circle or Curve to draw, click segments to select, Delete to remove them — Esc to finish';
+    const editInst = this.lineSessionEditId !== null ? this.instances.find(i => i.id === this.lineSessionEditId) : null;
+    if (editInst) this.buildSegmentOverlay(editInst);
+  }
+
+  /** Live translucent preview of the circle while dragging out its radius. */
+  private updateCircleGhost(to: THREE.Vector3) {
+    if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
+    const { x, z } = this.worldToLineLocal(to);
+    const radius = Math.hypot(x, z);
+    if (radius < 1) return;
+    const obj = buildLinePath(circlePoints(radius), true, this.linePlane!);
+    const { origin } = this.linePlane!;
+    obj.position.set(origin.x, origin.y, origin.z);   // buildLinePath builds relative to LOCAL (0,0,0) — see updateLineGhost's own doc comment
+    ghostify(obj);
+    this.ghost = obj;
+    this.scene.add(this.ghost);
+  }
+
+  /** Radius point clicked — commit a new closed 'line' instance (a circle is just a
+   *  Line with many vertices and no fillets), identical in every other respect to one
+   *  drawn point-by-point: Extrude/Mirror/the schedule all already work on it. */
+  private commitCircle(to: THREE.Vector3) {
+    if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
+    const { x, z } = this.worldToLineLocal(to);
+    const radius = Math.hypot(x, z);
+    if (radius < 1) { this.ngZone.run(() => this.returnToLineSession(null)); return; }   // degenerate click — nothing worth creating
+    this.pushHistory();
+    const { origin } = this.linePlane!;
+    const id = this.nextId++;
+    const inst: SceneInstance = {
+      id, familyId: 'line', label: `Line ${id}`,
+      params: {}, material: '', path: circlePoints(radius), plane: { ...this.linePlane! }, closed: true,
+      x: origin.x, y: origin.y, z: origin.z, rotY: 0, anchor: { ...CENTRE_ANCHOR },
+    };
+    this.instances.push(inst);
+    this.spawnObject(inst);
+    this.ngZone.run(() => this.returnToLineSession(id));
+  }
+
+  /** "Select Current Plane": the same hover-a-surface/quick-pick-axis plane picker the
+   *  Line tool uses (pickFacePlane/updatePlaneGhost/quickPickPlane), but it just stores
+   *  the result as `currentPlane` instead of starting a line — for the view-plane
+   *  dropdown's 'current' option. */
+  startPickCurrentPlane() {
+    this.cancelMode();
+    this.mode = 'pick-plane';
+    this.modeLabel = 'Hover a surface to pick its plane (or pick XZ/XY/YZ) — click to confirm';
+  }
+
+  /** Toolbar quick-pick (during 'pick-plane'): skip the hover/raycast step entirely. */
+  quickPickCurrentPlane(axis: 'XZ' | 'XY' | 'YZ') {
+    if (this.mode !== 'pick-plane') return;
+    this.commitCurrentPlane(this.quickPickPlane(axis, this.controls.target.clone()));
+  }
+
+  private commitCurrentPlane(plane: PlaneDesc) {
+    if (this.planeGhost) { this.scene.remove(this.planeGhost); disposeObj(this.planeGhost); this.planeGhost = null; }
+    this.currentPlane = plane;
+    this.ngZone.run(() => { this.mode = 'idle'; this.modeLabel = ''; });
+    if (this.viewPlane === 'current') this.setViewPlane('current');   // live-refresh if already showing it
   }
 
   /** World point → local (u, v) pair on `this.linePlane`, rounded to mm (matches the
    *  convention every other path-based family stores `path` in). */
   private worldToLineLocal(w: THREE.Vector3): WallPoint {
-    const { origin, uAxis, vAxis } = planeBasis(this.linePlane!);
-    const delta = w.clone().sub(origin);
-    return { x: Math.round(delta.dot(uAxis)), z: Math.round(delta.dot(vAxis)) };
+    return this.worldToPlaneLocal(this.linePlane!, w);
+  }
+
+  /** Local path points for everything drawn so far PLUS one more point `extra` —
+   *  shared by every Line/Curve live-preview ghost, so a ghost shows already-curved
+   *  earlier segments curved too, not just the final straight/arc preview segment. */
+  private previewLocalPath(extra: THREE.Vector3): WallPoint[] {
+    return [...this.linePath, extra].map((v, i) => {
+      const wp = this.worldToLineLocal(v);
+      const mid = this.lineArcMids[i];   // undefined for `extra` itself — fine, it has none yet
+      if (mid) wp.arc = this.worldToLineLocal(mid);
+      return wp;
+    });
   }
 
   /** Live translucent preview of the in-progress segment `from`→`to`. */
@@ -2494,7 +2956,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
     const dist = from.distanceTo(to);
     if (dist < 1) { this.ngZone.run(() => { this.moveLabel = null; }); return; }
-    const pts: WallPoint[] = [...this.linePath, to].map(p => this.worldToLineLocal(p));
+    const pts = this.previewLocalPath(to);
     const obj = buildLinePath(pts, false, this.linePlane!);
     // buildLinePath builds relative to LOCAL (0,0,0) — planeBasisMatrix is deliberately
     // rotation-only (see its own doc comment), so the caller must still place the
@@ -2521,6 +2983,28 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     });
   }
 
+  /** Live translucent preview of the in-progress ARC segment `from`→`to` through
+   *  `mid` (the already-clicked arc mid-point) — same shape as `updateLineGhost`, just
+   *  setting the pending arc on the last committed point before appending `to`. */
+  private updateCurveGhost(from: THREE.Vector3, mid: THREE.Vector3, to: THREE.Vector3) {
+    if (this.ghost) { this.scene.remove(this.ghost); disposeObj(this.ghost); this.ghost = null; }
+    if (from.distanceTo(to) < 1) return;
+    const pts = this.linePath.map((v, i) => {
+      const wp = this.worldToLineLocal(v);
+      const m = this.lineArcMids[i];
+      if (m) wp.arc = this.worldToLineLocal(m);
+      return wp;
+    });
+    pts[pts.length - 1].arc = this.worldToLineLocal(mid);
+    pts.push(this.worldToLineLocal(to));
+    const obj = buildLinePath(pts, false, this.linePlane!);
+    const { origin } = this.linePlane!;
+    obj.position.set(origin.x, origin.y, origin.z);
+    ghostify(obj);
+    this.ghost = obj;
+    this.scene.add(this.ghost);
+  }
+
   /** True when the cursor is within ~12 px of the polyline's first vertex (close gesture). */
   private nearFirstLineVertex(e: MouseEvent): boolean {
     if (this.linePath.length < 3) return false;
@@ -2533,16 +3017,30 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Append a vertex to the current polyline and create/grow the single Line instance
    *  (wall's live-growing pattern — a Line can stay open indefinitely). The FIRST
    *  vertex re-bases `linePlane`'s origin onto itself, so the stored path keeps the
-   *  usual "first vertex is local (0,0)" convention every other family already uses. */
-  private addLinePoint(p: THREE.Vector3) {
+   *  usual "first vertex is local (0,0)" convention every other family already uses.
+   *  `arcMidWorld`, when given (the Curve tool, or Edit's arc toggle — see
+   *  `lineNextSegmentCurved`), marks the segment just completed as a 3-point arc
+   *  through it — recorded on `lineArcMids` (parallel to `linePath`, see its own field
+   *  comment) at the PREVIOUS point's slot, since `arc` belongs to the point that
+   *  starts a segment, not the one that ends it. */
+  private addLinePoint(p: THREE.Vector3, arcMidWorld?: THREE.Vector3) {
     if (this.linePath.length === 0) {
       this.linePlane = { ...this.linePlane!, origin: { x: p.x, y: p.y, z: p.z } };
     }
     this.linePath.push(p.clone());
+    this.lineArcMids.push(null);   // this new point's own OUTGOING arc is unknown yet
+    if (arcMidWorld && this.lineArcMids.length >= 2) {
+      this.lineArcMids[this.lineArcMids.length - 2] = arcMidWorld.clone();
+    }
     this.distanceLocked = false; this.distanceStr = ''; this.distFocusPending = true;
     if (this.linePath.length < 2) return;
     this.pushHistory();
-    const localPath: WallPoint[] = this.linePath.map(v => this.worldToLineLocal(v));
+    const localPath: WallPoint[] = this.linePath.map((v, i) => {
+      const wp = this.worldToLineLocal(v);
+      const mid = this.lineArcMids[i];
+      if (mid) wp.arc = this.worldToLineLocal(mid);
+      return wp;
+    });
     const p0 = this.linePath[0];
     if (this.lineInstanceId === null) {
       const id = this.nextId++;
@@ -2557,6 +3055,11 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     } else {
       const inst = this.instances.find(i => i.id === this.lineInstanceId);
       if (!inst) return;
+      // Fires both while still placing points of the SAME in-progress shape, AND when
+      // beginDrawLine()/beginDrawCurve() just seeded lineInstanceId from an Edit
+      // session's target (seedFromEditTarget) — either way this is "keep growing the
+      // live instance `lineInstanceId` already points at", same as it always has been.
+      inst.closed = false;
       inst.path = localPath;
       const old = this.objectMap.get(inst.id);
       if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
@@ -2564,9 +3067,10 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** Close the loop (click back on the first vertex): mark the live instance closed
-   *  and return to idle — a third pattern distinct from wall's "just stop" and slab's
-   *  "finalize on close," since a Line is already a live instance that can ALSO close. */
+  /** Close the loop (click back on the first vertex): mark the live instance closed,
+   *  then drop back into the session's own idle state (`returnToLineSession`) — a
+   *  third pattern distinct from wall's "just stop" and slab's "finalize on close,"
+   *  since a Line is already a live instance that can ALSO close. */
   private closeLine() {
     // The live "next segment" ghost preview (updateLineGhost, driven by every line-to
     // mousemove) is never removed by anything else on THIS exit path — cancelMode()
@@ -2583,29 +3087,800 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
       this.spawnObject(inst);
     }
-    this.linePath = []; this.linePlane = null;
-    const id = this.lineInstanceId; this.lineInstanceId = null;
+    const id = this.lineInstanceId;
     this.clearCopyGhosts();
     this.isMarqueeing = false; this.marqueeRect = null;
     this.hideMoveMeasure();
-    this.mode = 'idle'; this.modeLabel = '';
     this.controls.enabled = true;
-    if (id !== null) this.applySelect([id]);
+    this.returnToLineSession(id);
   }
 
-  /** Which vertices of a Line can take a fillet radius: every vertex if `closed`
-   *  (the closing vertex has two incident edges too), else only the interior ones —
-   *  the two open endpoints have just one incident edge each, nothing to round. */
-  isFilletableVertex(i: number): boolean {
+  /** Whether the current selection is an existing Line eligible for an Edit session
+   *  (`startEditSession`) — also decides the merged toolbar button's "Edit" vs "Line"
+   *  label. Requires enough points to actually have a segment to draw more from or
+   *  delete. */
+  get canEditLine(): boolean {
     const inst = this.selectedInstance;
-    if (!inst?.path) return false;
-    return !!inst.closed || (i > 0 && i < inst.path.length - 1);
+    return this.mode === 'idle' && !!inst && inst.familyId === 'line' && !!inst.path &&
+      inst.path.length >= (inst.closed ? 3 : 2);
+  }
+
+  /** Encode which run (0 = `path`, 1..N = `extraPaths[0..N-1]`) and which segment
+   *  index within it into one number, so `selectedSegmentIndices`/`hoverSegIndex`
+   *  (and every overlay mesh's `userData`) can keep using a flat `number` key instead
+   *  of a `{run, seg}` pair everywhere. 100000 segments per run is far beyond anything
+   *  this tool could ever produce. */
+  private static encodeSegKey(run: number, seg: number): number { return run * 100000 + seg; }
+  private static decodeSegKey(key: number): { run: number; seg: number } {
+    return { run: Math.floor(key / 100000), seg: key % 100000 };
+  }
+
+  /** Every run of `inst` as `(points, closed)` pairs, run 0 first (`path` itself),
+   *  then each of `extraPaths` in order — the single list every segment-overlay/
+   *  delete/copy/rotate operation walks instead of each special-casing `path` vs
+   *  `extraPaths` separately. */
+  private instanceRuns(inst: SceneInstance): { pts: WallPoint[]; closed: boolean }[] {
+    return [{ pts: inst.path!, closed: !!inst.closed }, ...(inst.extraPaths ?? [])];
+  }
+
+  /** Build the transient per-segment pick+highlight overlay for `inst` — NOT a change
+   *  to the Line's own everyday rendering (`buildLinePath`/`spawnObject`), a session-
+   *  scoped addition cleaned up by `cancelMode` like `planeGhost`/`copyGhosts` already
+   *  are. Covers EVERY run (`instanceRuns` — the main path plus any extra runs from a
+   *  segment Copy), so a "disjoined" Line's extra runs are just as selectable/
+   *  deletable as its main path. Each segment gets its own invisible pick-tube (tagged
+   *  `segKey`, same mesh-collection raycast idiom as every other pick target in this
+   *  file) and its own highlight `LineSegments` (shown hovered and/or selected — see
+   *  `refreshSegmentHighlight`) — sampled independently via `filletedPolylineShape` on
+   *  just that one edge's 2 points, so a curved segment's overlay is correctly curved
+   *  too, not approximated as straight.
+   */
+  /** World-space length corresponding to 1 on-screen (CSS) pixel, measured at
+   *  `atPoint` for a perspective camera (depth-dependent) or from the current ortho
+   *  zoom for an orthographic one — same formula `updateSnapDotScale` already uses
+   *  for the snap indicator, factored out here so `buildSegmentOverlay` can size its
+   *  pick tubes to a constant ON-SCREEN radius instead of a fixed WORLD radius. A
+   *  fixed world radius (what this replaced) shrinks to a sub-pixel, effectively
+   *  unclickable sliver once the view is zoomed out far enough — confirmed live: a
+   *  10mm world radius landed well under 2 screen pixels wide at a typical "whole
+   *  line in view" zoom level, exactly dense enough to miss with an ordinary click. */
+  private worldUnitsPerPixel(atPoint: THREE.Vector3): number {
+    const h = this.canvasRef.nativeElement.clientHeight || 600;
+    const worldHeightVisible = this.camera instanceof THREE.PerspectiveCamera
+      ? 2 * this.camera.position.distanceTo(atPoint) * Math.tan((this.camera.fov * Math.PI / 180) / 2)
+      : (this.camera.top - this.camera.bottom) / this.camera.zoom;
+    return worldHeightVisible / h;
+  }
+
+  private buildSegmentOverlay(inst: SceneInstance) {
+    if (this.segmentOverlay) { this.scene.remove(this.segmentOverlay); disposeObj(this.segmentOverlay); this.segmentOverlay = null; }
+    const plane = inst.plane!;
+    const origin = new THREE.Vector3(plane.origin.x, plane.origin.y, plane.origin.z);
+    const pickRadius = 10 * this.worldUnitsPerPixel(origin);   // ~10 on-screen px, any zoom level
+    const group = new THREE.Group();
+    this.instanceRuns(inst).forEach((run, runIdx) => {
+      const path = run.pts, n = path.length;
+      const segCount = run.closed ? n : n - 1;
+      for (let i = 0; i < segCount; i++) {
+        const a = path[i], b = path[(i + 1) % n];
+        const shape = filletedPolylineShape([a, b], false);
+        const samples2D = shape.getPoints(16);
+        const worldPts = samples2D.map(p2 => planePointToWorld(plane, { x: p2.x, z: p2.y }));
+        if (worldPts.length < 2) continue;
+        const segKey = AdminPageComponent.encodeSegKey(runIdx, i);
+
+        const curve = new THREE.CurvePath<THREE.Vector3>();
+        for (let k = 0; k < worldPts.length - 1; k++) curve.add(new THREE.LineCurve3(worldPts[k], worldPts[k + 1]));
+        const pickGeo = new THREE.TubeGeometry(curve, worldPts.length - 1, pickRadius, 6, false);
+        const pickMesh = new THREE.Mesh(pickGeo, new THREE.MeshBasicMaterial({ visible: false }));
+        pickMesh.userData['segKey'] = segKey;
+        group.add(pickMesh);
+
+        const linePositions: number[] = [];
+        for (let k = 0; k < worldPts.length - 1; k++) {
+          const pa = worldPts[k], pb = worldPts[k + 1];
+          linePositions.push(pa.x, pa.y, pa.z, pb.x, pb.y, pb.z);
+        }
+        const lineGeo = new THREE.BufferGeometry();
+        lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+        // depthTest: false — this highlight runs along the EXACT same points as the
+        // Line's own real wireframe underneath it (both zero-width LineSegments at
+        // the same world position), so without it the two z-fight pixel-by-pixel
+        // instead of the highlight cleanly winning: confirmed live, a selected
+        // segment rendered as a muddled, inconsistent colour instead of clean orange.
+        // Same fix this app's own wall vertex/edge handles already use for the same
+        // "overlay that must always show through the real geometry" reason.
+        const lineSegs = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color: EDGE_HOVER, depthTest: false }));
+        lineSegs.visible = false;   // only shown hovered/selected — see refreshSegmentHighlight
+        lineSegs.renderOrder = 999;   // draw after (on top of) the real line within the same pass
+        lineSegs.userData['isEdge'] = true;
+        lineSegs.userData['segKey'] = segKey;
+        group.add(lineSegs);
+      }
+    });
+    this.segmentOverlay = group;
+    this.scene.add(group);
+  }
+
+  /** Raycast the cursor against the overlay's pick tubes; returns the hit segment's
+   *  encoded `segKey`, or null. */
+  private pickOverlaySegment(e: MouseEvent): number | null {
+    if (!this.segmentOverlay) return null;
+    this.raycaster.setFromCamera(this.ndc(e), this.camera);
+    const meshes: THREE.Mesh[] = [];
+    this.segmentOverlay.traverse(c => { if (c instanceof THREE.Mesh) meshes.push(c); });
+    const hit = this.raycaster.intersectObjects(meshes, false)[0];
+    return hit ? (hit.object.userData['segKey'] as number) : null;
+  }
+
+  /** Show each segment's highlight line while it's hovered and/or toggled into
+   *  `selectedSegmentIndices` — both use the same EDGE_HOVER (orange) colour; a
+   *  selected segment just stays lit without needing to be hovered too. */
+  private refreshSegmentHighlight() {
+    if (!this.segmentOverlay) return;
+    this.segmentOverlay.traverse(c => {
+      if (c instanceof THREE.LineSegments && c.userData['isEdge']) {
+        const key = c.userData['segKey'] as number;
+        const selected = this.selectedSegmentIndices.has(key);
+        const hovered = this.hoverSegIndex === key;
+        c.visible = selected || hovered;
+        (c.material as THREE.LineBasicMaterial).color.set(EDGE_HOVER);   // selected or hovered — both orange
+      }
+    });
+  }
+
+  /** Delete button in the Draw panel — enabled once ≥1 segment of
+   *  `lineSessionEditId`'s instance is toggle-selected. */
+  get canDeleteSelectedSegments(): boolean {
+    return this.mode === 'line-session' && this.lineSessionEditId !== null && this.selectedSegmentIndices.size > 0;
+  }
+
+  /** Cut `pts` (one run, `closed` or not) wherever an index in `removed` falls,
+   *  producing zero or more surviving contiguous point-runs (each ≥2 points; a lone
+   *  leftover vertex has nothing to draw and is dropped). A closed run is first
+   *  rotated open at one removed edge (arbitrarily but deterministically chosen) so
+   *  the same walk works for both. */
+  private removeEdgesFromRun(pts: WallPoint[], closed: boolean, removed: Set<number>): WallPoint[][] {
+    const n = pts.length;
+    const walk = (verts: WallPoint[], removedIdx: Set<number>): WallPoint[][] => {
+      const runs: WallPoint[][] = [];
+      let current: WallPoint[] = [verts[0]];
+      for (let i = 0; i < verts.length - 1; i++) {
+        if (removedIdx.has(i)) { runs.push(current); current = [verts[i + 1]]; }
+        else current.push(verts[i + 1]);
+      }
+      runs.push(current);
+      return runs.filter(r => r.length >= 2);
+    };
+    if (!closed) return walk(pts, removed);
+    const r0 = Math.min(...removed);   // the seam to rotate open at
+    const rotated = [...pts.slice(r0 + 1), ...pts.slice(0, r0 + 1)];
+    const remap = (e: number) => (e - (r0 + 1) + n) % n;
+    const removedRotated = new Set<number>();
+    removed.forEach(e => { if (e !== r0) removedRotated.add(remap(e)); });
+    return walk(rotated, removedRotated);
+  }
+
+  /**
+   * Remove every toggle-selected segment of `lineSessionEditId`'s instance in one go,
+   * across however many runs (`instanceRuns` — the main `path` plus any `extraPaths`)
+   * have a selected segment. Each touched run is cut independently
+   * (`removeEdgesFromRun`), producing zero or more surviving point-runs for THAT run:
+   * - 0 survive: that run disappears entirely (the whole instance, if it was the main
+   *   path and there's no extra run left to promote in its place).
+   * - 1 survives: updated in place (main `path`, or that one `extraPaths` entry).
+   * - ≥2 survive: that run splits into that many new, independent top-level Line
+   *   instances (same plane/material) — a fragment has no reason to stay bundled.
+   * Untouched runs are left completely alone. If the main path itself disappears but
+   * an untouched extra run still exists, the first extra run is promoted to be the
+   * new main `path` (a Line always needs one); if nothing survives anywhere, the
+   * whole instance is removed.
+   */
+  deleteSelectedSegments() {
+    if (!this.canDeleteSelectedSegments) return;
+    const instId = this.lineSessionEditId!;
+    const inst = this.instances.find(x => x.id === instId);
+    if (!inst || !inst.path) return;
+    this.pushHistory();
+
+    const byRun = new Map<number, Set<number>>();
+    this.selectedSegmentIndices.forEach(key => {
+      const { run, seg } = AdminPageComponent.decodeSegKey(key);
+      (byRun.get(run) ?? byRun.set(run, new Set()).get(run)!).add(seg);
+    });
+    this.selectedSegmentIndices.clear();
+    this.hoverSegIndex = null;
+
+    const clonePlane = (): PlaneDesc => ({
+      origin: { ...inst.plane!.origin }, normal: { ...inst.plane!.normal }, uAxis: { ...inst.plane!.uAxis },
+    });
+    const { x, y, z } = inst.plane!.origin;
+    const spawnPieces = (runs: WallPoint[][]): number[] => runs.map(pts => {
+      const id = this.nextId++;
+      const piece: SceneInstance = {
+        id, familyId: 'line', label: `Line ${id}`, params: {}, material: inst.material,
+        path: pts.map(p => ({ ...p })), plane: clonePlane(), closed: false, x, y, z, rotY: 0, anchor: { ...CENTRE_ANCHOR },
+      };
+      this.instances.push(piece);
+      this.spawnObject(piece);
+      return id;
+    });
+
+    const newTopLevelIds: number[] = [];
+    let mainGone = false;
+
+    // Extra runs touched by the selection — process by HIGHEST index first so
+    // splicing one out doesn't shift the indices of another still to be processed.
+    const touchedExtraIdx = [...byRun.keys()].filter(r => r >= 1).map(r => r - 1).sort((a, b) => b - a);
+    for (const extraIdx of touchedExtraIdx) {
+      const removed = byRun.get(extraIdx + 1)!;
+      const run = inst.extraPaths![extraIdx];
+      const survivors = this.removeEdgesFromRun(run.pts, run.closed, removed);
+      inst.extraPaths!.splice(extraIdx, 1);   // always remove the old entry; re-add below if it survives as one piece
+      if (survivors.length === 1) {
+        inst.extraPaths!.splice(extraIdx, 0, { pts: survivors[0].map(p => ({ ...p })), closed: false });
+      } else if (survivors.length >= 2) {
+        newTopLevelIds.push(...spawnPieces(survivors));
+      }
+    }
+    if (inst.extraPaths && inst.extraPaths.length === 0) inst.extraPaths = undefined;
+
+    // The main path, if the selection touched it.
+    if (byRun.has(0)) {
+      const survivors = this.removeEdgesFromRun(inst.path, !!inst.closed, byRun.get(0)!);
+      if (survivors.length === 0) {
+        if (inst.extraPaths && inst.extraPaths.length > 0) {
+          // Promote the first remaining extra run to be the new main path — a Line
+          // instance always needs one.
+          const promoted = inst.extraPaths.shift()!;
+          inst.path = promoted.pts;
+          inst.closed = promoted.closed;
+        } else {
+          mainGone = true;
+        }
+      } else if (survivors.length === 1) {
+        inst.path = survivors[0].map(p => ({ ...p }));
+        inst.closed = false;
+      } else {
+        newTopLevelIds.push(...spawnPieces(survivors));
+        // The main path fragmented into independent pieces — any UNTOUCHED extra runs
+        // this instance still has would otherwise be silently lost; carry them onto
+        // the first fragment rather than drop them (an edge case, but not a data-loss
+        // one).
+        if (inst.extraPaths && inst.extraPaths.length > 0 && newTopLevelIds.length > 0) {
+          const carryTo = this.instances.find(i => i.id === newTopLevelIds[0]);
+          if (carryTo) carryTo.extraPaths = inst.extraPaths;
+        }
+        mainGone = true;
+      }
+    }
+
+    if (mainGone) {
+      const old = this.objectMap.get(inst.id);
+      if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
+      this.instances = this.instances.filter(x => x.id !== inst.id);
+      if (this.segmentOverlay) { this.scene.remove(this.segmentOverlay); disposeObj(this.segmentOverlay); this.segmentOverlay = null; }
+      this.lineSessionEditId = null;
+      this.applySelect(newTopLevelIds.length > 0 ? newTopLevelIds : []);
+      return;
+    }
+    this.respawnLineInstance(inst);
+    if (newTopLevelIds.length > 0) {
+      this.buildSegmentOverlay(inst);
+      this.applySelect([inst.id, ...newTopLevelIds]);
+    } else {
+      this.buildSegmentOverlay(inst);
+    }
+  }
+
+  /** Respawn a Line instance in place after its `path` changed (segment delete). */
+  private respawnLineInstance(inst: SceneInstance) {
+    const old = this.objectMap.get(inst.id);
+    if (old) { this.scene.remove(old); disposeObj(old); this.objectMap.delete(inst.id); }
+    this.spawnObject(inst);
+  }
+
+  /** Panel's Copy button — enabled with ≥1 segment selected, same as Delete. */
+  get canCopySelectedSegments(): boolean {
+    return this.mode === 'line-session' && this.lineSessionEditId !== null && this.selectedSegmentIndices.size > 0;
+  }
+
+  /** Every selected segment's own two (or three, with an arc) points, read once up
+   *  front so the live ghost and the final commit both translate the SAME original
+   *  points regardless of how many times the mouse has moved since. */
+  private segmentCopySourcePts(inst: SceneInstance): WallPoint[][] {
+    const out: WallPoint[][] = [];
+    this.selectedSegmentIndices.forEach(key => {
+      const { run, seg } = AdminPageComponent.decodeSegKey(key);
+      const runArr = run === 0 ? inst.path! : inst.extraPaths?.[run - 1]?.pts;
+      if (!runArr) return;
+      const n = runArr.length;
+      out.push([runArr[seg], runArr[(seg + 1) % n]]);
+    });
+    return out;
+  }
+
+  /** Start the panel's Copy tool: a 2-click translate-copy, exactly like the whole-
+   *  instance Move/Copy tool's own `moveFrom`/`moveTo` gesture — click the point to
+   *  measure the move FROM, then click the destination; that vector (or a typed
+   *  distance along it, via the same `distanceStr` input Move already uses) is how
+   *  far and which direction the duplicate(s) translate from the original segment(s)'
+   *  own place. Not a typed offset: the whole point is picking the vector by clicking,
+   *  same as every other move in this app. */
+  startCopySegments() {
+    if (!this.canCopySelectedSegments) return;
+    this.mode = 'copy-seg-from';
+    this.modeLabel = "Click the point to measure the copy's move from — Esc to cancel";
+  }
+
+  /** Live preview of the translated duplicate(s) while in 'copy-seg-to'. */
+  private updateSegmentCopyGhost(toPos: THREE.Vector3) {
+    if (this.segmentCopyGhost) { this.scene.remove(this.segmentCopyGhost); disposeObj(this.segmentCopyGhost); this.segmentCopyGhost = null; }
+    const inst = this.instances.find(x => x.id === this.lineSessionEditId);
+    if (!inst) return;
+    const from = this.worldToLineLocal(this.segmentCopyFrom!);
+    const to = this.worldToLineLocal(toPos);
+    const dx = to.x - from.x, dz = to.z - from.z;
+    if (Math.hypot(dx, dz) < 1) return;
+    const group = new THREE.Group();
+    const { origin } = this.linePlane!;
+    for (const pts of this.segmentCopySourcePts(inst)) {
+      const translated = pts.map(p => ({
+        x: p.x + dx, z: p.z + dz,
+        ...(p.arc ? { arc: { x: p.arc.x + dx, z: p.arc.z + dz } } : {}),
+      }));
+      const obj = buildLinePath(translated, false, this.linePlane!);
+      obj.position.set(origin.x, origin.y, origin.z);
+      group.add(obj);
+    }
+    ghostify(group);
+    this.segmentCopyGhost = group;
+    this.scene.add(group);
+  }
+
+  /** Second click (or typed distance) of the Copy tool: translate every selected
+   *  segment's own points by `toPos - segmentCopyFrom` and add each as its own new
+   *  run in `inst.extraPaths` — "a parallel duplicate directly next to the original,
+   *  still part of the same Line instance" (the user's own framing), using the
+   *  multi-run support `extraPaths` adds. A curved segment's own arc point
+   *  translates the same way, so the copy stays curved too. */
+  private finishSegmentCopy(toPos: THREE.Vector3) {
+    if (this.segmentCopyGhost) { this.scene.remove(this.segmentCopyGhost); disposeObj(this.segmentCopyGhost); this.segmentCopyGhost = null; }
+    const inst = this.instances.find(x => x.id === this.lineSessionEditId);
+    const from = this.segmentCopyFrom;
+    this.segmentCopyFrom = null;
+    if (!inst || !from) { this.returnToLineSession(null); return; }
+    const fromLocal = this.worldToLineLocal(from);
+    const toLocal = this.worldToLineLocal(toPos);
+    const dx = toLocal.x - fromLocal.x, dz = toLocal.z - fromLocal.z;
+    if (Math.hypot(dx, dz) < 1) { this.returnToLineSession(null); return; }   // degenerate — nothing worth creating
+    const newRuns = this.segmentCopySourcePts(inst).map(pts => ({
+      closed: false,
+      pts: pts.map(p => ({
+        x: Math.round(p.x + dx), z: Math.round(p.z + dz),
+        ...(p.arc ? { arc: { x: Math.round(p.arc.x + dx), z: Math.round(p.arc.z + dz) } } : {}),
+      })),
+    }));
+    this.pushHistory();
+    inst.extraPaths = [...(inst.extraPaths ?? []), ...newRuns];
+    this.selectedSegmentIndices.clear();
+    this.hoverSegIndex = null;
+    this.respawnLineInstance(inst);
+    this.returnToLineSession(null);
+  }
+
+  /** Panel's Rotate button — needs exactly ONE selected segment (rotating several at
+   *  once around independent pivots has no single clear meaning). */
+  get canRotateSelectedSegment(): boolean {
+    return this.mode === 'line-session' && this.lineSessionEditId !== null && this.selectedSegmentIndices.size === 1;
+  }
+
+  /** Swing the selected segment's free endpoint around its pivot endpoint
+   *  (`segmentRotatePivot`) by `segmentRotateAngle` degrees, in-plane — each click
+   *  applies another increment, same "typed value, click to apply" pattern the rest
+   *  of the app already uses (no new drag-handling needed). If the pivot/free
+   *  endpoint is SHARED with an adjacent segment of the same connected run (true for
+   *  any segment that isn't its own standalone 2-point run), that joint moves with
+   *  it — the same "grab a vertex, the chain follows" semantics editing a wall/slab
+   *  vertex already has. Any arc touching the moved endpoint is dropped (flattened to
+   *  straight) rather than left stale — recomputing it correctly isn't worth it here. */
+  rotateSelectedSegment() {
+    if (!this.canRotateSelectedSegment) return;
+    const inst = this.instances.find(x => x.id === this.lineSessionEditId);
+    if (!inst || !inst.path) return;
+    const key = [...this.selectedSegmentIndices][0];
+    const { run, seg } = AdminPageComponent.decodeSegKey(key);
+    const runArr = run === 0 ? inst.path : inst.extraPaths?.[run - 1]?.pts;
+    if (!runArr) return;
+    const n = runArr.length;
+    const iA = seg, iB = (seg + 1) % n;
+    const pivotIdx = this.segmentRotatePivot === 'start' ? iA : iB;
+    const freeIdx = this.segmentRotatePivot === 'start' ? iB : iA;
+    const pivot = runArr[pivotIdx], free = runArr[freeIdx];
+    this.pushHistory();
+    const rad = (this.segmentRotateAngle * Math.PI) / 180;
+    const dx = free.x - pivot.x, dz = free.z - pivot.z;
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+    free.x = Math.round(pivot.x + dx * cos - dz * sin);
+    free.z = Math.round(pivot.z + dx * sin + dz * cos);
+    delete free.arc;        // free's own outgoing curvature (if any) no longer matches its new position
+    runArr[iA].arc = undefined;   // this edge's own curvature (if any) no longer matches either endpoint
+    this.respawnLineInstance(inst);
+    this.buildSegmentOverlay(inst);
+  }
+
+  /** `run`'s own point array (0 = `path`, 1..N = `extraPaths[0..N-1]`), or `null` if
+   *  that run doesn't exist — the same lookup `rotateSelectedSegment`/
+   *  `copySelectedSegments` already repeat inline, factored out for the newer
+   *  Offset/Trim tools below. */
+  private runArrFor(inst: SceneInstance, run: number): WallPoint[] | null {
+    return run === 0 ? inst.path! : inst.extraPaths?.[run - 1]?.pts ?? null;
+  }
+
+  /** Panel's Offset button — any number of selected segments (≥1), same reasoning as
+   *  Copy/Delete/Trim's own multi-select support. */
+  get canOffsetSelectedSegments(): boolean {
+    return this.mode === 'line-session' && this.lineSessionEditId !== null && this.selectedSegmentIndices.size > 0;
+  }
+
+  /**
+   * Shift every selected segment sideways by `segmentOffsetDistance` mm,
+   * perpendicular to it, toward `segmentOffsetSide` — classic CAD Offset (a precise
+   * perpendicular distance, unlike Copy's free 2-click vector). `segmentOffsetCopy`
+   * picks which of Offset's two usual behaviours:
+   * - Checked: keeps the originals and adds each selected segment's own shifted
+   *   copy as a SEPARATE new `extraPaths` run — same "one independent duplicate per
+   *   segment" convention `copySelectedSegments` already uses for a multi-select,
+   *   just with each vector computed from the typed distance+side instead of two
+   *   clicks, so there's nothing to "connect" between them.
+   * - Unchecked: moves the real vertices. A vertex touched by exactly ONE selected
+   *   segment just translates by that segment's own offset vector (same as a lone
+   *   selection). A vertex SHARED between two ADJACENT selected segments instead
+   *   moves to where their two OFFSET lines actually intersect — the correct
+   *   mitred corner a connected polyline offset needs, not a naive average of two
+   *   different translations (computed from the ORIGINAL geometry throughout, in
+   *   one pass, so segments don't see each other's already-shifted positions).
+   *   Any arc touching a moved vertex is dropped as stale, same reasoning
+   *   `rotateSelectedSegment` already documents.
+   * Segments from different runs are handled independently — there's no
+   * "connection" between separate runs to mitre.
+   */
+  offsetSelectedSegments() {
+    if (!this.canOffsetSelectedSegments) return;
+    const inst = this.instances.find(x => x.id === this.lineSessionEditId);
+    if (!inst || !inst.path) return;
+
+    const byRun = new Map<number, Set<number>>();
+    this.selectedSegmentIndices.forEach(key => {
+      const { run, seg } = AdminPageComponent.decodeSegKey(key);
+      (byRun.get(run) ?? byRun.set(run, new Set()).get(run)!).add(seg);
+    });
+
+    this.pushHistory();
+    const newExtraRuns: { pts: WallPoint[]; closed: boolean }[] = [];
+
+    byRun.forEach((segs, run) => {
+      const runArr = this.runArrFor(inst, run);
+      if (!runArr) return;
+      const n = runArr.length;
+      const closed = run === 0 && !!inst.closed;
+
+      // Pass 1: each selected segment's own offset LINE, from the untouched
+      // original geometry — nothing gets written to `runArr` yet.
+      const segOffset = new Map<number, { iA: number; iB: number; oa: { x: number; z: number }; ob: { x: number; z: number } }>();
+      segs.forEach(seg => {
+        const iA = seg, iB = (seg + 1) % n;
+        const a = runArr[iA], b = runArr[iB];
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const len = Math.hypot(dx, dz);
+        if (len < 1e-6) return;
+        let px = -dz / len, pz = dx / len;   // unit perpendicular, 'right' side
+        if (this.segmentOffsetSide === 'left') { px = -px; pz = -pz; }
+        const ox = px * this.segmentOffsetDistance, oz = pz * this.segmentOffsetDistance;
+        segOffset.set(seg, { iA, iB, oa: { x: a.x + ox, z: a.z + oz }, ob: { x: b.x + ox, z: b.z + oz } });
+      });
+      if (segOffset.size === 0) return;
+
+      if (this.segmentOffsetCopy) {
+        segOffset.forEach(({ oa, ob }, seg) => {
+          const orig = runArr[seg];   // seg === the stored iA by construction
+          const a2: WallPoint = { x: Math.round(oa.x), z: Math.round(oa.z) };
+          const b2: WallPoint = { x: Math.round(ob.x), z: Math.round(ob.z) };
+          if (orig.arc) a2.arc = { x: Math.round(orig.arc.x + (oa.x - orig.x)), z: Math.round(orig.arc.z + (oa.z - orig.z)) };
+          newExtraRuns.push({ closed: false, pts: [a2, b2] });
+        });
+        return;
+      }
+
+      // Move mode. Which selected segment(s) touch each vertex.
+      const touchers = new Map<number, number[]>();
+      segOffset.forEach((off, seg) => {
+        (touchers.get(off.iA) ?? touchers.set(off.iA, []).get(off.iA)!).push(seg);
+        (touchers.get(off.iB) ?? touchers.set(off.iB, []).get(off.iB)!).push(seg);
+      });
+
+      const newPos = new Map<number, { x: number; z: number }>();
+      touchers.forEach((segList, v) => {
+        if (segList.length === 1) {
+          const off = segOffset.get(segList[0])!;
+          newPos.set(v, v === off.iA ? off.oa : off.ob);
+        } else {
+          const off1 = segOffset.get(segList[0])!, off2 = segOffset.get(segList[1])!;
+          const inter = this.lineLineIntersection(
+            { x: off1.oa.x, z: off1.oa.z }, { x: off1.ob.x, z: off1.ob.z },
+            { x: off2.oa.x, z: off2.oa.z }, { x: off2.ob.x, z: off2.ob.z },
+          );
+          newPos.set(v, inter ?? (v === off1.iA ? off1.oa : off1.ob));   // parallel fallback
+        }
+      });
+
+      newPos.forEach((p, v) => { runArr[v] = { x: Math.round(p.x), z: Math.round(p.z) }; });
+      // Any arc into/out of a moved vertex, from an UNTOUCHED neighbour, is now stale.
+      touchers.forEach((_segList, v) => {
+        delete runArr[v].arc;
+        if (closed || v > 0) {
+          const prev = (v - 1 + n) % n;
+          if (!touchers.has(prev)) runArr[prev].arc = undefined;
+        }
+      });
+    });
+
+    if (newExtraRuns.length > 0) inst.extraPaths = [...(inst.extraPaths ?? []), ...newExtraRuns];
+    this.selectedSegmentIndices.clear();
+    this.hoverSegIndex = null;
+    this.respawnLineInstance(inst);
+    this.buildSegmentOverlay(inst);
+  }
+
+  /** Standard 2D line–line intersection (treating each pair of points as an INFINITE
+   *  line, not just the segment between them — Trim needs where they'd meet even when
+   *  the actual segments fall short of or past it) — `null` if parallel/coincident. */
+  private lineLineIntersection(p1: WallPoint, p2: WallPoint, p3: WallPoint, p4: WallPoint): { x: number; z: number } | null {
+    const denom = (p1.x - p2.x) * (p3.z - p4.z) - (p1.z - p2.z) * (p3.x - p4.x);
+    if (Math.abs(denom) < 1e-9) return null;
+    const a = p1.x * p2.z - p1.z * p2.x;
+    const b = p3.x * p4.z - p3.z * p4.x;
+    return {
+      x: (a * (p3.x - p4.x) - (p1.x - p2.x) * b) / denom,
+      z: (a * (p3.z - p4.z) - (p1.z - p2.z) * b) / denom,
+    };
+  }
+
+  /** Panel's Trim button — needs exactly TWO selected segments (any two: adjacent,
+   *  from different runs, even ones that don't currently touch). */
+  get canTrimSelectedSegments(): boolean {
+    return this.mode === 'line-session' && this.lineSessionEditId !== null && this.selectedSegmentIndices.size === 2;
+  }
+
+  /** Auto-fill the Trim radius input with the CURRENT fillet radius at the two
+   *  selected segments' shared corner, whenever the selection reaches exactly two —
+   *  if they're already adjacent (share a vertex) and that vertex already has a
+   *  radius (from a previous Trim, or the sidebar's own per-vertex corner field),
+   *  you see and can tweak the real value instead of it always showing 0 as if
+   *  there were never a fillet there. Leaves the field alone otherwise (0, 1 or 3+
+   *  selected, or two non-adjacent segments) — Trim with a radius has no effect on
+   *  a non-adjacent pair anyway (see `trimSelectedSegments`'s own doc comment). */
+  private syncTrimRadiusFromSelection() {
+    if (this.lineSessionEditId === null || this.selectedSegmentIndices.size !== 2) return;
+    const inst = this.instances.find(x => x.id === this.lineSessionEditId);
+    if (!inst || !inst.path) return;
+    const [key1, key2] = [...this.selectedSegmentIndices];
+    const d1 = AdminPageComponent.decodeSegKey(key1), d2 = AdminPageComponent.decodeSegKey(key2);
+    if (d1.run !== d2.run) { this.segmentTrimRadius = 0; return; }
+    const arr = this.runArrFor(inst, d1.run);
+    if (!arr) { this.segmentTrimRadius = 0; return; }
+    const n = arr.length;
+    const iA1 = d1.seg, iB1 = (d1.seg + 1) % n;
+    const iA2 = d2.seg, iB2 = (d2.seg + 1) % n;
+    const shared = [iA1, iB1].find(i => i === iA2 || i === iB2);   // the vertex they already share, if any
+    if (shared !== undefined) { this.segmentTrimRadius = arr[shared].r ?? 0; return; }
+    // Not an EXACT shared vertex — check whether they're separated by nothing but a
+    // degenerate zero-length run (same detection `trimSelectedSegments` itself
+    // uses), so the shown radius matches what clicking Trim would actually read.
+    const p = this.lineLineIntersection(arr[iA1], arr[iB1], arr[iA2], arr[iB2]);
+    if (!p) { this.segmentTrimRadius = 0; return; }
+    const distTo = (pt: WallPoint) => Math.hypot(pt.x - p.x, pt.z - p.z);
+    const near1 = distTo(arr[iA1]) <= distTo(arr[iB1]) ? iA1 : iB1;
+    const near2 = distTo(arr[iA2]) <= distTo(arr[iB2]) ? iA2 : iB2;
+    const lo = Math.min(near1, near2), hi = Math.max(near1, near2);
+    this.segmentTrimRadius = this.isDegenerateRun(arr, lo, hi) ? (arr[lo].r ?? arr[hi].r ?? 0) : 0;
+  }
+
+  /** Whether every point from `lo` to `hi` (inclusive) in `arr` sits at the same
+   *  spot — i.e. a degenerate, zero-length run (typically leftover debris from an
+   *  earlier edit), not real geometry. Shared by `syncTrimRadiusFromSelection` and
+   *  `trimSelectedSegments` so both treat "separated only by a duplicate point" the
+   *  same way. */
+  private isDegenerateRun(arr: WallPoint[], lo: number, hi: number): boolean {
+    const ref = arr[lo];
+    for (let k = lo; k <= hi; k++) if (Math.hypot(arr[k].x - ref.x, arr[k].z - ref.z) > 0.5) return false;
+    return true;
+  }
+
+  /**
+   * Trim (or extend) the two selected segments to meet at the intersection of the
+   * lines they lie on, optionally rounding that corner with `segmentTrimRadius`:
+   * - Already adjacent (share a vertex): the intersection IS that vertex (for two
+   *   non-collinear segments), so this reduces to just setting its fillet radius —
+   *   the exact same `WallPoint.r` the sidebar's per-vertex corner field already
+   *   reads, just reachable from here too.
+   * - Same run, separated only by a degenerate (zero-length) run of duplicate
+   *   points — typically leftover debris from an earlier edit, not a real gap —
+   *   collapses that whole run into the one real vertex and rounds IT, same as the
+   *   already-adjacent case (see `isDegenerateRun`): two segments that visually meet
+   *   at a clean corner shouldn't silently refuse a radius just because the data has
+   *   a stray duplicate point sitting between them.
+   * - Same run, genuinely not adjacent: each segment's nearer endpoint moves to the
+   *   intersection independently. No single vertex exists there for the existing
+   *   fillet renderer to round, so a typed radius has no effect in this case.
+   * - Different runs: each nearer endpoint moves to the intersection, and the two
+   *   runs are then MERGED into one continuous run joined there (`mergeRunsAt`) —
+   *   same "concatenate at a shared point" trick `uniteLines` already uses — so a
+   *   "disjoined" Line can become whole again via Trim, not just stay separate.
+   */
+  trimSelectedSegments() {
+    if (!this.canTrimSelectedSegments) return;
+    const inst = this.instances.find(x => x.id === this.lineSessionEditId);
+    if (!inst || !inst.path) return;
+    const [key1, key2] = [...this.selectedSegmentIndices];
+    const d1 = AdminPageComponent.decodeSegKey(key1), d2 = AdminPageComponent.decodeSegKey(key2);
+    const arr1 = this.runArrFor(inst, d1.run), arr2 = this.runArrFor(inst, d2.run);
+    if (!arr1 || !arr2) return;
+    const n1 = arr1.length, n2 = arr2.length;
+    const iA1 = d1.seg, iB1 = (d1.seg + 1) % n1;
+    const iA2 = d2.seg, iB2 = (d2.seg + 1) % n2;
+    const p = this.lineLineIntersection(arr1[iA1], arr1[iB1], arr2[iA2], arr2[iB2]);
+    if (!p) return;   // parallel — nothing sensible to trim/extend to
+
+    const distTo = (pt: WallPoint) => Math.hypot(pt.x - p.x, pt.z - p.z);
+    const near1 = distTo(arr1[iA1]) <= distTo(arr1[iB1]) ? iA1 : iB1;
+    const near2 = distTo(arr2[iA2]) <= distTo(arr2[iB2]) ? iA2 : iB2;
+    const radius = this.segmentTrimRadius > 0 ? this.segmentTrimRadius : undefined;
+
+    // `near1`/`near2` separated by nothing but a degenerate zero-length run —
+    // typically leftover debris from an earlier non-adjacent Trim/segment-delete
+    // (see `splitByRemovedEdges`'s own "a lone leftover vertex... is dropped" case,
+    // which can still leave a duplicate point behind when its NEIGHBOUR survives) —
+    // are still the SAME corner (`isDegenerateRun`): two segments that visually meet
+    // at a clean corner shouldn't refuse a radius just because of a stray duplicate
+    // point, the way two genuinely different, non-adjacent segments correctly do.
+
+    this.pushHistory();
+    if (d1.run === d2.run && near1 === near2) {
+      arr1[near1] = { x: Math.round(p.x), z: Math.round(p.z), ...(radius ? { r: radius } : {}) };
+    } else if (d1.run === d2.run && this.isDegenerateRun(arr1, Math.min(near1, near2), Math.max(near1, near2))) {
+      arr1.splice(Math.min(near1, near2), Math.abs(near1 - near2) + 1,
+        { x: Math.round(p.x), z: Math.round(p.z), ...(radius ? { r: radius } : {}) });
+    } else if (d1.run === d2.run) {
+      arr1[near1] = { x: Math.round(p.x), z: Math.round(p.z) };
+      arr1[near2] = { x: Math.round(p.x), z: Math.round(p.z) };
+    } else {
+      arr1[near1] = { x: Math.round(p.x), z: Math.round(p.z) };
+      arr2[near2] = { x: Math.round(p.x), z: Math.round(p.z) };
+      this.mergeRunsAt(inst, d1.run, near1, d2.run, near2, radius);
+    }
+    this.selectedSegmentIndices.clear();
+    this.hoverSegIndex = null;
+    this.respawnLineInstance(inst);
+    this.buildSegmentOverlay(inst);
+  }
+
+  /** Join two DIFFERENT runs of `inst` into one continuous run, concatenated at the
+   *  point they now share (`near1`/`near2`, already moved to the same coordinates by
+   *  the caller) — refuses if either run is the (possibly) CLOSED main path, since a
+   *  closed loop has no free end to join from. Mirrors `uniteLines`'s own "reverse
+   *  whichever side needs it so the shared point lands adjacent, then drop the
+   *  duplicate" trick, just within one instance's own runs instead of across two
+   *  instances. */
+  private mergeRunsAt(inst: SceneInstance, run1: number, near1: number, run2: number, near2: number, radius?: number) {
+    const isClosed = (r: number) => r === 0 && !!inst.closed;
+    if (isClosed(run1) || isClosed(run2)) return;
+    let arr1 = this.runArrFor(inst, run1)!, arr2 = this.runArrFor(inst, run2)!;
+    if (near1 !== arr1.length - 1) arr1 = [...arr1].reverse();
+    if (near2 !== 0) arr2 = [...arr2].reverse();
+    const merged = [...arr1, ...arr2.slice(1)];
+    if (radius) merged[arr1.length - 1] = { ...merged[arr1.length - 1], r: radius };
+
+    if (run1 === 0 || run2 === 0) {
+      const otherRun = run1 === 0 ? run2 : run1;
+      inst.path = merged;
+      inst.extraPaths!.splice(otherRun - 1, 1);
+    } else {
+      const lowRun = Math.min(run1, run2), highRun = Math.max(run1, run2);
+      inst.extraPaths![lowRun - 1] = { closed: false, pts: merged };
+      inst.extraPaths!.splice(highRun - 1, 1);
+    }
+    if (inst.extraPaths && inst.extraPaths.length === 0) inst.extraPaths = undefined;
+  }
+
+  /** World point → local (u, v) pair on an EXPLICIT plane (not necessarily
+   *  `this.linePlane`) — the generalisation `uniteLines` needs to re-express one
+   *  Line's points in another's plane; `worldToLineLocal` delegates to this for the
+   *  everyday in-progress-drawing case. */
+  private worldToPlaneLocal(plane: PlaneDesc, w: THREE.Vector3): WallPoint {
+    const { origin, uAxis, vAxis } = planeBasis(plane);
+    const delta = w.clone().sub(origin);
+    return { x: Math.round(delta.dot(uAxis)), z: Math.round(delta.dot(vAxis)) };
+  }
+
+  /** "Unite" — gated on exactly two selected Line instances. */
+  get canUniteLines(): boolean {
+    if (this.mode !== 'idle' || this.selectedIds.size !== 2) return false;
+    const insts = [...this.selectedIds].map(id => this.instances.find(i => i.id === id));
+    return insts.every(i => !!i && i.familyId === 'line' && !!i.path && i.path.length >= 2 && !!i.plane);
+  }
+
+  /**
+   * Merge the two selected Lines into one instance: the first keeps its own id and
+   * plane; every one of the second's points (main path + any `extraPaths`) is
+   * re-expressed in the first's plane (`worldToPlaneLocal`), so the two can have been
+   * drawn on different (even differently oriented) planes, as long as they're meant
+   * to end up on the kept one's.
+   *
+   * If both main paths are OPEN and a pair of their endpoints coincide (within
+   * `JOIN_TOLERANCE`, in the kept plane's own local frame — a rigid re-expression,
+   * so local-frame distance already equals world distance), they're welded into one
+   * continuous path (the shared point kept once, the second line's run reversed
+   * first if needed so the matching ends land adjacent). Otherwise — closed, or no
+   * matching endpoints — the second's main path becomes just another `extraPaths`
+   * run, same mechanism `copySelectedSegments` already uses. Either way, every
+   * `extraPaths` run EITHER line already had carries over onto the merged instance.
+   */
+  uniteLines() {
+    if (!this.canUniteLines) return;
+    const [idA, idB] = [...this.selectedIds];
+    const a = this.instances.find(i => i.id === idA)!;
+    const b = this.instances.find(i => i.id === idB)!;
+    this.pushHistory();
+
+    const JOIN_TOLERANCE = 5;   // mm
+    const toALocal = (p: WallPoint): WallPoint => {
+      const world = planePointToWorld(b.plane!, p);
+      const local = this.worldToPlaneLocal(a.plane!, world);
+      if (p.arc) local.arc = this.worldToPlaneLocal(a.plane!, planePointToWorld(b.plane!, p.arc));
+      return local;
+    };
+    const bPathLocal = b.path!.map(toALocal);
+    const bExtrasLocal = (b.extraPaths ?? []).map(r => ({ closed: r.closed, pts: r.pts.map(toALocal) }));
+
+    const dist2D = (p: WallPoint, q: WallPoint) => Math.hypot(p.x - q.x, p.z - q.z);
+    let joined: WallPoint[] | null = null;
+    if (!a.closed && !b.closed) {
+      const aStart = a.path![0], aEnd = a.path![a.path!.length - 1];
+      const bStart = bPathLocal[0], bEnd = bPathLocal[bPathLocal.length - 1];
+      if (dist2D(aEnd, bStart) < JOIN_TOLERANCE) joined = [...a.path!, ...bPathLocal.slice(1)];
+      else if (dist2D(aEnd, bEnd) < JOIN_TOLERANCE) joined = [...a.path!, ...[...bPathLocal].reverse().slice(1)];
+      else if (dist2D(aStart, bStart) < JOIN_TOLERANCE) joined = [...[...a.path!].reverse(), ...bPathLocal.slice(1)];
+      else if (dist2D(aStart, bEnd) < JOIN_TOLERANCE) joined = [...[...a.path!].reverse(), ...[...bPathLocal].reverse().slice(1)];
+    }
+
+    if (joined) {
+      a.path = joined;
+      a.extraPaths = [...(a.extraPaths ?? []), ...bExtrasLocal];
+    } else {
+      a.extraPaths = [...(a.extraPaths ?? []), { closed: !!b.closed, pts: bPathLocal }, ...bExtrasLocal];
+    }
+    if (a.extraPaths.length === 0) a.extraPaths = undefined;
+
+    const oldB = this.objectMap.get(b.id);
+    if (oldB) { this.scene.remove(oldB); disposeObj(oldB); this.objectMap.delete(b.id); }
+    this.instances = this.instances.filter(x => x.id !== b.id);
+    this.respawnLineInstance(a);
+    this.applySelect([a.id]);
   }
 
   /** "Extrude" — a separate toolbar tool, gated on exactly one selected CLOSED Line
-   *  (not tied to drawing: a Line is free to stay a Line forever). */
+   *  (not tied to drawing: a Line is free to stay a Line forever). Allowed from
+   *  `'line-session'` too (the Draw panel's own idle state — no shape mid-draw), not
+   *  just strict `'idle'`: after Copy/Rotate-ing a segment you're still inside that
+   *  session until you explicitly leave it, and Extrude shouldn't need that extra Esc
+   *  first if the result is already a plain closed Line. Refuses a "disjoined" Line
+   *  (one with extra runs from a segment Copy — `extraPaths`) regardless of mode:
+   *  there's no single sensible solid for disconnected pieces. */
   get canExtrudeLine(): boolean {
-    return this.mode === 'idle' && !!this.selectedInstance && this.selectedInstance.familyId === 'line' && !!this.selectedInstance.closed;
+    const inst = this.selectedInstance;
+    return (this.mode === 'idle' || this.mode === 'line-session') && !!inst && inst.familyId === 'line' && !!inst.closed &&
+      (!inst.extraPaths || inst.extraPaths.length === 0);
   }
 
   /** "Extrude" on a selected, closed Line → a new independent `SOLID N` instance. */
@@ -2631,6 +3906,20 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     src.hidden = true;
     const srcObj = this.objectMap.get(src.id);
     if (srcObj) srcObj.visible = false;
+    // Extrude ends the Line's useful life as a Line (hidden, replaced by the new
+    // solid) — if Extrude was clicked from inside its own Edit session (now allowed —
+    // see canExtrudeLine), that session has nothing left worth editing, so leave it
+    // entirely rather than keep the Draw panel open over a hidden line.
+    if (this.mode === 'line-session') {
+      if (this.segmentOverlay) { this.scene.remove(this.segmentOverlay); disposeObj(this.segmentOverlay); this.segmentOverlay = null; }
+      this.lineSessionActive = false;
+      this.lineSessionEditId = null;
+      this.selectedSegmentIndices.clear();
+      this.hoverSegIndex = null;
+      this.linePlane = null;
+      this.mode = 'idle';
+      this.modeLabel = '';
+    }
     this.applySelect([id]);
   }
 
@@ -2787,6 +4076,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.addLinePoint(last.clone().addScaledVector(this.moveDir, d));
       return;
     }
+    if (this.mode === 'copy-seg-to') {
+      const d = parseFloat(this.distanceStr);
+      if (!isFinite(d) || d <= 0 || this.moveDir.lengthSq() < 1e-9) return;
+      this.finishSegmentCopy(this.segmentCopyFrom!.clone().addScaledVector(this.moveDir, d));
+      return;
+    }
     if (this.mode !== 'move-to') return;
     const d = parseFloat(this.distanceStr);
     if (!isFinite(d) || d <= 0 || this.moveDir.lengthSq() < 1e-9) return;
@@ -2839,14 +4134,33 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const finishedSlabId = (this.mode === 'slab-from' || this.mode === 'slab-to') ? this.finalizeSlab() : null;
     // A Line already has a live instance like a wall does (closing it is a separate,
     // explicit gesture — see `closeLine()`) — Esc/Enter here just keeps it open.
-    const finishedLineId = (this.mode === 'line-from' || this.mode === 'line-to') ? this.lineInstanceId : null;
+    const finishedLineId = (this.mode === 'line-from' || this.mode === 'line-to' || this.mode === 'line-arc-mid') ? this.lineInstanceId : null;
+    // Esc/Enter from any of a session's draw sub-modes (including Circle's, which has
+    // no live instance of its own — finishedLineId stays null for it) pops back to the
+    // session's own idle state ('line-session') instead of exiting the whole session —
+    // see `returnToLineSession`'s own doc comment for why.
+    const inLineSubDraw = finishedWallId === null && finishedSlabId === null && (
+      this.mode === 'line-from' || this.mode === 'line-to' || this.mode === 'line-arc-mid' ||
+      this.mode === 'circle-center' || this.mode === 'circle-radius' ||
+      this.mode === 'copy-seg-from' || this.mode === 'copy-seg-to');
+    // Kept (not nulled) when staying in the session below — the session's plane must
+    // survive across shapes drawn within it; only a full exit actually drops it.
+    const keepPlane = this.linePlane;
     this.wallPath = [];
     this.wallInstanceId = null;
     this.slabPath = [];
     this.linePath = [];
+    this.lineArcMids = [];
     this.lineInstanceId = null;
     this.linePlane = null;
     this.linePlanePreview = null;
+    this.isDrawingCircle = false;
+    this.isDrawingCurve = false;
+    this.pendingArcMid = null;
+    this.circleCenter = null;
+    this.segmentCopyFrom = null;
+    if (this.segmentCopyGhost) { this.scene.remove(this.segmentCopyGhost); disposeObj(this.segmentCopyGhost); this.segmentCopyGhost = null; }
+    if (this.segmentOverlay) { this.scene.remove(this.segmentOverlay); disposeObj(this.segmentOverlay); this.segmentOverlay = null; }
     this.clearCopyGhosts();
     this.clearHover();
     this.clearSubSelection();
@@ -2861,11 +4175,24 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.snapDot.visible = false;
     this.hideMoveMeasure();
     this.hideMeasure();
-    this.mode = 'idle'; this.modeLabel = '';
     this.controls.enabled = true;
     const finishedId = finishedWallId !== null ? finishedWallId : finishedSlabId !== null ? finishedSlabId : finishedLineId;
-    if (finishedId !== null) this.applySelect([finishedId]);
     this.updateWallHandles();
+    if (this.lineSessionActive && inLineSubDraw) {
+      this.linePlane = keepPlane;
+      this.mode = 'line-session';
+      this.modeLabel = 'Pick Line, Circle or Curve to draw, click segments to select, Delete to remove them — Esc to finish';
+      if (finishedId !== null) this.applySelect([finishedId]);
+      const editInst = this.lineSessionEditId !== null ? this.instances.find(i => i.id === this.lineSessionEditId) : null;
+      if (editInst) this.buildSegmentOverlay(editInst);
+    } else {
+      this.mode = 'idle'; this.modeLabel = '';
+      if (finishedId !== null) this.applySelect([finishedId]);
+      this.lineSessionActive = false;
+      this.lineSessionEditId = null;
+      this.selectedSegmentIndices.clear();
+      this.hoverSegIndex = null;
+    }
   }
 
   // ── Move plane helpers ─────────────────────────────────────────────────────
@@ -2897,14 +4224,37 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const viewPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, from);
     const raw = new THREE.Vector3();
     if (!this.raycaster.ray.intersectPlane(viewPlane, raw)) return null;
-
-    const dx = raw.x - from.x, dy = raw.y - from.y, dz = raw.z - from.z;
-    const ax = Math.abs(dx), ay = Math.abs(dy), az = Math.abs(dz);
-    const pos = from.clone();                       // the other two coords stay on `from`
-    if (ax >= ay && ax >= az)       pos.x = Math.round(from.x + dx);
-    else if (ay >= ax && ay >= az)  pos.y = Math.round(from.y + dy);
-    else                            pos.z = Math.round(from.z + dz);
+    const pos = this.projectOntoDominantAxis(from, raw);
+    pos.x = Math.round(pos.x); pos.y = Math.round(pos.y); pos.z = Math.round(pos.z);
     return pos;
+  }
+
+  /**
+   * Pin `to` onto whichever of the X/Y/Z axis lines through `from` its own offset from
+   * `from` deviates along most — the other two coordinates stay pinned to `from`.
+   */
+  private projectOntoDominantAxis(from: THREE.Vector3, to: THREE.Vector3): THREE.Vector3 {
+    const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+    const ax = Math.abs(dx), ay = Math.abs(dy), az = Math.abs(dz);
+    const pos = from.clone();
+    if (ax >= ay && ax >= az)       pos.x = to.x;
+    else if (ay >= ax && ay >= az)  pos.y = to.y;
+    else                            pos.z = to.z;
+    return pos;
+  }
+
+  /**
+   * Shift-held measuring: lock the second point onto an axis through the first, same as
+   * always — but when a real object snap (endpoint/midpoint/origin) is under the cursor,
+   * project THAT point onto the axis instead of the raw mouse ray. Measuring straight to
+   * the snapped point itself would silently ignore the lock (a diagonal distance); this
+   * way a known point still drives an exact, jitter-free axis-locked measurement to it.
+   */
+  private measureSnapOrAxisLock(e: MouseEvent): { pos: THREE.Vector3; type: 'axis' } | null {
+    const obj = this.findObjectSnap(e, null);
+    if (obj) return { pos: this.projectOntoDominantAxis(this.measureFrom, obj.world), type: 'axis' };
+    const pos = this.axisLockedMeasurePoint(e);
+    return pos ? { pos, type: 'axis' } : null;
   }
 
   /**
@@ -3124,7 +4474,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Mirror a Line/SOLID's local (x, z) path points for use with a plane already mirrored
    *  by `mirrorPlane` — see that method's doc comment for why `z` (not `x`) is negated. */
   private mirrorWallPoints(points: WallPoint[]): WallPoint[] {
-    return points.map(p => ({ x: p.x, z: -p.z, r: p.r }));
+    return points.map(p => ({ x: p.x, z: -p.z, r: p.r, arc: p.arc ? { x: p.arc.x, z: -p.arc.z } : undefined }));
   }
 
   /**
@@ -3197,6 +4547,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       solidOp: src.solidOp,
       pathPlane: clonePlane(src.pathPlane),
       pathPoints: src.pathPoints ? src.pathPoints.map(p => ({ ...p })) : undefined,
+      extraPaths: src.extraPaths ? src.extraPaths.map(r => ({ closed: r.closed, pts: r.pts.map(p => ({ ...p })) })) : undefined,
       isVoid: src.isVoid,
       voidExcludeIds: src.voidExcludeIds ? [...src.voidExcludeIds] : undefined,
       ...overrides,
@@ -3488,6 +4839,36 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   }
 
   /**
+   * Keep the endpoint/midpoint snap indicator a constant SCREEN size (a fixed pixel
+   * radius) regardless of camera zoom — it's a UI affordance, not a piece of real
+   * geometry, so it shouldn't grow huge up close or shrink to nothing zoomed out
+   * (its geometry is authored at a fixed 8mm world radius; this rescales it live).
+   * Perspective: screen size ∝ worldSize / distance-to-camera, so worldSize must scale
+   * ∝ distance to stay constant. Orthographic (the 2D plan/elevation views): screen
+   * size ∝ worldSize / frustum-height, independent of distance — scales off that
+   * instead. Run every frame (cheap — one sphere) so it's correct through zooming,
+   * panning, and camera-type switches alike, not just on the next mouse move.
+   */
+  private updateSnapDotScale() {
+    if (!this.snapDot?.visible) return;
+    const targetPx = 7;   // desired on-screen radius, CSS pixels
+    const h = this.canvasRef.nativeElement.clientHeight || 600;
+    let worldHeightVisible: number;
+    if (this.camera instanceof THREE.PerspectiveCamera) {
+      const dist = this.camera.position.distanceTo(this.snapDot.position);
+      worldHeightVisible = 2 * dist * Math.tan((this.camera.fov * Math.PI / 180) / 2);
+    } else {
+      // OrbitControls' wheel-zoom for an orthographic camera scales `.zoom`, not
+      // top/bottom (those stay fixed at whatever setViewPlane originally fit them
+      // to) — missing this divide was the actual bug: the dot stayed sized for the
+      // view's ORIGINAL framing and grew more oversized the further you zoomed in.
+      worldHeightVisible = (this.camera.top - this.camera.bottom) / this.camera.zoom;
+    }
+    const baseRadius = 8;   // the sphere geometry's own authored radius (SphereGeometry(8,…))
+    this.snapDot.scale.setScalar((targetPx / h) * worldHeightVisible / baseRadius);
+  }
+
+  /**
    * Draw the move guide line (moveFrom → cursor), keep the in-plane direction for
    * typed-distance commits, position the distance editor by the cursor, and (unless
    * the user has typed a value) reflect the live cursor distance into the input.
@@ -3551,7 +4932,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0e0e0e);
 
-    this.camera = new THREE.PerspectiveCamera(55, w / h, 1, 100000);
+    this.camera = this.perspectiveCamera = new THREE.PerspectiveCamera(55, w / h, 1, 100000);
     this.camera.position.set(1500, 1200, 1500);
     this.camera.lookAt(0, 0, 0);
 
@@ -3647,6 +5028,17 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.controls.addEventListener('change', () => {
       this.accumDirty = true;   // camera moved → restart Render-mode accumulation
       if (this.wallDims.length) this.ngZone.run(() => this.updateWallDimScreens());
+      // Re-size the segment-overlay pick tubes for the new zoom level too — they're
+      // sized to a constant ON-SCREEN radius (worldUnitsPerPixel), not a fixed world
+      // one, so they'd otherwise stay sized for whatever zoom the Edit session
+      // started at instead of tracking a zoom/pan/orbit that happens mid-session.
+      if (this.lineSessionEditId !== null) {
+        const inst = this.instances.find(i => i.id === this.lineSessionEditId);
+        // Rebuilding makes fresh meshes (all hidden by default) — restore whichever
+        // were already selected, or they'd visually "lose" their highlight on every
+        // orbit/pan/zoom even though selectedSegmentIndices itself is untouched.
+        if (inst) { this.buildSegmentOverlay(inst); this.refreshSegmentHighlight(); }
+      }
     });
     // Right-drag-to-orbit is handled natively by OrbitControls EXCEPT when a selection
     // is active (see the capture-phase 'pointerdown' listener below + onCanvasDown/
@@ -3654,7 +5046,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     // selection's own centre via orbitCameraAroundPivot — see that method for why a
     // native OrbitControls retarget can't be used here without visibly snapping the view.
     canvas.addEventListener('pointerdown', (e) => {
-      if (e.button === 2 && this.mode === 'idle' && this.selectedIds.size > 0 && this.controls.enabled) {
+      if (e.button === 2 && this.mode === 'idle' && this.selectedIds.size > 0 && this.controls.enabled && this.viewPlane === '3D') {
         e.stopPropagation();   // steal this gesture before OrbitControls' own handler sees it
       }
     }, { capture: true });
@@ -3675,7 +5067,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.resizeObserver = new ResizeObserver(() => {
       const w = canvas.clientWidth, h = canvas.clientHeight;
       if (!w || !h) return;
-      this.camera.aspect = w / h;
+      if (this.camera instanceof THREE.PerspectiveCamera) {
+        this.camera.aspect = w / h;
+      } else {
+        // Orthographic 2D view: keep top/bottom (the vertical half-extent already fit
+        // to the scene) and rescale left/right by the new aspect, so a resize doesn't
+        // visually jump.
+        const halfH = (this.camera.top - this.camera.bottom) / 2;
+        const halfW = halfH * (w / h);
+        this.camera.left = -halfW; this.camera.right = halfW;
+      }
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w, h);
       this.accumDirty = true;          // resized back-buffer → restart accumulation (renderAccum resizes RTs)
@@ -3700,6 +5101,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.animFrameId = requestAnimationFrame(() => this.animate());
     this.controls.update();
     this.stepNavTween();
+    this.updateSnapDotScale();
     if (this.renderMode && this.accumBlendQuad) {
       this.renderAccum();              // progressive AA + soft shadows
     } else {
@@ -3847,6 +5249,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
    * Toggling rebuilds all objects from data, so the standard viewport is restored on exit.
    */
   toggleRender() {
+    if (this.viewPlane !== '3D') this.setViewPlane('3D');   // mutually exclusive — see setViewPlane
     this.renderMode = !this.renderMode;
     setRenderBevel(this.renderMode);   // cosmetic edge chamfer — Render only, rebuilt below
     if (this.renderMode) {
@@ -3877,8 +5280,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     // fisheye-y near the edges. camera.up is never rotated anywhere in this app (orbit,
     // the custom selection-pivot orbit and the nav-cube tween all preserve it), so
     // verticals already stay vertical on screen regardless of FOV.
-    this.camera.fov = 42;
-    this.camera.updateProjectionMatrix();
+    this.perspectiveCamera.fov = 42;   // enterRenderScene only ever runs in 3D — see toggleRender's guard
+    this.perspectiveCamera.updateProjectionMatrix();
     if (!this.renderFloor) {
       const geo = new THREE.PlaneGeometry(200000, 200000);
       geo.rotateX(-Math.PI / 2);
@@ -3921,20 +5324,129 @@ export class AdminPageComponent implements OnInit, OnDestroy {
    * shadow, which is why contact shadows (and the edges they sit at) read as flat.
    */
   private fitShadowFrustum() {
-    const box = new THREE.Box3();
-    this.objectMap.forEach(o => { o.updateMatrixWorld(true); box.union(new THREE.Box3().setFromObject(o)); });
+    const half = this.sceneBoundingSphere().radius;
     const cam = this.keyLight.shadow.camera;
-    const half = box.isEmpty() ? 4000 : Math.max(1500, box.getBoundingSphere(new THREE.Sphere()).radius * 1.15);
     cam.left = cam.bottom = -half;
     cam.right = cam.top = half;
     cam.updateProjectionMatrix();
   }
 
+  /** World-space bounding sphere over every currently spawned object (padded, with a
+   *  sane floor for a tiny/empty scene) — sizes both the Render-mode shadow frustum
+   *  (fitShadowFrustum) and the 2D plan/elevation view's ortho frustum (setViewPlane)
+   *  to whatever's actually in the scene. */
+  private sceneBoundingSphere(): THREE.Sphere {
+    const box = new THREE.Box3();
+    this.objectMap.forEach(o => { o.updateMatrixWorld(true); box.union(new THREE.Box3().setFromObject(o)); });
+    if (box.isEmpty()) return new THREE.Sphere(new THREE.Vector3(0, 0, 0), 4000);
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    sphere.radius = Math.max(1500, sphere.radius * 1.15);
+    return sphere;
+  }
+
+  /**
+   * Switch between the normal 3D CAD view and a true flattened 2D line drawing in a
+   * given plane: an orthographic camera locked to look straight along that plane's
+   * normal (an orthographic projection IS, mathematically, "drop everything onto the
+   * view plane"), with every mesh's shaded faces hidden and only its existing isEdge
+   * wireframe shown (applyViewPlaneVisuals) — no new projection/geometry math, this is
+   * a camera + visibility switch. Mutually exclusive with Render mode (toggleRender
+   * forces back to 3D first if needed; this forces Render off first, symmetrically).
+   */
+  setViewPlane(mode: MovePlane | '3D' | 'current') {
+    if (this.renderMode) this.toggleRender();
+    this.viewPlane = mode;
+    if (mode === '3D') {
+      this.camera = this.perspectiveCamera;
+      this.controls.object = this.camera;
+      this.controls.enableRotate = true;
+      this.controls.update();
+      this.applyViewPlaneVisuals();
+      return;
+    }
+
+    // Centred on the scene's own bounding sphere — NOT controls.target, which is
+    // wherever the 3D orbit happened to leave off (often still the world origin) and
+    // can easily sit far from the actual content, taking it clean out of frame (this
+    // is why 2D views first came up empty). camDir is the unit vector from that centre
+    // TO the camera (so `position = origin + camDir*dist`), not the viewing direction.
+    const sphere = this.sceneBoundingSphere();
+    const origin = sphere.center.clone();
+    const camDir = new THREE.Vector3();
+    const up = new THREE.Vector3();
+    if (mode === 'XZ') { camDir.set(0, 1, 0); up.set(0, 0, -1); }           // plan/top: camera above, looking down
+    else if (mode === 'YZ') { camDir.set(1, 0, 0); up.set(0, 1, 0); }       // side: camera on +X, looking toward -X
+    else if (mode === 'XY') { camDir.set(0, 0, 1); up.set(0, 1, 0); }       // front: camera on +Z, looking toward -Z
+    else {
+      const plane = this.currentPlane ?? this.selectedInstance?.plane;
+      if (!plane) return;   // the dropdown's own option is disabled when inapplicable
+      camDir.set(plane.normal.x, plane.normal.y, plane.normal.z).normalize();
+      const u = new THREE.Vector3(plane.uAxis.x, plane.uAxis.y, plane.uAxis.z);
+      // Looking from the +normal side (camDir = normal) with a camera's standard
+      // right/up/backward basis (right × up = backward), screen-right works out to
+      // normal × uAxis — NOT uAxis × normal (that gives -uAxis, i.e. a mirrored view:
+      // confirmed both algebraically — right = cross(up, camDir), and up = uAxis×normal
+      // reduces that to -uAxis via the vector triple product — and against a concrete
+      // case: a door face normal pointing outward (+Z) with uAxis pointing toward
+      // ДЯСНА (+X) must put ДЯСНА on-screen-right, which only this order does).
+      up.crossVectors(camDir, u).normalize();
+    }
+
+    const canvas = this.canvasRef.nativeElement;
+    const aspect = (canvas.clientWidth || 800) / (canvas.clientHeight || 600);
+    if (!this.orthoCamera) this.orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 100000);
+    const cam = this.orthoCamera;
+    cam.top = sphere.radius; cam.bottom = -sphere.radius;
+    cam.left = -sphere.radius * aspect; cam.right = sphere.radius * aspect;
+    cam.near = 1; cam.far = sphere.radius * 10;
+    cam.position.copy(origin).addScaledVector(camDir, sphere.radius * 3);
+    cam.up.copy(up);
+    cam.lookAt(origin);
+    cam.updateProjectionMatrix();
+
+    this.camera = cam;
+    this.controls.object = cam;
+    this.controls.target.copy(origin);
+    this.controls.enableRotate = false;
+    this.controls.update();
+    this.applyViewPlaneVisuals();
+  }
+
+  /** Hide every mesh's shaded faces and show only its isEdge wireframe while a 2D plan/
+   *  elevation view is active — restores normal face visibility back in 3D. Skips the
+   *  Line family's own invisible pick-target tube (isLinePickTarget, webcad-geometry.ts)
+   *  which must never become visible. A known, accepted limitation: an FBX import has
+   *  no isEdge wireframe at all (excluded from addEdges elsewhere), so it simply has
+   *  nothing to show in 2D. */
+  private applyViewPlaneVisuals() {
+    this.objectMap.forEach(obj => this.setMeshFacesVisible(obj, this.viewPlane === '3D'));
+  }
+
+  /**
+   * Hide/show every mesh's shaded FACES under `root`, toggling each `.material.visible`
+   * rather than the mesh's own `Object3D.visible` — critical, since every mesh's isEdge
+   * wireframe is added as its CHILD (`addEdges`, webcad-object3d.ts): a child's render
+   * visibility is gated by its *ancestors'* `Object3D.visible` too, so setting the mesh
+   * itself invisible would have also hidden its wireframe, leaving nothing to see at all
+   * (exactly what happened before this fix — a 2D view showed a genuinely empty
+   * viewport, not just "faces missing"). `Material.visible` only gates that mesh's own
+   * draw call, never cascading to children. Skips the Line family's own invisible
+   * pick-target tube (isLinePickTarget), whose material must stay permanently
+   * invisible regardless of 2D/3D.
+   */
+  private setMeshFacesVisible(root: THREE.Object3D, visible: boolean) {
+    root.traverse(child => {
+      if (!(child instanceof THREE.Mesh) || child.userData['isEdge'] || child.userData['isLinePickTarget']) return;
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      mats.forEach(m => { m.visible = visible; });
+    });
+  }
+
   private exitRenderScene() {
     this.scene.environment = null;
     this.renderer.toneMapping = THREE.NoToneMapping;
-    this.camera.fov = 55;
-    this.camera.updateProjectionMatrix();
+    this.perspectiveCamera.fov = 55;   // exitRenderScene only ever runs in 3D — see toggleRender's guard
+    this.perspectiveCamera.updateProjectionMatrix();
     this.viewHelpers.forEach(h => h.visible = true);
     if (this.renderFloor) this.scene.remove(this.renderFloor);
     if (this.floorReflector) this.scene.remove(this.floorReflector);
@@ -4574,8 +6086,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   private onCanvasDown(e: MouseEvent) {
     // Shift + middle (scroll-wheel) drag orbits the camera even while the Measure tool
-    // has the OrbitControls disabled, so you can look around between the two clicks.
-    if (e.button === 1 && e.shiftKey && (this.mode === 'measure-from' || this.mode === 'measure-to')) {
+    // has the OrbitControls disabled, so you can look around between the two clicks —
+    // but not in a 2D plan/elevation/Current-Plane view, which must stay perfectly
+    // flat (same restriction `setViewPlane` already applies to OrbitControls' own
+    // `enableRotate`; these two custom orbit gestures bypass that flag entirely, so
+    // they need their own explicit check).
+    if (e.button === 1 && e.shiftKey && this.viewPlane === '3D' &&
+        (this.mode === 'measure-from' || this.mode === 'measure-to')) {
       e.preventDefault();   // suppress the browser's middle-click autoscroll
       this.orbiting = true;
       this.orbitPrev = { x: e.clientX, y: e.clientY };
@@ -4584,8 +6101,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     // Idle right-drag with an active selection: orbit around the selection's centre
     // instead of OrbitControls' own target (see orbitCameraAroundPivot) — the matching
     // capture-phase 'pointerdown' listener in initThree steals this gesture from
-    // OrbitControls before it ever sees it.
-    if (e.button === 2 && this.mode === 'idle' && this.controls.enabled) {
+    // OrbitControls before it ever sees it. Not in a 2D view — see this method's own
+    // doc comment above.
+    if (e.button === 2 && this.mode === 'idle' && this.controls.enabled && this.viewPlane === '3D') {
       const center = this.selectionCenter();
       if (center) {
         this.customOrbiting = true;
@@ -4679,6 +6197,13 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (this.mode === 'pick-plane') {
+      const plane = this.pickFacePlane(e);
+      this.pickPlanePreview = plane;
+      this.updatePlaneGhost(plane);
+      return;
+    }
+
     if (this.mode === 'line-from') {
       const snap = this.getSnapOnPlane(e, this.linePlane!, null);
       if (!snap) return;
@@ -4692,17 +6217,83 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       const last = this.linePath[this.linePath.length - 1];
       const pos = e.shiftKey ? this.lockAxisOnPlane(snap.pos, last, this.linePlane!) : snap.pos;
       this.showSnap(pos, snap.type);
+      // While picking the arc's own mid-point there's nothing to bulge yet — same
+      // straight guide-line preview as a normal segment, it just isn't the final point.
       this.updateLineGhost(last, pos);
       return;
     }
 
+    if (this.mode === 'line-arc-mid') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (!snap) return;
+      this.showSnap(snap.pos, snap.type);
+      const last = this.linePath[this.linePath.length - 1];
+      this.updateCurveGhost(last, this.pendingArcMid!, snap.pos);
+      return;
+    }
+
+    if (this.mode === 'circle-center') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (!snap) return;
+      this.showSnap(snap.pos, snap.type);
+      return;
+    }
+
+    if (this.mode === 'circle-radius') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (!snap) return;
+      this.showSnap(snap.pos, snap.type);
+      this.updateCircleGhost(snap.pos);
+      return;
+    }
+
+    if (this.mode === 'line-session') {
+      // Left-button drag: a marquee box, same "past a 5px threshold" pattern the
+      // idle whole-instance marquee below already uses, just selecting SEGMENTS
+      // (performSegmentMarqueeSelect) instead of instances on mouseup.
+      if (e.buttons === 1) {
+        const dx = e.clientX - this.marqueeStart.x;
+        const dy = e.clientY - this.marqueeStart.y;
+        if (!this.isMarqueeing && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) this.isMarqueeing = true;
+        if (this.isMarqueeing) {
+          const r = this.canvasRef.nativeElement.getBoundingClientRect();
+          const left = Math.min(this.marqueeStart.x, e.clientX) - r.left;
+          const top = Math.min(this.marqueeStart.y, e.clientY) - r.top;
+          this.ngZone.run(() => { this.marqueeRect = { left, top, width: Math.abs(dx), height: Math.abs(dy) }; });
+          return;
+        }
+      }
+      this.hoverSegIndex = this.pickOverlaySegment(e);
+      this.refreshSegmentHighlight();
+      return;
+    }
+
+    if (this.mode === 'copy-seg-from') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (!snap) return;
+      this.showSnap(snap.pos, snap.type);
+      return;
+    }
+
+    if (this.mode === 'copy-seg-to') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (!snap) return;
+      const pos = e.shiftKey ? this.lockAxisOnPlane(snap.pos, this.segmentCopyFrom!, this.linePlane!) : snap.pos;
+      this.showSnap(pos, snap.type);
+      this.moveFrom.copy(this.segmentCopyFrom!);
+      this.showMoveMeasure(e, pos);
+      this.updateSegmentCopyGhost(pos);
+      return;
+    }
+
     if (this.mode === 'measure-to') {
-      // Shift locks the segment parallel to an axis (0x / 0y / 0z) through the first point.
+      // Shift locks the segment parallel to an axis (0x / 0y / 0z) through the first
+      // point — but a real point under the cursor still wins, see measureSnapOrAxisLock.
       if (e.shiftKey) {
-        const pos = this.axisLockedMeasurePoint(e);
-        if (!pos) return;
-        this.showSnap(pos, 'axis');
-        this.showMeasure(pos);
+        const r = this.measureSnapOrAxisLock(e);
+        if (!r) return;
+        this.showSnap(r.pos, r.type);
+        this.showMeasure(r.pos);
         return;
       }
       const snap = this.measureSnap(e);
@@ -4754,6 +6345,10 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.isMarqueeing = false;
       this.performMarqueeSelect(this.marqueeStart, { x: e.clientX, y: e.clientY });
       this.ngZone.run(() => { this.marqueeRect = null; });
+    } else if (this.isMarqueeing && this.mode === 'line-session') {
+      this.isMarqueeing = false;
+      this.performSegmentMarqueeSelect(this.marqueeStart, { x: e.clientX, y: e.clientY });
+      this.ngZone.run(() => { this.marqueeRect = null; });
     } else {
       this.isMarqueeing = false;
     }
@@ -4782,6 +6377,44 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     });
 
     this.ngZone.run(() => this.applySelect(selected));
+  }
+
+  /** Drag-box multi-select for segments while in `'line-session'` — same screen-space
+   *  AABB-overlap test `performMarqueeSelect` already uses for whole instances, just
+   *  run against the segment overlay's own pick meshes (already built for raycasting,
+   *  so no new sampling needed) instead of `objectMap`. Deliberately ADDITIVE (only
+   *  ever adds to `selectedSegmentIndices`, never clears it) rather than replacing,
+   *  unlike the whole-instance marquee — segments are small/fiddly to box-select
+   *  precisely, so an accidental empty drag shouldn't wipe out a selection already
+   *  built up click by click. */
+  private performSegmentMarqueeSelect(start: { x: number; y: number }, end: { x: number; y: number }) {
+    if (!this.segmentOverlay) return;
+    const s = this.clientToNDC(start.x, start.y);
+    const f = this.clientToNDC(end.x, end.y);
+    const minX = Math.min(s.x, f.x), maxX = Math.max(s.x, f.x);
+    const minY = Math.min(s.y, f.y), maxY = Math.max(s.y, f.y);
+
+    const hitKeys: number[] = [];
+    this.segmentOverlay.traverse(c => {
+      if (!(c instanceof THREE.Mesh)) return;
+      c.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(c);
+      if (box.isEmpty()) return;
+      let oMinX = Infinity, oMaxX = -Infinity, oMinY = Infinity, oMaxY = -Infinity;
+      const { min: mn, max: mx } = box;
+      for (const cx of [mn.x, mx.x]) for (const cy of [mn.y, mx.y]) for (const cz of [mn.z, mx.z]) {
+        const v = new THREE.Vector3(cx, cy, cz).project(this.camera);
+        if (v.x < oMinX) oMinX = v.x; if (v.x > oMaxX) oMaxX = v.x;
+        if (v.y < oMinY) oMinY = v.y; if (v.y > oMaxY) oMaxY = v.y;
+      }
+      if (oMaxX >= minX && oMinX <= maxX && oMaxY >= minY && oMinY <= maxY) hitKeys.push(c.userData['segKey'] as number);
+    });
+    if (hitKeys.length === 0) return;
+    this.ngZone.run(() => {
+      hitKeys.forEach(k => this.selectedSegmentIndices.add(k));
+      this.refreshSegmentHighlight();
+      this.syncTrimRadiusFromSelection();
+    });
   }
 
   /** Raycast the cursor against object faces; returns the nearest instance id or null. */
@@ -4960,10 +6593,27 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       return;
     }
 
+    if (this.mode === 'pick-plane') {
+      const plane = this.pickPlanePreview ?? this.pickFacePlane(e);
+      this.commitCurrentPlane(plane);
+      return;
+    }
+
     if (this.mode === 'line-from') {
       const snap = this.getSnapOnPlane(e, this.linePlane!, null);
       if (snap) {
         this.ngZone.run(() => {
+          // Resuming an Edit session (seedFromEditTarget pre-seeded linePath with the
+          // WHOLE existing path, length > 1 — a fresh line/curve always starts it
+          // empty): addLinePoint always extends the CURRENT LAST point, which is fine
+          // when that's the end you clicked near, but clicking back on the path's
+          // OTHER open end (its first vertex) means "continue from THAT end instead" —
+          // flip the seeded path first, so the new point attaches there instead of
+          // also silently drawing a segment from the untouched end to wherever was
+          // clicked (points 1 and 3 of a 3-point line getting spuriously connected).
+          if (this.linePath.length > 1 && snap.pos.distanceTo(this.linePath[0]) < 1) {
+            this.reverseLinePathAndArcs();
+          }
           this.addLinePoint(snap.pos);
           this.mode = 'line-to';
           this.modeLabel = 'Click the next corner or type a length — click the first point or Enter to finish';
@@ -4973,15 +6623,84 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     }
 
     if (this.mode === 'line-to') {
-      // Clicking back on the first vertex closes the loop.
-      if (this.nearFirstLineVertex(e)) { this.ngZone.run(() => this.closeLine()); return; }
+      // Clicking back on the first vertex closes the loop (straight final segment
+      // only — closing with a curved final segment isn't supported, see startCurve's
+      // own doc comment).
+      if (!this.lineNextSegmentCurved && this.nearFirstLineVertex(e)) { this.ngZone.run(() => this.closeLine()); return; }
       const snap = this.getSnapOnPlane(e, this.linePlane!, null);
       if (!snap) return;
       const last = this.linePath[this.linePath.length - 1];
       const pos = e.shiftKey ? this.lockAxisOnPlane(snap.pos, last, this.linePlane!) : snap.pos;
-      if (pos.distanceTo(last) >= 1) {
+      if (pos.distanceTo(last) < 1) return;
+      if (this.lineNextSegmentCurved) {
+        this.ngZone.run(() => {
+          this.pendingArcMid = pos.clone();
+          this.mode = 'line-arc-mid';
+          this.modeLabel = 'Click the arc\'s end point — Esc to cancel';
+        });
+      } else {
         this.ngZone.run(() => this.addLinePoint(pos));
       }
+      return;
+    }
+
+    if (this.mode === 'line-arc-mid') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (!snap) return;
+      const last = this.linePath[this.linePath.length - 1];
+      if (snap.pos.distanceTo(last) < 1) return;
+      this.ngZone.run(() => {
+        this.addLinePoint(snap.pos, this.pendingArcMid!);
+        this.pendingArcMid = null;
+        this.mode = 'line-to';
+        this.modeLabel = 'Click the next corner or type a length — click the first point or Enter to finish';
+      });
+      return;
+    }
+
+    if (this.mode === 'circle-center') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (snap) this.ngZone.run(() => this.commitCircleCenter(snap.pos));
+      return;
+    }
+
+    if (this.mode === 'circle-radius') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (snap) this.commitCircle(snap.pos);
+      return;
+    }
+
+    if (this.mode === 'line-session') {
+      const segIndex = this.pickOverlaySegment(e);
+      if (segIndex !== null) {
+        this.ngZone.run(() => {
+          if (this.selectedSegmentIndices.has(segIndex)) this.selectedSegmentIndices.delete(segIndex);
+          else this.selectedSegmentIndices.add(segIndex);
+          this.refreshSegmentHighlight();
+          this.syncTrimRadiusFromSelection();
+        });
+      }
+      return;
+    }
+
+    if (this.mode === 'copy-seg-from') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (snap) {
+        this.ngZone.run(() => {
+          this.segmentCopyFrom = snap.pos.clone();
+          this.mode = 'copy-seg-to';
+          this.modeLabel = 'Click the destination point (or type a distance) — Esc to cancel';
+          this.distFocusPending = true;
+        });
+      }
+      return;
+    }
+
+    if (this.mode === 'copy-seg-to') {
+      const snap = this.getSnapOnPlane(e, this.linePlane!, null);
+      if (!snap) return;
+      const pos = e.shiftKey ? this.lockAxisOnPlane(snap.pos, this.segmentCopyFrom!, this.linePlane!) : snap.pos;
+      this.ngZone.run(() => this.finishSegmentCopy(pos));
       return;
     }
 
@@ -4999,7 +6718,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     }
 
     if (this.mode === 'measure-to') {
-      const pos = e.shiftKey ? this.axisLockedMeasurePoint(e) : this.measureSnap(e)?.pos;
+      const pos = e.shiftKey ? this.measureSnapOrAxisLock(e)?.pos : this.measureSnap(e)?.pos;
       if (pos) {
         this.showMeasure(pos);   // freeze the dimension at the clicked point
         this.ngZone.run(() => {

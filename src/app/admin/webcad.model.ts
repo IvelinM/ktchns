@@ -78,7 +78,11 @@ export interface BasePoint { x: number; y: number; z: number; }
  *  Reused by СТЕНА/ПЛОЧА/Line as a generic (a, b) in-plane pair — not necessarily
  *  literal world x/z (see `PlaneDesc`, used by Line/SOLID). `r` is an optional corner
  *  fillet radius (mm) — СТЕНА/ПЛОЧА never set it. */
-export interface WallPoint { x: number; z: number; r?: number; }
+export interface WallPoint {
+  x: number; z: number;
+  r?: number;   // corner fillet radius (mm) — mutually exclusive with `arc` on the same vertex
+  arc?: { x: number; z: number };   // local point the segment to the NEXT vertex curves through (3-point arc); absent = straight
+}
 
 /**
  * A construction plane: an origin point + unit normal + an in-plane "u" axis
@@ -120,6 +124,15 @@ export interface SceneInstance {
   // (closed) profile being extruded. 'sweep': whether the PATH loops (`pathPoints`/
   // `pathPlane`), not the profile (a sweep's profile — `path`/`plane` — is always closed).
   closed?: boolean;
+  // Line only: extra disjoint point-runs on the SAME `plane`, beyond `path` (the
+  // "main" run) — created by the Delete-segment panel's Copy action (a copied
+  // segment duplicates in place, parallel to the original, as its own run of the
+  // same instance, rather than a separate top-level Line). Each run is always open
+  // (a copied segment is just 2 points) — `closed` above only ever describes `path`'s
+  // own closedness, never one of these. A Line with any extra runs is "disjoined":
+  // Extrude/Mirror refuse it (see `canExtrudeLine`/`MIRROR_EXCLUDED_FAMILIES`) since
+  // neither operation has a sensible single-shape meaning for disconnected pieces.
+  extraPaths?: { pts: WallPoint[]; closed: boolean }[];
   solidOp?: 'extrude' | 'sweep';   // SOLID only: which operation produced it (absent ⇒ 'extrude')
   pathPlane?: PlaneDesc;    // SOLID (sweep only): the PATH's own construction plane
   pathPoints?: WallPoint[]; // SOLID (sweep only): the PATH's local (u, v) points on pathPlane
@@ -151,7 +164,7 @@ export interface PanelInfo {
 }
 
 /** The viewport interaction state machine (drives canvas handlers + the mode overlay). */
-export type InteractionMode = 'idle' | 'placing' | 'move-from' | 'move-to' | 'measure-from' | 'measure-to' | 'match' | 'wall-from' | 'wall-to' | 'slab-from' | 'slab-to' | 'line-plane' | 'line-from' | 'line-to';
+export type InteractionMode = 'idle' | 'placing' | 'move-from' | 'move-to' | 'measure-from' | 'measure-to' | 'match' | 'wall-from' | 'wall-to' | 'slab-from' | 'slab-to' | 'line-plane' | 'line-session' | 'line-from' | 'line-to' | 'pick-plane' | 'circle-center' | 'circle-radius' | 'line-arc-mid' | 'copy-seg-from' | 'copy-seg-to';
 export type MovePlane      = 'XZ' | 'XY' | 'YZ';
 
 // ── Colours ─────────────────────────────────────────────────────────────────────

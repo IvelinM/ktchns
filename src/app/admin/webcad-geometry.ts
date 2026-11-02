@@ -369,16 +369,29 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
     const doorPvc = [b('ВРАТИЧКА_С_КАНТ_ОТДОЛУ'), true, b('ВРАТИЧКА_С_КАНТ_ОТГОРЕ'), true];
     const doorZ = D / 2 - t / 2;
     if (b('ДВОЙНА_ВРАТИЧКА')) {
-      // Split into two leaves separated by a small fixed reveal; ЛЯВА takes the chosen
-      // width (clamped to fit), ДЯСНА always takes whatever remains. Both leaves share
-      // the SAME 'ВРАТИЧКА' name (and so the same ВРАТИЧКА_* material/kant lookup) —
-      // only their size differs, like two schedule rows cut from the same spec.
-      const GAP = 2;
-      const totalW = xr - xl;
-      const leftW = Math.max(0, Math.min(p['ЛЯВА_ВРАТИЧКА_ШИРИНА'] ?? (totalW - GAP) / 2, totalW - GAP));
-      const splitX = xl + leftW;
-      add('ВРАТИЧКА', splitX - xl, yt - yb, 0, 0, 0, mid(xl, splitX), mid(yb, yt), doorZ, doorPvc);
-      add('ВРАТИЧКА', xr - (splitX + GAP), yt - yb, 0, 0, 0, mid(splitX + GAP, xr), mid(yb, yt), doorZ, doorPvc);
+      // Split into two leaves separated by a reveal (ФУГА_МЕЖДУ_ВРАТИЧКИ); the first
+      // leaf takes the chosen size (ЛЯВА_ВРАТИЧКА_ШИРИНА, clamped to fit), the second
+      // always takes whatever remains. Both leaves share the SAME 'ВРАТИЧКА' name (and
+      // so the same ВРАТИЧКА_* material/kant lookup) — only their size differs, like two
+      // schedule rows cut from the same spec.
+      // ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА (default true) picks which way they split:
+      // true → side by side, divided by a VERTICAL fugue (split along X, ЛЯВА/ДЯСНА);
+      // false → stacked, divided by a HORIZONTAL fugue (split along Y, ГОРНА/ДОЛНА —
+      // ЛЯВА_ВРАТИЧКА_ШИРИНА then sizes the TOP leaf, matching reading order).
+      const GAP = p['ФУГА_МЕЖДУ_ВРАТИЧКИ'] ?? 3;
+      if (b('ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА')) {
+        const totalW = xr - xl;
+        const leftW = Math.max(0, Math.min(p['ЛЯВА_ВРАТИЧКА_ШИРИНА'] ?? (totalW - GAP) / 2, totalW - GAP));
+        const splitX = xl + leftW;
+        add('ВРАТИЧКА', splitX - xl, yt - yb, 0, 0, 0, mid(xl, splitX), mid(yb, yt), doorZ, doorPvc);
+        add('ВРАТИЧКА', xr - (splitX + GAP), yt - yb, 0, 0, 0, mid(splitX + GAP, xr), mid(yb, yt), doorZ, doorPvc);
+      } else {
+        const totalH = yt - yb;
+        const topH = Math.max(0, Math.min(p['ЛЯВА_ВРАТИЧКА_ШИРИНА'] ?? (totalH - GAP) / 2, totalH - GAP));
+        const splitY = yt - topH;
+        add('ВРАТИЧКА', xr - xl, yt - splitY, 0, 0, 0, mid(xl, xr), mid(splitY, yt), doorZ, doorPvc);
+        add('ВРАТИЧКА', xr - xl, (splitY - GAP) - yb, 0, 0, 0, mid(xl, xr), mid(yb, splitY - GAP), doorZ, doorPvc);
+      }
     } else {
       add('ВРАТИЧКА', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), doorZ, doorPvc);
     }
@@ -572,53 +585,147 @@ function planeBasisMatrix(plane: PlaneDesc): THREE.Matrix4 {
   return new THREE.Matrix4().makeBasis(uAxis, vAxis, normal);
 }
 
+/** Circumcircle through 3 local (x, z) points; `null` if they're collinear/degenerate
+ *  (the standard circumcenter formula's denominator vanishes) — callers fall back to a
+ *  straight line in that case rather than producing garbage. */
+function circumcircle(
+  a: { x: number; z: number }, b: { x: number; z: number }, c: { x: number; z: number },
+): { cx: number; cz: number; radius: number } | null {
+  const d = 2 * (a.x * (b.z - c.z) + b.x * (c.z - a.z) + c.x * (a.z - b.z));
+  if (Math.abs(d) < 1e-9) return null;
+  const aSq = a.x * a.x + a.z * a.z, bSq = b.x * b.x + b.z * b.z, cSq = c.x * c.x + c.z * c.z;
+  const cx = (aSq * (b.z - c.z) + bSq * (c.z - a.z) + cSq * (a.z - b.z)) / d;
+  const cz = (aSq * (c.x - b.x) + bSq * (a.x - c.x) + cSq * (b.x - a.x)) / d;
+  return { cx, cz, radius: Math.hypot(a.x - cx, a.z - cz) };
+}
+
 /**
- * Trace `pts` as a 2D `THREE.Shape` in local (u, v), rounding every corner that both
- * (a) is eligible — every vertex if `closed`, else only the interior vertices
- * (1..n-2), never the two open endpoints — and (b) has its own `r > 0`. Each eligible
- * corner is trimmed back along both incident edges by `d = min(r, len/2, len/2)` of
- * those edges — this clamp is mandatory, an un-clamped radius on a short edge
- * produces self-overlapping curve geometry — and rounded with a `quadraticCurveTo`
- * through the untrimmed vertex (a visual approximation of a true tangent-circle
- * fillet, not a mathematically exact one — plenty close for a modelling tool, same
- * spirit as every other simplification in this file). Non-filleted vertices get a
- * plain `lineTo`. `closed` shapes are explicitly closed via `closePath()`.
+ * Trace `pts` as a 2D `THREE.Shape` in local (u, v). Each edge from vertex `i` to its
+ * successor is either:
+ * - a 3-point arc, when `pts[i].arc` is set — the circumcircle through
+ *   `(pts[i], pts[i].arc, pts[i+1])`, swept whichever direction (`absarc`'s own
+ *   `clockwise` flag) actually passes through `arc`'s own angle rather than the other
+ *   way around the circle. Falls back to a straight line if the 3 points are
+ *   degenerate (`circumcircle` returns `null`).
+ * - otherwise a plain straight line, optionally rounded into a corner fillet at
+ *   vertex `i` — eligible when `i` (a) is interior (`closed`, or `0 < i < n-1` for an
+ *   open path) and (b) has its own `r > 0`. The fillet is a GENUINE tangent-circle
+ *   arc of radius `r` (see `fillet` below) — both incident edges are trimmed back by
+ *   the correct tangent length `r / tan(θ/2)` (θ = the angle between them), not a
+ *   Bezier merely passing near the corner. A fillet is skipped whenever EITHER
+ *   incident edge is itself an arc — trimming "back along" a curved edge isn't the
+ *   straight-line tangent-trim above; not worth generalizing for how rarely a fillet
+ *   would sit right next to a curved segment — or when the corner is degenerate
+ *   (~0°, a cusp with no valid circle, or ~180°, already straight).
+ * `closed` shapes close via `closePath()` (or the closing edge's own arc, if curved).
  */
 export function filletedPolylineShape(pts: WallPoint[], closed: boolean): THREE.Shape {
   const shape = new THREE.Shape();
   const n = pts.length;
   if (n === 0) return shape;
-  if (n < 3) {
-    shape.moveTo(pts[0].x, pts[0].z);
-    for (let i = 1; i < n; i++) shape.lineTo(pts[i].x, pts[i].z);
-    if (closed && n >= 2) shape.closePath();
-    return shape;
-  }
+  if (n < 2) { shape.moveTo(pts[0].x, pts[0].z); return shape; }
 
   const v = (i: number) => new THREE.Vector2(pts[i].x, pts[i].z);
-  const trim = (i: number): { start: THREE.Vector2; end: THREE.Vector2 } | null => {
+  const isArcEdge = (i: number) => !!pts[i].arc;   // edge FROM vertex i to its successor
+  const incomingIsArc = (i: number) => closed ? isArcEdge((i - 1 + n) % n) : (i > 0 && isArcEdge(i - 1));
+  const outgoingIsArc = (i: number) => closed ? isArcEdge(i) : (i < n - 1 && isArcEdge(i));
+  /** The true tangent-circle fillet at vertex `i`: a circle of radius `r` (or
+   *  smaller, if `r` would push a tangent point past the midpoint of either
+   *  incident edge — shrunk to fit while staying genuinely tangent, rather than
+   *  trimming by `r` outright and losing tangency) that touches both incident edges
+   *  at `start`/`end`, plus the arc's own sweep angles/direction — always the
+   *  shorter (minor, < 180°) of the two possible arcs between those points, which is
+   *  the one that sweeps THROUGH the original (sharp) vertex's own angle from the
+   *  centre (see the sweep-direction comment inline below for why). `null` when
+   *  there's nothing to round. */
+  const fillet = (i: number): {
+    start: THREE.Vector2; end: THREE.Vector2; cx: number; cy: number; radius: number;
+    startAngle: number; endAngle: number; clockwise: boolean;
+  } | null => {
     const r = pts[i].r ?? 0;
-    if (r <= 0 || !(closed || (i > 0 && i < n - 1))) return null;
+    if (r <= 0 || !(closed || (i > 0 && i < n - 1)) || incomingIsArc(i) || outgoingIsArc(i)) return null;
     const curr = v(i), prev = v((i - 1 + n) % n), next = v((i + 1) % n);
     const toPrev = prev.clone().sub(curr), toNext = next.clone().sub(curr);
-    const d = Math.min(r, toPrev.length() * 0.5, toNext.length() * 0.5);
-    return {
-      start: curr.clone().addScaledVector(toPrev.normalize(), d),
-      end: curr.clone().addScaledVector(toNext.normalize(), d),
-    };
+    const lenPrev = toPrev.length(), lenNext = toNext.length();
+    if (lenPrev < 1e-6 || lenNext < 1e-6) return null;
+    const dirPrev = toPrev.normalize(), dirNext = toNext.normalize();
+    const half = Math.acos(Math.max(-1, Math.min(1, dirPrev.dot(dirNext)))) / 2;
+    if (half < 1e-4 || half > Math.PI / 2 - 1e-4) return null;   // ~cusp (no valid circle) or ~straight (nothing to round)
+    let tanLen = r / Math.tan(half);
+    let radius = r;
+    const maxTanLen = Math.min(lenPrev, lenNext) * 0.5;   // don't trim past either edge's own midpoint
+    if (tanLen > maxTanLen) { radius = maxTanLen * Math.tan(half); tanLen = maxTanLen; }
+    const start = curr.clone().addScaledVector(dirPrev, tanLen);
+    const end = curr.clone().addScaledVector(dirNext, tanLen);
+    const bisector = dirPrev.clone().add(dirNext).normalize();
+    const center = curr.clone().addScaledVector(bisector, radius / Math.sin(half));
+    const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+    const endAngle = Math.atan2(end.y - center.y, end.x - center.x);
+    const vertexAngle = Math.atan2(curr.y - center.y, curr.x - center.x);
+    const norm = (a: number) => { const t = Math.PI * 2; a %= t; return a < 0 ? a + t : a; };
+    // The two tangent points subtend π − θ (< π) from the centre on the side the
+    // vertex itself sits on — the vertex pokes out just past the chord between them,
+    // "in front of" the short way round, not the long way round the far side of the
+    // centre. So the correct (always shorter) arc is whichever of CW/CCW from start
+    // to end PASSES THROUGH the vertex's own angle — confirmed by hand for both a
+    // 90° and a 60° corner before trusting this generally, not just pattern-matched
+    // from a single (ambiguous — 90° is its own supplement) test case.
+    const vertexOnCcwArc = norm(vertexAngle - startAngle) <= norm(endAngle - startAngle);
+    return { start, end, cx: center.x, cy: center.y, radius, startAngle, endAngle, clockwise: !vertexOnCcwArc };
+  };
+  /** Append the arc for edge `fromIdx → toIdx` if `pts[fromIdx].arc` is set and
+   *  non-degenerate (pen must already be exactly at `pts[fromIdx]`'s raw position —
+   *  guaranteed since `fillet` disables rounding on either side of an arc edge). */
+  const arcTo = (fromIdx: number, toIdx: number): boolean => {
+    const from = pts[fromIdx], to = pts[toIdx];
+    if (!from.arc) return false;
+    const c = circumcircle({ x: from.x, z: from.z }, from.arc, { x: to.x, z: to.z });
+    if (!c) return false;
+    const startAngle = Math.atan2(from.z - c.cz, from.x - c.cx);
+    const endAngle = Math.atan2(to.z - c.cz, to.x - c.cx);
+    const midAngle = Math.atan2(from.arc.z - c.cz, from.arc.x - c.cx);
+    const norm = (a: number) => { const t = Math.PI * 2; a %= t; return a < 0 ? a + t : a; };
+    const midOnCcwArc = norm(midAngle - startAngle) <= norm(endAngle - startAngle);
+    shape.absarc(c.cx, c.cz, c.radius, startAngle, endAngle, !midOnCcwArc);
+    return true;
   };
 
-  const t0 = trim(0);
-  const startPt = t0 ? t0.start : v(0);
+  const f0 = fillet(0);
+  const startPt = f0 ? f0.start : v(0);
   shape.moveTo(startPt.x, startPt.y);
-  if (t0) shape.quadraticCurveTo(pts[0].x, pts[0].z, t0.end.x, t0.end.y);   // vertex 0's own fillet (closed only)
+  if (f0) shape.absarc(f0.cx, f0.cy, f0.radius, f0.startAngle, f0.endAngle, f0.clockwise);   // vertex 0's own fillet (closed only)
   for (let i = 1; i < n; i++) {
-    const t = trim(i);
-    if (t) { shape.lineTo(t.start.x, t.start.y); shape.quadraticCurveTo(pts[i].x, pts[i].z, t.end.x, t.end.y); }
+    if (arcTo(i - 1, i)) continue;
+    const f = fillet(i);
+    if (f) { shape.lineTo(f.start.x, f.start.y); shape.absarc(f.cx, f.cy, f.radius, f.startAngle, f.endAngle, f.clockwise); }
     else { const p = v(i); shape.lineTo(p.x, p.y); }
   }
-  if (closed) shape.closePath();   // straight edge from the last point back to startPt
+  if (closed && !arcTo(n - 1, 0)) shape.closePath();   // straight edge from the last point back to startPt
   return shape;
+}
+
+/** A closed regular polygon of `segments` points approximating a circle of `radius`,
+ *  centred at local (0,0) — for the Line tool's Circle sub-tool: a circle is stored the
+ *  same way any other Line is (a closed WallPoint[] path on a PlaneDesc), just with its
+ *  plane's origin re-based onto the circle's own centre instead of a drawn vertex, so
+ *  every other feature a closed Line already supports (Extrude, Mirror, the schedule…)
+ *  works on it with zero extra code — it's just a Line with a lot of vertices.
+ *
+ *  When `segments` is omitted it scales with `radius` (one facet roughly every 15mm of
+ *  circumference, clamped to [48, 180]) instead of a flat 48 — every one of a Line's
+ *  edges is rendered as a genuine straight `THREE.LineCurve` (never resampled finer by
+ *  `buildLinePath`'s `shape.getPoints()`, since Three.js forces a straight curve's own
+ *  resolution to exactly 2 points regardless of the divisions argument passed in), so a
+ *  flat facet count made a large circle visibly polygonal — more facets for a bigger
+ *  radius keeps the facet SIZE roughly constant instead. */
+export function circlePoints(radius: number, segments?: number): WallPoint[] {
+  const n = segments ?? Math.min(180, Math.max(48, Math.round((2 * Math.PI * radius) / 15)));
+  const pts: WallPoint[] = [];
+  for (let i = 0; i < n; i++) {
+    const theta = (i / n) * Math.PI * 2;
+    pts.push({ x: Math.round(radius * Math.cos(theta)), z: Math.round(radius * Math.sin(theta)) });
+  }
+  return pts;
 }
 
 /** Invisible radius (mm) of the pick-target tube behind a Line's true line — this app
