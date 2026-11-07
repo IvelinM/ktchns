@@ -1,7 +1,7 @@
 <div class="admin-layout">
 
   <!-- ── Control panel ── -->
-  <aside class="control-panel">
+  <aside class="control-panel" *ngIf="!sidebarCollapsed">
 
     <!-- Name of the file this scene is tracking (Save silently overwrites it) — absent
          for a brand-new unsaved scene or one opened via the no-write-access fallback. -->
@@ -549,6 +549,16 @@
 
   </aside>
 
+  <!-- Sidebar collapse/expand rail — always rendered (unlike the panel itself, which is
+       *ngIf'd away entirely when collapsed) so there's always a way back. -->
+  <button class="sidebar-toggle" (click)="toggleSidebar()"
+          [title]="sidebarCollapsed ? 'Покажи панела' : 'Скрий панела (цял екран за визуализацията)'">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline *ngIf="!sidebarCollapsed" points="15 18 9 12 15 6"/>
+      <polyline *ngIf="sidebarCollapsed" points="9 18 15 12 9 6"/>
+    </svg>
+  </button>
+
   <!-- ── Viewport ── -->
   <main class="viewport">
     <canvas #rendererCanvas></canvas>
@@ -559,7 +569,20 @@
     <canvas #navCubeCanvas class="nav-cube" [class.hidden]="viewPlane !== '3D'" title="Click a face to align the view"></canvas>
 
     <!-- Toolbar -->
-    <div class="toolbar">
+    <div class="toolbar" [class.collapsed]="toolbarCollapsed">
+      <!-- Minimize/restore — always rendered (unlike the buttons below, *ngIf'd away
+           entirely when collapsed) so there's always a way back; sits in the bar's own
+           top-right corner regardless of how many tool buttons are currently shown. -->
+      <button class="toolbar-minimize" (click)="toggleToolbar()"
+              [title]="toolbarCollapsed ? 'Покажи лентата с инструменти' : 'Скрий лентата с инструменти'">
+        <svg *ngIf="!toolbarCollapsed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        <svg *ngIf="toolbarCollapsed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/>
+        </svg>
+      </button>
+      <ng-container *ngIf="!toolbarCollapsed">
       <button class="tool-btn" title="Move (M)" [disabled]="!canEdit" (click)="startMove()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
           <polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/>
@@ -821,6 +844,7 @@
         </svg>
         {{ lightTheme ? 'Light' : 'Dark' }}
       </button>
+      </ng-container>
     </div>
 
     <!-- Mode overlay -->
@@ -1138,6 +1162,13 @@
           </label>
           <p class="mat-hint">Огледален, леко размазан под в Render (допълнителен рендер на кадър — изключи
             при по-слаба видеокарта).</p>
+
+          <label class="settings-check">
+            <input type="checkbox" [ngModel]="ssaoEnabled" (ngModelChange)="setSsao($event)">
+            <span>Контактни сенки по ръбовете</span>
+          </label>
+          <p class="mat-hint">Леко притъмняване точно в сгъвките и ъглите на детайлите (допълнителен рендер
+            на кадър). Изключва се автоматично, ако видеокартата не го поддържа добре.</p>
         </div>
       </div>
     </div>

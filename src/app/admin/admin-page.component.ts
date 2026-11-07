@@ -9,6 +9,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import type { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import type { Reflector } from 'three/examples/jsm/objects/Reflector.js';
+import type { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
 
 // The CAD engine is split into focused modules (see each file's header):
 //   webcad.model     — data model & shared constants (the vocabulary; read first)
@@ -108,6 +109,14 @@ const AUTOSAVE_INTERVAL_MS = 5000;
  *  project name across a refresh instead of silently reverting to "scene". See
  *  `openedFileName`. */
 const LAST_FILENAME_KEY = 'webcad-last-filename';
+/** localStorage key the sidebar's collapsed/expanded state is remembered under — a pure
+ *  workspace preference (not part of any one scene), so it lives alongside the other
+ *  plain-string UI-state keys above rather than in buildSceneDoc/parseSceneJson. */
+const SIDEBAR_COLLAPSED_KEY = 'webcad-sidebar-collapsed';
+/** localStorage key the floating tool-button bar's collapsed/expanded state is
+ *  remembered under — same rationale as SIDEBAR_COLLAPSED_KEY (a workspace preference,
+ *  not scene content). */
+const TOOLBAR_COLLAPSED_KEY = 'webcad-toolbar-collapsed';
 
 /**
  * A Revit-style "temporary dimension" shown after clicking a wall's vertical face: the
@@ -236,6 +245,23 @@ export class AdminPageComponent implements OnInit, OnDestroy {
    *  .xlsx export's own "Адрес за доставка:" line (webcad-export-xlsx.ts). This app has
    *  no other client/project field, so it's entered here per project, once. */
   deliveryAddress = '';
+  /** Sidebar collapsed (hidden entirely, viewport takes the full window width) — a
+   *  workspace preference, not scene data, so it's remembered in localStorage
+   *  (SIDEBAR_COLLAPSED_KEY, loaded once in ngOnInit) rather than the scene JSON. */
+  sidebarCollapsed = false;
+  toggleSidebar() {
+    this.sidebarCollapsed = !this.sidebarCollapsed;
+    try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, this.sidebarCollapsed ? '1' : '0'); } catch { /* display nicety only */ }
+  }
+  /** The floating tool-button bar (Move/Copy/Array/.../theme toggle, overlaying the top
+   *  of the viewport) — same "workspace chrome, not scene data" rationale as
+   *  sidebarCollapsed, so it's also localStorage-only. Minimizing it frees the top of
+   *  the canvas for an unobstructed Render preview, same goal as the sidebar toggle. */
+  toolbarCollapsed = false;
+  toggleToolbar() {
+    this.toolbarCollapsed = !this.toolbarCollapsed;
+    try { localStorage.setItem(TOOLBAR_COLLAPSED_KEY, this.toolbarCollapsed ? '1' : '0'); } catch { /* display nicety only */ }
+  }
   marqueeRect: { left: number; top: number; width: number; height: number } | null = null;
   // Distance editor shown next to the cursor during a move/copy/array.
   moveLabel: { x: number; y: number } | null = null;
@@ -480,6 +506,35 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   // ambient occlusion + accurate image-based lighting, using only shadow maps (Iris-Xe-safe).
   private hdriData: { data: Float32Array; w: number; h: number } | null = null;
   private hdriLoading = false;
+  // Screen-space ambient occlusion (Render mode): the one thing the sampled-shadow AO
+  // above can't do — darken a lone convex edge/corner that has nothing nearby to
+  // geometrically occlude it, the way a real render reads extra contrast right at a
+  // seam between two faces. Built from Three's own maintained SSAOPass/SSAOShader
+  // (lazy-imported, same convention as Reflector/HDRLoader above), computed once per
+  // SHOWN frame (unlike the per-sample hemisphere lights — AO only depends on camera +
+  // geometry, not on which light direction renderAccum is sampling) and fed into
+  // accumShowQuad as a multiplicative `tAO` term.
+  //
+  // This is the one place in this whole pipeline that samples a depth texture —
+  // deliberately avoided everywhere else (see the accumulation-pipeline comment above)
+  // because it can silently misbehave on some integrated GPUs. So it's gated behind a
+  // runtime smoke test (ensureSSAO/verifySSAO): WebGL2-only up front (depth textures are
+  // core spec there, not the flakier optional WebGL1 extension), then real passes against
+  // the actual scene are read back — a uniformly flat result (every sampled texel
+  // identical, what a broken depth read tends to produce, since the shader's per-sample
+  // occlusion test then fails the same way everywhere) counts as a failed attempt;
+  // several in a row and SSAO quietly turns itself off for the rest of the session,
+  // falling back to exactly today's no-SSAO look. A single real success locks it on.
+  ssaoEnabled = true;                            // user-facing checkbox (Settings dialog)
+  private ssaoPass: SSAOPass | null = null;
+  private ssaoSupported: boolean | null = null;  // null = not yet confirmed; see verifySSAO
+  private ssaoFailCount = 0;
+  private ssaoLoading = false;
+  private ssaoReadbackRT: THREE.WebGLRenderTarget | null = null;  // tiny UnsignedByte copy target, for both
+                                                                    // the pass's own unused "output" copy and
+                                                                    // the smoke-test readback (see verifySSAO)
+  private ssaoCopyQuad: FullScreenQuad | null = null;
+  private whiteTex: THREE.DataTexture | null = null;   // accumShowQuad's tAO default — a no-op "no AO" map
   private objectMap = new Map<number, THREE.Object3D>();
   private nextId = 1;
   private nextSolidNum = 1;   // drives generic "SOLID N" labeling — separate from nextId (see webcad.model.ts's SceneSnapshot doc)
@@ -522,6 +577,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.resetParams();
     try { this.lastFileName = localStorage.getItem(LAST_FILENAME_KEY); } catch { /* see rememberFileName's doc comment */ }
+    try { this.sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'; } catch { /* display nicety only */ }
+    try { this.toolbarCollapsed = localStorage.getItem(TOOLBAR_COLLAPSED_KEY) === '1'; } catch { /* display nicety only */ }
     this.ngZone.runOutsideAngular(() => this.initThree());
     this.restoreAutosave();
     this.boundBeforeUnload = () => this.persistAutosave();
@@ -556,6 +613,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.bloomExtractQuad?.dispose(); this.bloomBlurQuad?.dispose();
     this.floorReflector?.dispose();
     this.floorBlurA?.dispose(); this.floorBlurB?.dispose();
+    this.ssaoPass?.dispose();
+    this.ssaoReadbackRT?.dispose(); this.ssaoCopyQuad?.dispose(); this.whiteTex?.dispose();
     if (this.floorShadowCatcher) { this.floorShadowCatcher.geometry.dispose(); (this.floorShadowCatcher.material as THREE.Material).dispose(); }
     this.bumpTexBySize.forEach(t => t.dispose());
     this.customBumpCache.forEach(t => t.dispose());
@@ -1530,6 +1589,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         directLight: this.directLight,
         bloomStrength: this.bloomStrength,
         floorReflections: this.floorReflections,
+        ssaoEnabled: this.ssaoEnabled,
         viewPlane: this.viewPlane,
         currentPlane: this.currentPlane,
         camera: {
@@ -1876,6 +1936,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (typeof view.directLight === 'boolean') this.directLight = view.directLight;
     if (Number.isFinite(view.bloomStrength)) this.bloomStrength = Math.min(1, Math.max(0, Number(view.bloomStrength)));
     if (typeof view.floorReflections === 'boolean') this.floorReflections = view.floorReflections;
+    if (typeof view.ssaoEnabled === 'boolean') this.ssaoEnabled = view.ssaoEnabled;
     // Restore currentPlane BEFORE viewPlane — setViewPlane('current') reads it
     // immediately, and this must run after the scene's own instances are already
     // spawned (objectMap populated) for its bounding-sphere framing to work, which
@@ -5261,6 +5322,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         this.floorReflector.getRenderTarget().setSize(rw, rh);
         this.floorBlurA?.setSize(rw, rh); this.floorBlurB?.setSize(rw, rh);
       }
+      this.ssaoPass?.setSize(...this.accumSize());
     });
     this.resizeObserver.observe(canvas.parentElement!);
 
@@ -5289,6 +5351,14 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const canvas = this.navCubeCanvasRef.nativeElement;
     const size = canvas.clientWidth || 84;
 
+    // Built BEFORE the face materials below — makeNavFaceMaterial reads
+    // navRenderer.capabilities for anisotropic filtering, and needs it to already exist
+    // even on this very first build (rebuildNavCubeFaces, the OTHER caller, always runs
+    // after initNavCube so it never had this ordering problem).
+    this.navRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    this.navRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.navRenderer.setSize(size, size);
+
     this.navScene = new THREE.Scene();
     this.navCamera = new THREE.OrthographicCamera(-2.2, 2.2, 2.2, -2.2, 0.1, 20);
 
@@ -5302,10 +5372,6 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     ));
     this.navScene.add(new THREE.AmbientLight(0xffffff, 1));
 
-    this.navRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    this.navRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.navRenderer.setSize(size, size);
-
     this.boundNavMove  = (e) => this.onNavCubeMove(e);
     this.boundNavClick = (e) => this.onNavCubeClick(e);
     this.boundNavLeave = () => this.setNavHover(-1);
@@ -5314,26 +5380,35 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     canvas.addEventListener('mouseleave', this.boundNavLeave);
   }
 
-  /** Builds one face's canvas-texture material; `hover` brightens it. */
+  /**
+   * Builds one face's canvas-texture material; `hover` brightens it. 512px source (was
+   * 256) + anisotropic filtering: the cube mirrors the main camera's own orientation, so
+   * most faces are seen at a shallow angle most of the time, not face-on — without
+   * anisotropy, standard mip-level selection picks a blurrier isotropic level than that
+   * view actually needs (it sizes for the worst-case screen-space derivative, which is
+   * large at a shallow angle even though the other axis is still sharp), which is what
+   * read as "blurred" specifically on the side faces rather than just small.
+   */
   private makeNavFaceMaterial(label: string, hover: boolean): THREE.MeshBasicMaterial {
     const cv = document.createElement('canvas');
-    cv.width = cv.height = 256;
+    cv.width = cv.height = 512;
     const ctx = cv.getContext('2d')!;
     const fill = this.lightTheme ? (hover ? '#dbe4ee' : '#eef1f5') : (hover ? '#3a4048' : '#2b2f36');
     const border = this.lightTheme ? '#aab4c0' : '#4a5058';
     const text = this.lightTheme ? '#2a2f36' : '#e4e7eb';
     ctx.fillStyle = fill;
-    ctx.fillRect(0, 0, 256, 256);
+    ctx.fillRect(0, 0, 512, 512);
     ctx.strokeStyle = border;
-    ctx.lineWidth = 10;
-    ctx.strokeRect(5, 5, 246, 246);
+    ctx.lineWidth = 20;
+    ctx.strokeRect(10, 10, 492, 492);
     ctx.fillStyle = text;
-    ctx.font = 'bold 34px sans-serif';
+    ctx.font = 'bold 68px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(label, 128, 128);
+    ctx.fillText(label, 256, 256);
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = this.navRenderer?.capabilities.getMaxAnisotropy() ?? 1;
     return new THREE.MeshBasicMaterial({ map: tex });
   }
 
@@ -5482,6 +5557,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.accumDirty = true;
     this.ensureAccum();     // lazy-build the progressive-accumulation targets (async, safe if it fails)
     this.loadHdri();        // upgrade RoomEnvironment → studio HDRI once it loads (async)
+    this.ensureSSAO();      // lazy-build the SSAO pass (async, gated by its own runtime smoke test)
   }
 
   /**
@@ -5776,13 +5852,25 @@ export class AdminPageComponent implements OnInit, OnDestroy {
           void main(){ gl_FragColor = mix(texture2D(tAccum, vUv), texture2D(tFrame, vUv), uWeight); }`,
       }));
       this.accumShowQuad = new FullScreenQuad(new THREE.ShaderMaterial({
-        uniforms: { tDiffuse: { value: null }, tBloom: { value: null }, uExposure: { value: 1 }, uBloomStrength: { value: 0 } },
+        uniforms: { tDiffuse: { value: null }, tBloom: { value: null }, tAO: { value: null }, uExposure: { value: 1 }, uBloomStrength: { value: 0 } },
         vertexShader: vert,
         fragmentShader: `
-          varying vec2 vUv; uniform sampler2D tDiffuse; uniform sampler2D tBloom;
+          varying vec2 vUv; uniform sampler2D tDiffuse; uniform sampler2D tBloom; uniform sampler2D tAO;
           uniform float uExposure; uniform float uBloomStrength;
           void main(){
-            vec3 c = (texture2D(tDiffuse, vUv).rgb + texture2D(tBloom, vUv).rgb * uBloomStrength) * uExposure;
+            // tAO (screen-space ambient occlusion, see computeSSAO) multiplies ONLY the diffuse
+            // term — bloom represents already-emitted/bright light, which real contact occlusion
+            // doesn't dim. Defaults to a plain white 1×1 texture (whiteTex) when SSAO is off/
+            // unsupported/not yet loaded, making this line a no-op and the look identical to
+            // before SSAO existed. The pow() steepens the raw occlusion ratio: SSAOShader's own
+            // output is a fairly gentle 0..1 fraction (fraction of kernel samples that found an
+            // occluder), which on its own still reads close to flat white outside the tightest
+            // creases — raising it to a power >1 pulls every partially-occluded pixel darker
+            // (1.0 stays 1.0; 0.6 drops to ~0.26), so the broad, gradual falloff across a whole
+            // panel (kernelRadius, see ensureSSAO) actually shows up as visible tonal variation
+            // instead of washing back out to uniform white once lit.
+            vec3 ao = pow(texture2D(tAO, vUv).rgb, vec3(1.8));
+            vec3 c = (texture2D(tDiffuse, vUv).rgb * ao + texture2D(tBloom, vUv).rgb * uBloomStrength) * uExposure;
             c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);  // ACES filmic (Narkowicz)
             c = clamp(c, 0.0, 1.0);
             c = pow(c, vec3(1.0 / 2.2));                                    // linear → sRGB
@@ -5791,6 +5879,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
             gl_FragColor = vec4(c, 1.0);
           }`,
       }));
+      this.whiteTex = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+      this.whiteTex.needsUpdate = true;
+      (this.accumShowQuad.material as THREE.ShaderMaterial).uniforms['tAO'].value = this.whiteTex;
 
       // Bloom: quarter-res bright-pass + a reusable separable-Gaussian blur quad (also used,
       // unmodified, by the floor reflection's blur — see ensureFloorReflection).
@@ -5828,6 +5919,130 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     } finally {
       this.ppLoading = false;
     }
+  }
+
+  /**
+   * Lazy-build the SSAO pass once (see the field-level doc comment above for why this is
+   * gated the way it is). WebGL2 is checked up front — depth textures are core spec there,
+   * not the flakier optional WebGL1 extension — before even attempting to build anything;
+   * on WebGL1 this commits straight to `ssaoSupported = false` with no further cost.
+   * `kernelRadius`/`minDistance`/`maxDistance` are retuned from Three's own defaults
+   * (written for a roughly 1-unit-per-metre scene with near/far ~0.1/1000): this app's
+   * world units are millimetres with a camera near/far of 1/100000, and SSAOShader's
+   * min/maxDistance are normalised-depth thresholds (fractions of the near→far range, NOT
+   * literal view-space mm — confirmed by reading SSAOShader's own `viewZToOrthographicDepth`
+   * delta test) — at this near/far ratio the stock 0.005/0.1 defaults correspond to
+   * roughly 500mm/10000mm, which is in the right ballpark but was picked blind; deriving
+   * them explicitly from the camera's own near/far makes the real-mm intent legible
+   * instead of two magic fractions. `kernelRadius` itself IS literal view-space mm (used
+   * directly, not through the normalised-depth path), so 60 is just "a furniture-edge-scale
+   * contact radius", picked directly.
+   */
+  private async ensureSSAO() {
+    if (this.ssaoPass || this.ssaoLoading || this.ssaoSupported === false) return;
+    if (!this.renderer.capabilities.isWebGL2) { this.ssaoSupported = false; return; }
+    this.ssaoLoading = true;
+    try {
+      const { SSAOPass } = await import('three/examples/jsm/postprocessing/SSAOPass.js');
+      const { FullScreenQuad } = await import('three/examples/jsm/postprocessing/Pass.js');
+      const [w, h] = this.accumSize();
+      const pass = new SSAOPass(this.scene, this.perspectiveCamera, w, h, 32);
+      const cam = this.perspectiveCamera;
+      const range = cam.far - cam.near;
+      // kernelRadius is intentionally broad (not just a hairline at seams): a large hemisphere
+      // samples a wide swath of neighbouring geometry per pixel, so a whole panel reads a soft
+      // gradient toward every nearby wall/corner/neighbour — not only a thin dark line exactly
+      // at the touching edge. Pushed up from an initial 60mm (which only ever caught the tight
+      // seam itself, leaving the rest of every surface perfectly flat) after exactly that
+      // flatness was reported as still looking wrong. maxDistance is raised to match — it has
+      // to stay comfortably larger than kernelRadius or a 200mm-reach sample's occlusion test
+      // gets clipped away before it can register. kernelSize (32, up from 16) keeps the now-
+      // much-wider hemisphere from reading noisy at this radius (the blur pass only removes
+      // high-frequency speckle, it doesn't compensate for too few samples over a bigger area).
+      pass.kernelRadius = 200;            // literal view-space mm — spans most of a cabinet panel
+      pass.minDistance = 2 / range;       // ≈2mm real occlusion floor, in SSAOShader's normalised-depth units
+      pass.maxDistance = 900 / range;     // ≈900mm real occlusion ceiling, same units
+      this.ssaoPass = pass;
+
+      // Tiny readable copy target: doubles as (a) the dummy write/read target for the
+      // pass's own public render() API (its final "output visualisation" copy step is
+      // unused here — we read blurRenderTarget.texture directly below — so it's given
+      // the cheapest possible destination) and (b) the smoke-test readback in verifySSAO.
+      this.ssaoReadbackRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.UnsignedByteType });
+      this.ssaoCopyQuad = new FullScreenQuad(new THREE.ShaderMaterial({
+        uniforms: { tInput: { value: null } },
+        vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+        fragmentShader: `varying vec2 vUv; uniform sampler2D tInput; void main(){ gl_FragColor = vec4(texture2D(tInput, vUv).rgb, 1.0); }`,
+      }));
+    } catch (e) {
+      console.error('[render] SSAO unavailable — falling back to no-AO Render look', e);
+      this.ssaoSupported = false;
+    } finally {
+      this.ssaoLoading = false;
+    }
+  }
+
+  /**
+   * Compute SSAO for the current camera/scene — once per SHOWN frame (unlike the per-
+   * sample hemisphere lights in renderAccum, AO only depends on camera + geometry, not on
+   * which light direction is being sampled). No-ops (leaving accumShowQuad's tAO at its
+   * white default) while disabled, on an empty scene (nothing to meaningfully test), or
+   * once the runtime smoke test below has found it unreliable.
+   */
+  private computeSSAO() {
+    if (!this.ssaoEnabled || this.ssaoSupported === false || this.instances.length === 0) return;
+    if (!this.ssaoPass) { this.ensureSSAO(); return; }   // still loading — no AO this frame
+    const cam = this.perspectiveCamera;   // Render mode is always the 3D perspective camera (see setViewPlane)
+    const u = this.ssaoPass.ssaoMaterial.uniforms;
+    u['cameraProjectionMatrix'].value.copy(cam.projectionMatrix);
+    u['cameraInverseProjectionMatrix'].value.copy(cam.projectionMatrixInverse);
+    this.ssaoPass.render(this.renderer, this.ssaoReadbackRT!, this.ssaoReadbackRT!, 0, false);
+    if (this.ssaoSupported === null && this.accumN <= 1 && this.ssaoFailCount < 5) this.verifySSAO();
+  }
+
+  /**
+   * Runtime smoke test (see the field-level doc comment for the rationale): copies the
+   * just-computed blurred AO map down to a 4×4 readable target and reads it back. A real
+   * pass against real geometry virtually always varies pixel-to-pixel across that spread
+   * of sample points; a uniformly flat readback — every sampled texel bit-identical — is
+   * what a broken depth-texture pipeline tends to produce instead (SSAOShader's per-sample
+   * "is this point occluded" test then fails the same way everywhere). One real success
+   * locks SSAO on permanently (hardware capability doesn't fluctuate frame to frame);
+   * repeated flat results (5, across different camera framings as the user orbits/idles —
+   * guards against one unlucky all-flat framing, e.g. a single panel filling the screen)
+   * turn it off for the rest of the session.
+   */
+  private verifySSAO() {
+    const r = this.renderer;
+    try {
+      const cm = this.ssaoCopyQuad!.material as THREE.ShaderMaterial;
+      cm.uniforms['tInput'].value = this.ssaoPass!.blurRenderTarget.texture;
+      r.setRenderTarget(this.ssaoReadbackRT!);
+      this.ssaoCopyQuad!.render(r);
+      const buf = new Uint8Array(4 * 4 * 4);
+      r.readRenderTargetPixels(this.ssaoReadbackRT!, 0, 0, 4, 4, buf);
+      r.setRenderTarget(null);
+      let min = 255, max = 0;
+      for (let i = 0; i < buf.length; i += 4) { min = Math.min(min, buf[i]); max = Math.max(max, buf[i]); }
+      if (max - min > 2) {
+        this.ssaoSupported = true;
+      } else {
+        this.ssaoFailCount++;
+        if (this.ssaoFailCount >= 5) {
+          console.warn('[render] SSAO looked flat on every attempt — disabling for this session');
+          this.ssaoSupported = false;
+        }
+      }
+    } catch (e) {
+      console.error('[render] SSAO smoke test failed — disabling', e);
+      this.ssaoSupported = false;
+    }
+  }
+
+  /** The SSAO escape-hatch checkbox (Settings dialog). */
+  setSsao(on: boolean) {
+    this.ssaoEnabled = on;
+    this.accumDirty = true;
   }
 
   /** Back-buffer size in device pixels (matches the renderer's drawing buffer). */
@@ -5912,6 +6127,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       const [w, h] = this.accumSize();
       if (w !== this.frameRT!.width || h !== this.frameRT!.height) {
         this.frameRT!.setSize(w, h); this.accumA!.setSize(w, h); this.accumB!.setSize(w, h);
+        this.ssaoPass?.setSize(w, h);
         this.accumN = 0;
       }
       const n = this.accumN, cam = this.camera;
@@ -6001,10 +6217,17 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     r.setRenderTarget(this.bloomB!);
     this.bloomBlurQuad!.render(r);
 
-    // Tone-map the current average (+ bloom) to screen.
+    // SSAO: computed once per shown frame, not once per accumulated light sample (see
+    // computeSSAO's own doc comment). Leaves tAO at its white default when off/
+    // unsupported/still loading, so nothing below needs its own conditional.
+    this.computeSSAO();
+
+    // Tone-map the current average (+ bloom + AO) to screen.
     const sm = this.accumShowQuad!.material as THREE.ShaderMaterial;
     sm.uniforms['tDiffuse'].value = this.accumA!.texture;
     sm.uniforms['tBloom'].value = this.bloomB!.texture;
+    sm.uniforms['tAO'].value = (this.ssaoEnabled && this.ssaoSupported !== false && this.ssaoPass)
+      ? this.ssaoPass.blurRenderTarget.texture : this.whiteTex;
     sm.uniforms['uExposure'].value = this.cameraBrightness;
     sm.uniforms['uBloomStrength'].value = this.bloomStrength;
     r.setRenderTarget(null);

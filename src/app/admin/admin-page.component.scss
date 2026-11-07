@@ -565,6 +565,32 @@
   line-height: 1.5;
 }
 
+// Sidebar collapse/expand rail: a slim, always-present flex child between .control-panel
+// and .viewport (not absolutely positioned over the canvas — simpler, and never fights
+// the nav-cube/other viewport overlays for z-index). Collapsing the panel is an *ngIf (not
+// an animated width transition) — the panel's own param grids/scrollbars don't need to
+// survive being squeezed through intermediate widths, and the viewport's ResizeObserver
+// (already watching its parent for ordinary window resizes) picks up the freed width for
+// free the instant this toggles, no extra JS needed.
+.sidebar-toggle {
+  flex-shrink: 0;
+  width: 14px;
+  height: 100vh;
+  padding: 0;
+  border: none;
+  border-right: 1px solid var(--c-border-soft);
+  background: var(--c-panel);
+  color: var(--c-text-7);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  svg { width: 13px; height: 13px; }
+
+  &:hover { background: var(--c-border-soft); color: var(--c-text-9); }
+}
+
 // ── Viewport ──────────────────────────────────────────────────────────────────
 
 .viewport {
@@ -582,10 +608,12 @@
   }
 }
 
-// Navigation cube (top-right, Revit-style)
+// Navigation cube (top-right, Revit-style). Pushed down from top:16 to leave room for
+// the collapsed-toolbar restore badge directly above it (same right:16 column — see
+// .toolbar.collapsed below).
 .viewport canvas.nav-cube {
   position: absolute;
-  top: 16px;
+  top: 52px;
   right: 16px;
   width: 84px !important;
   height: 84px !important;
@@ -868,6 +896,62 @@
   border-radius: 8px;
   backdrop-filter: blur(4px);
   z-index: 11;
+
+  // Collapsed: every tool-btn is *ngIf'd away, leaving just the minimize/restore badge.
+  // Re-anchored from "centred at the top" to directly above the nav-cube (same right:16
+  // column — the nav-cube itself is pushed down to top:52 to make room, see .nav-cube
+  // below) instead of just shrinking in place, which left the lone restore button
+  // stranded in the middle of the screen — exactly where you don't want anything sitting
+  // in an unobstructed Render preview.
+  &.collapsed {
+    top: 16px;
+    left: auto;
+    right: 16px;
+    transform: none;
+    padding: 0;
+    gap: 0;
+    background: none;
+    border: none;
+    backdrop-filter: none;
+  }
+}
+
+// Minimize/restore badge. Expanded: sits in the toolbar's own top-right corner
+// (overlapping its edge slightly, like a window control) rather than taking a slot in
+// the button row — stays in the same spot regardless of how many tool-btns are shown.
+// Collapsed (.toolbar.collapsed): it's the toolbar's only content now, re-anchored to
+// the screen's top-right corner above — drop the corner-overlap offset so it just sits
+// plainly inside that (now invisible, see above) container.
+.toolbar-minimize {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--c-raised);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 50%;
+  color: var(--c-text-6);
+  cursor: pointer;
+  z-index: 13;
+
+  .toolbar.collapsed & {
+    position: static;
+    width: 28px;
+    height: 28px;
+    background: var(--c-overlay);
+    border: 1px solid var(--c-border);
+    backdrop-filter: blur(4px);
+  }
+
+  svg { width: 9px; height: 9px; }
+  .toolbar.collapsed & svg { width: 13px; height: 13px; }
+
+  &:hover { border-color: #d4a96a; color: #d4a96a; }
 }
 
 .tool-btn {
@@ -1495,6 +1579,8 @@
   .admin-layout { flex-direction: column; }
   .control-panel { width: 100%; max-width: 100%; height: auto; max-height: 50vh; border-right: none; border-bottom: 1px solid var(--c-border-soft); }
   .viewport { height: 50vh; }
+  .sidebar-toggle { width: 100%; height: 14px; border-right: none; border-bottom: 1px solid var(--c-border-soft); }
+  .sidebar-toggle svg { transform: rotate(90deg); }
   .mat-dialog-body { grid-template-columns: 1fr; }
   .mat-list { border-right: none; border-bottom: 1px solid var(--c-border-soft); max-height: 30vh; }
 }
