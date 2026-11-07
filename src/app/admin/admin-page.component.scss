@@ -1371,9 +1371,13 @@
 
 // ── Schedule (Спецификация) preview dialog ──────────────────────────────────────
 
-.schedule-dialog { width: 1240px; max-width: calc(100% - 48px); }
+// Near-fullscreen: the backdrop is already scoped to <main class="viewport"> (a flex
+// sibling of the sidebar, not a page-wide overlay — see .dialog-backdrop/.viewport),
+// so filling it this way already excludes the sidebar with no extra math needed.
+.schedule-dialog { width: calc(100% - 32px); max-width: calc(100% - 32px); height: calc(100% - 32px); max-height: calc(100% - 32px); }
 
 .schedule-body {
+  flex: 1;
   padding: 16px 18px 18px;
   display: flex;
   flex-direction: column;
@@ -1382,8 +1386,9 @@
 }
 
 .schedule-preview {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
-  max-height: 60vh;
   border: 1px solid var(--c-border-soft);
   border-radius: 6px;
 }

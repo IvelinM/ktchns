@@ -26,13 +26,13 @@
     "@angular/platform-browser-dynamic": "^19.1.0",
     "@angular/router": "^19.1.0",
     "@tsparticles/slim": "^3.9.1",
+    "exceljs": "^4.4.0",
     "gsap": "^3.14.2",
     "rxjs": "~7.8.0",
     "three": "^0.183.2",
     "three-bvh-csg": "^0.0.18",
     "tslib": "^2.3.0",
     "tsparticles": "^3.9.1",
-    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zone.js": "~0.15.0"
   },
   "devDependencies": {

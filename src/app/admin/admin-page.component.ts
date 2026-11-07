@@ -33,7 +33,7 @@ import { FAMILIES } from './webcad-families';
 import { disposeObj, normAnchor, anchorWrap, addEdges, colorObj, setEdgeColor, ghostify } from './webcad-object3d';
 import { buildScheduleText } from './webcad-schedule';
 import { buildHoseWorkbook, buildMayaWorkbook } from './webcad-export-xlsx';
-import * as XLSX from 'xlsx';
+import type ExcelJS from 'exceljs';
 import { applyVoidCuts } from './webcad-csg';
 import { parseFbxDataUrl } from './webcad-fbx';
 
@@ -2010,9 +2010,42 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   /** The preview dialog's "За Хосе (.xlsx)"/"За Мая (.xlsx)" buttons — each manufacturer's
    *  own production-offer request template, filled from the exact same panels as the
-   *  .txt export above (see webcad-export-xlsx.ts for each one's own layout). */
-  exportHoseXlsx() { XLSX.writeFile(buildHoseWorkbook(this.instances), 'Хосе заявка.xlsx'); }
-  exportMayaXlsx() { XLSX.writeFile(buildMayaWorkbook(this.instances), 'Мая спецификация.xlsx'); }
+   *  .txt export above (see webcad-export-xlsx.ts for each one's own layout). Хосе's
+   *  clones a real template fetched from assets/ (never written back to); both just
+   *  hand the finished in-memory workbook here to download. */
+  private async downloadWorkbook(wb: ExcelJS.Workbook, filename: string) {
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /** The project's own saved/opened file name (see `openedFileName`), minus its .json
+   *  extension — 'scene' for a brand-new unsaved scene, matching `downloadScene()`'s own
+   *  fallback name. Used to name the manufacturer exports after the project itself. */
+  private get projectBaseName(): string {
+    return (this.openedFileName ?? 'scene.json').replace(/\.json$/i, '');
+  }
+
+  async exportHoseXlsx() {
+    try {
+      await this.downloadWorkbook(await buildHoseWorkbook(this.instances), `${this.projectBaseName}_Hose.xlsx`);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Неуспешен експорт за Хосе.');
+    }
+  }
+
+  async exportMayaXlsx() {
+    try {
+      await this.downloadWorkbook(await buildMayaWorkbook(this.instances), `${this.projectBaseName}_Laminati.xlsx`);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Неуспешен експорт за Мая.');
+    }
+  }
 
   // ── Photoreal export (→ Blender / V-Ray-class offline render) ───────────────────
 

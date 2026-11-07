@@ -45,10 +45,7 @@
           <input #fbxFileInput type="file" accept=".fbx" (change)="importFbx($event)" hidden>
           <div class="menu-sep"></div>
           <button class="menu-item" (click)="openSchedulePreview()" [disabled]="instances.length === 0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/>
-            </svg>
-            Спецификация (.txt)
+            Спецификация
           </button>
         </div>
       </div>

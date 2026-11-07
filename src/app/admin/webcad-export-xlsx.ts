@@ -1,11 +1,11 @@
 /**
- * WebCAD — manufacturer-specific production-offer request exports (.xlsx). Pure: turns
- * the scene instances into a SheetJS workbook matching each manufacturer's own template
- * exactly, reusing the same panel list the .txt cut-list uses (`collectPanels`,
- * webcad-schedule.ts) so every export agrees on what's actually in the scene. The
- * component only handles triggering the download (XLSX.writeFile).
+ * WebCAD — manufacturer-specific production-offer request exports (.xlsx). Pure (well,
+ * Хосе's needs one fetch): turns the scene instances into a workbook, reusing the same
+ * panel list the .txt cut-list uses (`collectPanels`, webcad-schedule.ts) so every
+ * export agrees on what's actually in the scene. The component only handles triggering
+ * the download (ExcelJS's `writeBuffer` → Blob).
  */
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { SceneInstance } from './webcad.model';
 import { Panel, collectPanels, mergePanels } from './webcad-schedule';
 
@@ -41,75 +41,38 @@ function mode<T>(values: T[]): T {
 
 const BAND = (on: boolean) => (on ? 'да' : '-');
 
-/** The fixed ХОСЕ letterhead + cutting instructions + table headers, identical on every
- *  sheet of their template (D:\WORK_FILES\TONI_SILVIYA\PLOT\Toni_Garderob.xls) — kept
- *  verbatim, including its own "рзмер      2 дясно" header typo (H26): their staff
- *  already read the template that way, so "fixing" it would only make this export look
- *  unfamiliar to them. */
-const HOSE_BOILERPLATE: [string, string][] = [
-  ['C1', 'ХОСЕ '],
-  ['C2', 'Гара Искър ул. Неделчо Бончев № 6 склад 3'],
-  ['C3', 'тел: 9790063; тел:  9791561; моб. тел: 0894641418'],
-  ['C4', ' работно време: от понеделник до петък - 9.00 до 17.30 часа'],
-  ['C5', 'www.hosse.bg'],
-  ['A6', 'ЗАЯВКА'],
-  ['A7', 'РАЗКРОЙ И КАНТИРАНЕ'],
-  ['A8', 'забел.: '],
-  ['B8', 'Размерите на детайлите се задават в милиметри (мм)'],
-  ['B9', 'Размерът на детайлите е без включен кант'],
-  ['B10', 'Технологичен отпадък 4см на кантирана страна независимо от дължината на страната'],
-  ['B11', 'Минимално разстояние между детайлите 5мм'],
-  ['B12', 'Първият размер следва посоката на фладера'],
-  ['H12', '               Панти Ø35мм - врата лява и дясна '],
-  ['B14', 'Детайли с широчина по-малка от 80мм не се приемат за кантиране'],
-  ['B15', 'Фирата от разкроя на плоскостите се получава от клиента (ако остане се пази 5 дни, след това не се носи отговорност)'],
-  ['B17', 'Клиент/фирма:'],
-  ['B18', 'Адрес за доставка:'],
-  ['B19', 'Телефон:'],
-  ['B20', 'е-mail:'],
-  ['B22', 'Вид плоскост/цвят/номер/дебелина:'],
-  ['B23', 'Кант /цвят /номер/ дебелина'],
-  ['A25', '№ елемент'], ['B25', 'размер детайл без кант /мм/'], ['D25', 'брой'],
-  ['E25', 'кантиране на страна / размер/'], ['I25', 'вид кант '], ['J25', 'без фладер /отметка/'],
-  ['K25', 'панти Ø35мм дълга/къса лява/дясна'], ['L25', 'забел.'],
-  ['B26', 'размер 1 '], ['C26', 'размер 2'], ['E26', 'размер 1 отпред'], ['F26', 'размер 1 отзад'],
-  ['G26', 'размер 2 ляво '], ['H26', 'рзмер      2 дясно'],
-];
-
-/** Same merges the original template uses to centre its letterhead/instructions/client-
- *  info text across the sheet's full width — cosmetic only (the `xlsx` package doesn't
- *  carry over fonts/fills on write, just structure), applied identically to every sheet. */
-const HOSE_MERGES: XLSX.Range[] = [
-  ...[0, 1, 2, 3, 4].map(r => ({ s: { r, c: 2 }, e: { r, c: 11 } })),   // rows 1-5: C:L
-  { s: { r: 5, c: 0 }, e: { r: 5, c: 11 } },    // row 6: A:L
-  { s: { r: 6, c: 0 }, e: { r: 6, c: 11 } },    // row 7: A:L
-  { s: { r: 16, c: 3 }, e: { r: 16, c: 11 } },  // row 17: D:L
-  { s: { r: 17, c: 3 }, e: { r: 17, c: 11 } },  // row 18
-  { s: { r: 18, c: 3 }, e: { r: 18, c: 11 } },  // row 19
-  { s: { r: 19, c: 3 }, e: { r: 19, c: 11 } },  // row 20
-  { s: { r: 21, c: 3 }, e: { r: 21, c: 11 } },  // row 22
-  { s: { r: 22, c: 3 }, e: { r: 22, c: 11 } },  // row 23
-];
-
-const HOSE_COL_WIDTHS = [6, 14, 12, 7, 9, 9, 9, 9, 10, 12, 16, 14].map(wch => ({ wch }));
+/**
+ * Хосе's own template, copied into the repo verbatim as a one-sheet starting point
+ * (letterhead, instructions, 3 embedded diagrams, the client-info block and the
+ * material/kant summary lines all cleared back to blank, rows 27–54 pre-numbered
+ * №1–28 with their borders/number formats intact but no data) — prepared once from
+ * D:\WORK_FILES\TONI_SILVIYA\PLOT\Toni_Garderob.xls (see assets/templates/README, if
+ * one gets added) and NEVER written back to; `buildHoseWorkbook` only ever reads it.
+ */
+const HOSE_TEMPLATE_URL = 'assets/templates/hose-template.xlsx';
 
 /**
  * Build a workbook for Хосе's production-offer request — one sheet per board material
- * actually used in the scene, each a copy of their own template's layout: fixed company
- * letterhead + instructions (rows 1–15), a blank client-info block (rows 17–20 — left
- * for the user to fill in by hand; this app has no client/delivery-address field to pull
- * from), the material+kant summary line auto-filled from this group's panels (rows
- * 22–23 — "Вид плоскост/цвят/номер/дебелина:" / "Кант /цвят /номер/ дебелина", per the
- * request), the table headers (rows 25–26), then one row per distinct panel size+
- * banding in this material, merged with a count exactly like the .txt export's "merged"
- * mode (`mergePanels`, webcad-schedule.ts), sorted by size1 then size2 (matching the
- * example's own row order) — banding shown as да/- per edge, same convention as the
- * template (E/F = AB/CD edges "отпред"/"отзад", G/H = BC/DA edges "ляво"/"дясно").
+ * actually used in the scene, each a clone of the real Хосе template (fetched from
+ * `HOSE_TEMPLATE_URL`, read-only — this function never saves back to it): same
+ * letterhead, instructions, diagrams, fonts, borders and merges as the original, just
+ * with the client-info block left blank (this app has no client/delivery-address field
+ * to pull from — the user fills it in by hand) and the material+kant summary line
+ * auto-filled from this group's panels ("Вид плоскост/цвят/номер/дебелина:" /
+ * "Кант /цвят /номер/ дебелина", per the request), then one row per distinct panel
+ * size+banding in this material, merged with a count exactly like the .txt export's
+ * "merged" mode (`mergePanels`, webcad-schedule.ts), sorted by size1 then size2 — да/−
+ * per edge, same convention as the template (E/F = AB/CD edges "отпред"/"отзад", G/H =
+ * BC/DA edges "ляво"/"дясно").
  *
  * Note: we don't track a decor "номер" (board code, e.g. "H2033 ST10") per material —
- * only its name — so D22/D23 omit that segment rather than inventing one.
+ * only its name — so the summary line omits that segment rather than inventing one.
+ * A material with more than 28 distinct size+banding combos overflows the template's
+ * own pre-formatted row range (27–54) — the extra rows still get the right data, just
+ * without that range's borders/number formatting (very unlikely in practice: that's
+ * already more distinct cuts than any of Хосе's own real past orders had).
  */
-export function buildHoseWorkbook(instances: SceneInstance[]): XLSX.WorkBook {
+export async function buildHoseWorkbook(instances: SceneInstance[]): Promise<ExcelJS.Workbook> {
   const panels = collectPanels(instances);
   const byMaterialGroup = new Map<string, Panel[]>();
   for (const p of panels) {
@@ -117,34 +80,70 @@ export function buildHoseWorkbook(instances: SceneInstance[]): XLSX.WorkBook {
     (byMaterialGroup.get(key) ?? byMaterialGroup.set(key, []).get(key)!).push(p);
   }
 
-  const wb = XLSX.utils.book_new();
-  const usedNames = new Set<string>();
+  const res = await fetch(HOSE_TEMPLATE_URL);
+  if (!res.ok) throw new Error(`Не успях да заредя шаблона на Хосе (${HOSE_TEMPLATE_URL}): HTTP ${res.status}`);
+  const buf = await res.arrayBuffer();
+
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  const template = wb.worksheets[0];
+  const templateImages = template.getImages();
+  const templateMerges = (template.model as { merges?: string[] }).merges ?? [];
+
   const materials = [...byMaterialGroup.keys()].sort((a, b) => a.localeCompare(b, 'bg'));
+  const usedNames = new Set<string>();
 
   for (const material of materials) {
     const group = byMaterialGroup.get(material)!;
-    const ws = XLSX.utils.aoa_to_sheet([]);
-    for (const [addr, val] of HOSE_BOILERPLATE) XLSX.utils.sheet_add_aoa(ws, [[val]], { origin: addr });
+    const ws = wb.addWorksheet(sanitizeSheetName(material, usedNames));
+    ws.columns = template.columns.map(c => ({ width: c.width }));
+
+    // Clone every row's values + styles (NOT a shared object reference — ExcelJS cells
+    // hold live back-references to their own worksheet, so sharing one `.model` across
+    // sheets corrupts the workbook; copying plain .value/.style per cell is safe).
+    template.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+      const newRow = ws.getRow(rowNumber);
+      if (row.height) newRow.height = row.height;
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        const newCell = newRow.getCell(colNumber);
+        newCell.value = cell.value;
+        newCell.style = cell.style;
+      });
+      newRow.commit();
+    });
+    for (const range of templateMerges) {
+      try { ws.mergeCells(range); } catch { /* already covered by an outer merge */ }
+    }
+    // exceljs's own .d.ts mistypes getImages()'s imageId as string while addImage()
+    // demands a number — the runtime id is interchangeable either way (confirmed by a
+    // successful round-trip through real Excel), so this cast just works around the
+    // type declaration bug, not an actual type mismatch.
+    for (const img of templateImages) ws.addImage(img.imageId as unknown as number, img.range);
 
     const thickness = mode(group.map(p => p.thickness));
     const kantMaterial = mode(group.map(p => p.kantMaterial)) || '';
     const kantThickness = mode(group.map(p => p.kant));
-    XLSX.utils.sheet_add_aoa(ws, [[`ПДЧ/${material}/${thickness} мм`]], { origin: 'D22' });
-    XLSX.utils.sheet_add_aoa(ws, [[kantMaterial ? `${kantMaterial} / ${kantThickness}мм` : '']], { origin: 'D23' });
+    ws.getCell('D22').value = `ПДЧ/${material}/${thickness} мм`;
+    ws.getCell('D23').value = kantMaterial ? `${kantMaterial} / ${kantThickness}мм` : '';
 
     const merged = mergePanels(group, (a, c) => a.size1 - c.size1 || a.size2 - c.size2);
     merged.forEach(({ p, count }, i) => {
-      XLSX.utils.sheet_add_aoa(ws, [[
-        i + 1, p.size1, p.size2, count,
-        BAND(p.pvc[0]), BAND(p.pvc[2]), BAND(p.pvc[1]), BAND(p.pvc[3]),
-      ]], { origin: `A${27 + i}` });
+      const r = 27 + i;
+      ws.getCell(`A${r}`).value = i + 1;
+      ws.getCell(`B${r}`).value = p.size1;
+      ws.getCell(`C${r}`).value = p.size2;
+      ws.getCell(`D${r}`).value = count;
+      ws.getCell(`E${r}`).value = BAND(p.pvc[0]);
+      ws.getCell(`F${r}`).value = BAND(p.pvc[2]);
+      ws.getCell(`G${r}`).value = BAND(p.pvc[1]);
+      ws.getCell(`H${r}`).value = BAND(p.pvc[3]);
     });
-
-    ws['!cols'] = HOSE_COL_WIDTHS;
-    ws['!merges'] = HOSE_MERGES;
-    XLSX.utils.book_append_sheet(wb, ws, sanitizeSheetName(material, usedNames));
   }
 
+  // Drop the blank source sheet from the download — unless there turned out to be no
+  // materials at all, in which case leave it rather than ship a workbook with zero
+  // sheets (Excel can't open one).
+  if (materials.length > 0) wb.removeWorksheet(template.id);
   return wb;
 }
 
@@ -160,30 +159,32 @@ const SHORT_LABEL = ['-', '1 КЪС', '2 КЪСИ'];
  * sheets like Хосе's), merged with a count exactly like the .txt export's "merged" mode,
  * sorted by BC then AB (matching the example's own row order) — and a final
  * "Grand total: N" row, a literal count exactly like the example (not a formula; her
- * template doesn't use one either).
+ * template doesn't use one either). No source template to clone here — her sheet has
+ * no special formatting worth preserving, so this one's built from scratch.
  */
-export function buildMayaWorkbook(instances: SceneInstance[]): XLSX.WorkBook {
+export async function buildMayaWorkbook(instances: SceneInstance[]): Promise<ExcelJS.Workbook> {
   const panels = collectPanels(instances);
   const merged = mergePanels(panels, (a, c) => a.size2 - c.size2 || a.size1 - c.size1);
 
-  const rows: (string | number)[][] = [
-    ['Спецификация - Всички Гардероб Модули'],
-    ['ТИП', 'МАТЕРИАЛ', 'МАТЕРИАЛ_КАНТ', 'BC [mm]', 'AB [mm]', 'КАНТ_ДЪЛГИ', 'КАНТ_КЪСИ', 'БРОЙ'],
-    [],
-  ];
-  let total = 0;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Sheet1');
+  ws.columns = [6, 36, 16, 9, 9, 11, 11, 7].map(width => ({ width }));
+
+  ws.getCell('A1').value = 'Спецификация - Всички Гардероб Модули';
+  ['ТИП', 'МАТЕРИАЛ', 'МАТЕРИАЛ_КАНТ', 'BC [mm]', 'AB [mm]', 'КАНТ_ДЪЛГИ', 'КАНТ_КЪСИ', 'БРОЙ']
+    .forEach((h, i) => { ws.getRow(2).getCell(i + 1).value = h; });
+
+  let total = 0, rowNum = 4;
   for (const { p, count } of merged) {
     const longCount = (p.pvc[0] ? 1 : 0) + (p.pvc[2] ? 1 : 0);
     const shortCount = (p.pvc[1] ? 1 : 0) + (p.pvc[3] ? 1 : 0);
-    rows.push(['ПДЧ', p.material, p.kantMaterial, p.size2, p.size1, LONG_LABEL[longCount], SHORT_LABEL[shortCount], count]);
+    const row = ws.getRow(rowNum);
+    [ 'ПДЧ', p.material, p.kantMaterial, p.size2, p.size1, LONG_LABEL[longCount], SHORT_LABEL[shortCount], count ]
+      .forEach((v, i) => { row.getCell(i + 1).value = v; });
     total += count;
+    rowNum++;
   }
-  rows.push([`Grand total: ${total}`]);
+  ws.getCell(`A${rowNum}`).value = `Grand total: ${total}`;
 
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [6, 36, 16, 9, 9, 11, 11, 7].map(wch => ({ wch }));
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
   return wb;
 }
