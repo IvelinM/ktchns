@@ -558,6 +558,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.floorBlurA?.dispose(); this.floorBlurB?.dispose();
     if (this.floorShadowCatcher) { this.floorShadowCatcher.geometry.dispose(); (this.floorShadowCatcher.material as THREE.Material).dispose(); }
     this.bumpTexBySize.forEach(t => t.dispose());
+    this.customBumpCache.forEach(t => t.dispose());
     this.moveLine?.geometry.dispose();
     (this.moveLine?.material as THREE.Material | undefined)?.dispose();
     this.measureLine?.geometry.dispose();
@@ -987,6 +988,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   private clearTextureCache() {
     this.textureCache.forEach(t => t.dispose());
     this.textureCache.clear();
+    // Custom bump images too (a replaced/removed one would otherwise leak its old GPU
+    // texture for the rest of the session) — NOT the procedural noise cache
+    // (bumpTexBySize/bumpCanvas): that one is generic, not tied to any one material, so
+    // it has nothing to go stale.
+    this.customBumpCache.forEach(t => t.dispose());
+    this.customBumpCache.clear();
   }
 
   // ── Materials dialog ──────────────────────────────────────────────────────────
@@ -1041,6 +1048,36 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const def = this.editingMaterial;
     if (!def) return;
     def.texture = undefined;
+    this.onMaterialEdited();
+  }
+
+  /** Load a chosen image file as the editing material's bump map (Релеф текстура — see
+   *  `resolveBumpTexture`'s own doc comment). Any image works (only its red channel is
+   *  sampled), but a true grayscale height map is the convention. Replacing the built-in
+   *  procedural noise is optional — `bump` (the intensity slider) still has to be above
+   *  0 for this to show at all, same as the noise it replaces. */
+  onBumpTextureFile(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    const def = this.editingMaterial;
+    if (!file || !def) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      this.ngZone.run(() => {
+        def.bumpTexture = String(reader.result);
+        this.onMaterialEdited();
+      });
+    };
+    reader.readAsDataURL(file);
+    input.value = '';   // allow re-picking the same file
+  }
+
+  /** Remove the editing material's custom bump image — falls back to the built-in
+   *  procedural noise, not to no relief at all (see `resolveBumpTexture`). */
+  clearMaterialBumpTexture() {
+    const def = this.editingMaterial;
+    if (!def) return;
+    def.bumpTexture = undefined;
     this.onMaterialEdited();
   }
 
@@ -1799,6 +1836,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         glossiness: Number.isFinite(m.glossiness as number) ? Number(m.glossiness) : 50,
         bump: Number(m.bump) > 0 ? Number(m.bump) : undefined,
         bumpSize: Number(m.bumpSize) > 0 ? Number(m.bumpSize) : undefined,
+        bumpTexture: typeof m.bumpTexture === 'string' ? m.bumpTexture : undefined,
         texture: typeof m.texture === 'string' ? m.texture : undefined,
         textureW: Number(m.textureW) > 0 ? Number(m.textureW) : undefined,
         textureH: Number(m.textureH) > 0 ? Number(m.textureH) : undefined,
@@ -6040,23 +6078,42 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.accumDirty = true;   // scene changed → restart Render-mode accumulation
   }
 
-  /** Procedural noise used as a bump map — a material's `bump` scales its strength and its
-   *  `bumpSize` sets the grain (mm per noise tile). The noise image is generated once; one
-   *  Texture per grain size is cached (they share the canvas but need their own `repeat`). */
+  /**
+   * Procedural noise used as a bump map — a material's `bump` scales its strength and
+   * its `bumpSize` sets the grain (mm per noise tile). The noise image is generated
+   * once; one Texture per grain size is cached (they share the canvas but need their
+   * own `repeat`).
+   *
+   * Generated at a deliberately LOW resolution (not a full-size per-pixel-random
+   * canvas): bump mapping perturbs the shading normal from the height map's local
+   * GRADIENT, so it only reads as visible relief where neighbouring texels actually
+   * differ in a correlated way. True per-pixel-random noise has zero spatial
+   * correlation — every texel is independent of its neighbours — so as soon as the GPU
+   * samples it below full resolution (any normal viewing distance, or just a few mip
+   * levels up), averaging drives it straight to flat grey and the bump all but
+   * disappears. A small 24×24 grid, left to the GPU's own bilinear `magFilter`
+   * interpolation to smooth between grid points, keeps a real (if gentle) undulation
+   * visible across a much wider range of zoom instead of only right up against the
+   * surface — this was the actual fix for "РЕЛЕФ doesn't look like anything": the
+   * magnitude (`bumpScale` below) was never the limiting factor, the noise's total lack
+   * of spatial coherence was.
+   */
   private bumpCanvas: HTMLCanvasElement | null = null;
   private bumpTexBySize = new Map<number, THREE.Texture>();
-  private bumpTexture(tileMM: number): THREE.Texture {
+  private proceduralBumpTexture(tileMM: number): THREE.Texture {
     const key = Math.max(2, Math.round(tileMM));
     const cached = this.bumpTexBySize.get(key);
     if (cached) return cached;
     if (!this.bumpCanvas) {
-      const S = 128;
+      const S = 24;
       const cv = document.createElement('canvas'); cv.width = cv.height = S;
       const ctx = cv.getContext('2d')!;
       const img = ctx.createImageData(S, S);
       for (let i = 0; i < S * S; i++) {
-        // slightly blurred-feeling value noise (average two randoms) → orange-peel grain, not TV static
-        const v = ((Math.random() + Math.random()) * 0.5 * 255) | 0;
+        // Full-contrast per-cell random — the grid itself (not the value spread) is
+        // what needs to stay coarse; narrowing the spread here would just make the
+        // already-subtle effect even fainter once interpolated.
+        const v = (Math.random() * 255) | 0;
         img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
       }
       ctx.putImageData(img, 0, 0);
@@ -6067,6 +6124,38 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     tex.repeat.set(1 / key, 1 / key);       // one noise tile spans `key` mm of real surface
     this.bumpTexBySize.set(key, tex);
     return tex;
+  }
+
+  // One cached THREE.Texture per (image data URL + tile size) — a user-supplied bump
+  // image (grayscale, or any image: only its red channel is sampled, same convention
+  // every renderer's Bump slot uses — see `resolveBumpTexture`'s own doc comment).
+  private customBumpCache = new Map<string, THREE.Texture>();
+  private customBumpTexture(url: string, tileMM: number): THREE.Texture {
+    const key = Math.max(2, Math.round(tileMM));
+    const cacheKey = `${url}@${key}`;
+    let tex = this.customBumpCache.get(cacheKey);
+    if (!tex) {
+      tex = new THREE.TextureLoader().load(url);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      // Height data, not colour — must stay linear (THREE defaults to NoColorSpace),
+      // unlike the main diffuse texture (materialTexture, above) which needs sRGB.
+      tex.repeat.set(1 / key, 1 / key);
+      this.customBumpCache.set(cacheKey, tex);
+    }
+    return tex;
+  }
+
+  /**
+   * The bump map THIS material actually uses — mimics a renderer's generic "Bump" slot
+   * (V-Ray's included): any grayscale image the user supplies via `bumpTexture`
+   * (Materials dialog → "Релеф текстура"), tiled at `bumpSize` mm — same real-world
+   * tiling convention the main diffuse texture uses (`materialTexture`). Falls back to
+   * the built-in procedural noise (`proceduralBumpTexture`) when no custom image is
+   * set, so every material still gets a sensible default relief instead of none.
+   */
+  private resolveBumpTexture(def: MaterialDef): THREE.Texture {
+    const size = def.bumpSize ?? 24;
+    return def.bumpTexture ? this.customBumpTexture(def.bumpTexture, size) : this.proceduralBumpTexture(size);
   }
 
   /**
@@ -6183,7 +6272,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         // Bump/relief: a procedural noise map perturbs the shading normals for a fine
         // structured surface (e.g. ШАГРЕ / orange-peel), scaled by the material's `bump`.
         if (def?.bump) {
-          std.bumpMap = this.bumpTexture(def.bumpSize ?? 24);
+          std.bumpMap = this.resolveBumpTexture(def);
           std.bumpScale = (def.bump / 100) * 1.4;
         }
         // Clearcoat: a thin, perfectly-smooth lacquer layer over the textured/coloured base —

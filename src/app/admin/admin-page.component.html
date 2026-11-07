@@ -1065,6 +1065,23 @@
                      (ngModelChange)="m.bump = $event; onMaterialEdited()">
             </label>
 
+            <!-- Bump/height map — a generic "Bump" slot like V-Ray's: any grayscale
+                 image, tiled at Размер релеф below; falls back to the built-in
+                 procedural noise when none is set (see resolveBumpTexture). -->
+            <div class="mat-field" *ngIf="m.bump">
+              <span>Релеф текстура</span>
+              <div class="mat-tex-row">
+                <input #bumpFile type="file" accept="image/*" hidden (change)="onBumpTextureFile($event)">
+                <button type="button" class="mat-tex-btn" (click)="bumpFile.click()">{{ m.bumpTexture ? 'Смени…' : 'Добави…' }}</button>
+                <button type="button" class="mat-tex-btn danger" *ngIf="m.bumpTexture" (click)="clearMaterialBumpTexture()">Премахни</button>
+              </div>
+              <span class="mat-bump-preview" [class.empty]="!m.bumpTexture"
+                    [style.backgroundImage]="m.bumpTexture ? 'url(' + m.bumpTexture + ')' : null">
+                <span *ngIf="!m.bumpTexture">NOISE</span>
+              </span>
+              <p class="mat-hint">Без избрана снимка — вграден процедурен шум (NOISE).</p>
+            </div>
+
             <label class="mat-field" *ngIf="m.bump">
               <span>Размер релеф <em>{{ m.bumpSize || 24 }} мм</em></span>
               <input type="range" min="2" max="120" step="1" [ngModel]="m.bumpSize || 24"

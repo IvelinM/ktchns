@@ -1290,6 +1290,30 @@
   &:hover { border-color: #d4a96a; color: #d4a96a; }
   &.danger:hover { border-color: #e05555; color: #e05555; }
 }
+
+// Plain square swatch (no tiling/rotation simulation — the real-world tile size this
+// image repeats at is just "Размер релеф", not worth its own aspect-ratio preview).
+.mat-bump-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
+  margin-top: 8px;
+  border-radius: 6px;
+  border: 1px solid var(--c-border);
+  background-size: cover;
+  background-position: center;
+  &.empty {
+    background-image: repeating-conic-gradient(var(--c-raised) 0% 25%, var(--c-input) 0% 50%);
+    background-size: 14px 14px;
+  }
+  span {
+    font-size: 9px;
+    letter-spacing: 0.05em;
+    color: var(--c-text-6);
+  }
+}
 .mat-tile-col {
   display: flex;
   flex-direction: column;
