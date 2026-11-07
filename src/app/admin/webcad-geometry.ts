@@ -524,6 +524,23 @@ export function panelMaterialGroup(familyId: string, panelName: string): string 
 }
 
 /**
+ * Which `<GROUP>_ЗАВЪРТЯН_ФЛАДЕР` toggle (see KORPUS_PARAMS, webcad-families.ts) a
+ * panel's own wood-grain rotation override reads — the panel's own NAME, except ТАВАН
+ * and its mutually-exclusive РЕБРО ТАВАН 1/2 ribs (see korpusPanels) share the single
+ * ТАВАН_ЗАВЪРТЯН_ФЛАДЕР toggle. Used by both `panelGrainRotation` (the Render-mode
+ * texture rotation, admin-page.component.ts) and the cut-list's own РАЗМЕР 1/РАЗМЕР 2
+ * swap (`collectPanels`, webcad-schedule.ts) — keep both in sync with this.
+ */
+export function panelGrainGroup(panelName: string): string {
+  return panelName.startsWith('РЕБРО ТАВАН') ? 'ТАВАН' : panelName;
+}
+
+/** The `inst.params` key a panel's own ЗАВЪРТЯН_ФЛАДЕР toggle lives under. */
+export function panelGrainParamKey(panelName: string): string {
+  return panelGrainGroup(panelName).replace(/ /g, '_') + '_ЗАВЪРТЯН_ФЛАДЕР';
+}
+
+/**
  * The closed footprint outline of a wall centreline `pts`, offset by `half` on each
  * side with MITRED corners (so adjacent segments share one continuous boundary, no
  * gaps/overlaps). Returns the outline as ground points (XZ): the left side forward

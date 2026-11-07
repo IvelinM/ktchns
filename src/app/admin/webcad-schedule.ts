@@ -6,8 +6,8 @@
  * board that composes a МОДУЛ (via `korpusPanels`, the same decomposition the 3D build
  * uses, so the geometry and the cut-list can never disagree).
  */
-import { SceneInstance } from './webcad.model';
-import { korpusPanels, drawerPanels, panelMaterialGroup, KORPUS_KANT } from './webcad-geometry';
+import { SceneInstance, MaterialDef } from './webcad.model';
+import { korpusPanels, drawerPanels, panelMaterialGroup, panelGrainParamKey, KORPUS_KANT } from './webcad-geometry';
 
 export interface Panel {
   element: string; material: string; kantMaterial: string; size1: number; size2: number;
@@ -38,20 +38,45 @@ function resolveMaterials(inst: SceneInstance, panelName: string | null): { boar
 }
 
 /**
+ * Whether this panel's size1/size2 (and banding) need swapping so РАЗМЕР 1 ends up
+ * being whichever of its two dimensions the wood grain actually runs along — shops cut
+ * along the grain first, so that's what "the first dimension" has to mean in the
+ * cut-list, regardless of which one happens to be this panel's own geometric AB.
+ *
+ * The material's own `grainAxis` ('Ш' = parallel to AB/РАЗМЕР 1, 'В' = parallel to
+ * BC/РАЗМЕР 2 — default 'В') names the axis for that material's texture in a panel's
+ * UN-rotated orientation; checking that specific panel's own ЗАВЪРТЯН_ФЛАДЕР toggle
+ * (same one `panelGrainRotation` in admin-page.component.ts reads, for the Render-mode
+ * texture's own 90° spin) flips it. Only matters when the board material actually HAS a
+ * texture — a flat colour has no grain to align, so never swaps.
+ */
+function grainSwap(inst: SceneInstance, panelName: string | null, boardMaterial: string, materialDefs: MaterialDef[]): boolean {
+  const def = materialDefs.find(m => m.name === boardMaterial);
+  if (!def?.texture) return false;
+  const baseAxis = def.grainAxis ?? 'В';
+  const rotated = panelName ? inst.params[panelGrainParamKey(panelName)] === 1 : false;
+  const effective = rotated ? (baseAxis === 'В' ? 'Ш' : 'В') : baseAxis;
+  return effective === 'В';
+}
+
+/**
  * Collect every ploskost panel in the project — standalone ПЛОСКОСТ objects AND each
  * board that composes a МОДУЛ/ЧЕКМЕДЖЕ (via `korpusPanels`/`drawerPanels`, the same
  * decomposition the 3D build uses, so the geometry and any export of this list can
  * never disagree) — with its size already reduced by its own banding (`addPanel`'s
- * r1/r2). Shared by `buildScheduleText` (the .txt download) and the manufacturer-
- * specific .xlsx exporters (`webcad-export-xlsx.ts`), so every export lists the exact
- * same panels.
+ * r1/r2) and, where the grain calls for it, AB/BC (and their banding) already swapped
+ * so size1/size2 come out grain-correct (see `grainSwap`). Shared by `buildScheduleText`
+ * (the .txt download) and the manufacturer-specific .xlsx exporters
+ * (`webcad-export-xlsx.ts`), so every export lists the exact same panels.
  */
-export function collectPanels(instances: SceneInstance[]): Panel[] {
+export function collectPanels(instances: SceneInstance[], materialDefs: MaterialDef[]): Panel[] {
   const panels: Panel[] = [];
-  const addPanel = (element: string, material: string, kantMaterial: string, AB: number, BC: number, pvc: boolean[], kant: number, thickness: number) => {
-    const r1 = kant * ((pvc[1] ? 1 : 0) + (pvc[3] ? 1 : 0));
-    const r2 = kant * ((pvc[0] ? 1 : 0) + (pvc[2] ? 1 : 0));
-    panels.push({ element, material, kantMaterial, size1: Math.round(AB - r1), size2: Math.round(BC - r2), pvc, kant, thickness });
+  const addPanel = (element: string, material: string, kantMaterial: string, AB: number, BC: number, pvc: boolean[], kant: number, thickness: number, swap: boolean) => {
+    const ab = swap ? BC : AB, bc = swap ? AB : BC;
+    const p2 = swap ? [pvc[1], pvc[0], pvc[3], pvc[2]] : pvc;
+    const r1 = kant * ((p2[1] ? 1 : 0) + (p2[3] ? 1 : 0));
+    const r2 = kant * ((p2[0] ? 1 : 0) + (p2[2] ? 1 : 0));
+    panels.push({ element, material, kantMaterial, size1: Math.round(ab - r1), size2: Math.round(bc - r2), pvc: p2, kant, thickness });
   };
 
   for (const inst of instances) {
@@ -59,18 +84,19 @@ export function collectPanels(instances: SceneInstance[]): Panel[] {
       const p = inst.params;
       const { board, kant: kantMat } = resolveMaterials(inst, null);
       addPanel(inst.label, board, kantMat, p['AB'], p['BC'],
-        [!!p['pvcAB'], !!p['pvcBC'], !!p['pvcCD'], !!p['pvcDA']], p['kantThickness'] || 0, p['thickness'] || 0);
+        [!!p['pvcAB'], !!p['pvcBC'], !!p['pvcCD'], !!p['pvcDA']], p['kantThickness'] || 0, p['thickness'] || 0,
+        grainSwap(inst, null, board, materialDefs));
     } else if (inst.familyId === 'module') {
       const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
       for (const pan of korpusPanels(inst.params, true)) {
         const { board, kant: kantMat } = resolveMaterials(inst, pan.name);
-        addPanel(pan.name, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t);
+        addPanel(pan.name, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, board, materialDefs));
       }
     } else if (inst.familyId === 'drawer') {
       const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
       for (const pan of drawerPanels(inst.params)) {
         const { board, kant: kantMat } = resolveMaterials(inst, pan.name);
-        addPanel(pan.name, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t);
+        addPanel(pan.name, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, board, materialDefs));
       }
     }
   }
@@ -126,8 +152,8 @@ export function mergePanels(panels: Panel[], sortCmp: (a: Panel, c: Panel) => nu
  * (`="ОБЩО …" & SUM(...) & " бр."`) is meant for a spreadsheet to evaluate, not to be
  * read as-is.
  */
-export function buildScheduleText(instances: SceneInstance[], itemize: boolean, asFormulas = true): string {
-  const panels = collectPanels(instances);
+export function buildScheduleText(instances: SceneInstance[], itemize: boolean, materialDefs: MaterialDef[], asFormulas = true): string {
+  const panels = collectPanels(instances, materialDefs);
   const edges = panelEdges;
 
   const edgeHeaders = ['КАНТ РАЗМЕР 1 ОТПРЕД', 'КАНТ РАЗМЕР 1 ОТЗАД', 'КАНТ РАЗМЕР 2 ОТПРЕД', 'КАНТ РАЗМЕР 2 ОТЗАД'];

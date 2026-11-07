@@ -53,6 +53,16 @@ export interface MaterialDef {
   textureW?: number;       // real-world tile width  (mm) — one image tile spans this
   textureH?: number;       // real-world tile height (mm)
   textureRotation?: number; // degrees; rotates the texture about the tile centre
+  // Which of a panel's own two dimensions (РАЗМЕР 1/Ш or РАЗМЕР 2/В — see
+  // webcad-schedule.ts's own АB/BC doc comment) the wood grain runs parallel to by
+  // default (i.e. with that panel's own ЗАВЪРТЯН_ФЛАДЕР toggle unchecked) — undefined
+  // means the default, 'В'. Used ONLY by the cut-list exports, to report whichever
+  // dimension the grain actually runs along as "РАЗМЕР 1" (shops cut along the grain
+  // first) — never changes the panel's own geometry/banding, just how the schedule
+  // labels its two numbers. Checking that panel's ЗАВЪРТЯН_ФЛАДЕР flips the EFFECTIVE
+  // axis (Ш↔В) for both the schedule swap and the Render-mode texture's own 90°
+  // rotation (see panelGrainRotation, admin-page.component.ts) — same toggle drives both.
+  grainAxis?: 'Ш' | 'В';
 }
 
 /** A parametric object type. `buildObject(params)` returns its 3D geometry. */

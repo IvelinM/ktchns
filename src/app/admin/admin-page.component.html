@@ -7,6 +7,13 @@
          for a brand-new unsaved scene or one opened via the no-write-access fallback. -->
     <div class="opened-file-name" *ngIf="openedFileName" [title]="openedFileName">{{ openedFileName }}</div>
 
+    <!-- Delivery address — free text, saved with the project (see deliveryAddress,
+         buildSceneDoc) and picked up by the Хосе .xlsx export's own address line. -->
+    <label class="delivery-address">
+      <span>Адрес за доставка</span>
+      <input type="text" [(ngModel)]="deliveryAddress" placeholder="Адрес за доставка">
+    </label>
+
     <!-- ── File menu ── -->
     <div class="menubar">
       <div #fileMenu class="menu" [class.open]="fileMenuOpen">
@@ -1017,6 +1024,25 @@
                      [ngModel]="m.textureRotation || 0"
                      (ngModelChange)="m.textureRotation = snapTextureRotation(+$event); onMaterialEdited()">
             </label>
+            <!-- Which of a panel's own two dimensions (РАЗМЕР 1/Ш or РАЗМЕР 2/В) the
+                 wood grain runs parallel to by default — drives the Спецификация's
+                 РАЗМЕР 1/РАЗМЕР 2 swap (see collectPanels, webcad-schedule.ts), not the
+                 panel geometry itself. -->
+            <div class="mat-field" *ngIf="m.texture">
+              <span>Фладер успоредно на</span>
+              <div class="mat-grain-row">
+                <label class="mat-radio">
+                  <input type="radio" name="grainAxis" [checked]="(m.grainAxis ?? 'В') === 'Ш'"
+                         (change)="m.grainAxis = 'Ш'; onMaterialEdited()">
+                  <span>Ш</span>
+                </label>
+                <label class="mat-radio">
+                  <input type="radio" name="grainAxis" [checked]="(m.grainAxis ?? 'В') === 'В'"
+                         (change)="m.grainAxis = 'В'; onMaterialEdited()">
+                  <span>В</span>
+                </label>
+              </div>
+            </div>
 
             <label class="mat-field">
               <span>Прозрачност <em>{{ m.transparency }}%</em></span>

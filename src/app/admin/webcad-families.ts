@@ -66,6 +66,12 @@ const KORPUS_PARAMS: ParamDef[] = [
   { key: 'ВРАТИЧКА_С_КАНТ_ОТДОЛУ', label: 'ВРАТИЧКА С КАНТ ОТДОЛУ', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ВРАТИЧКА_ГОРЕН_РЪБ_ОФСЕТ', label: 'ВРАТИЧКА ГОРЕН РЪБ ОФСЕТ', defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ВРАТИЧКА_ДОЛЕН_РЪБ_ОФСЕТ', label: 'ВРАТИЧКА ДОЛЕН РЪБ ОФСЕТ', defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
+  // Render mode only (see materialTexture/applyRenderMaterials, admin-page.component.ts):
+  // rotates this panel's wood-grain texture 90° about its own centre, about the axis
+  // perpendicular to the panel's own face — independent of the material's own global
+  // ЗАВЪРТАНЕ НА ТЕКСТУРАТА (Materials dialog), which every panel using that material
+  // shares. Both leaves of a ДВОЙНА_ВРАТИЧКА share this one toggle (same 'ВРАТИЧКА' name).
+  { key: 'ВРАТИЧКА_ЗАВЪРТЯН_ФЛАДЕР', label: 'ВРАТИЧКА ЗАВЪРТЯН ФЛАДЕР', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   // Splits the single ВРАТИЧКА into two leaves (ЛЯВА/ДЯСНА), separated by a small fixed
   // reveal — ЛЯВА ВРАТИЧКА ШИРИНА only matters (and is only shown — see
   // admin-page.component.ts paramRowVisible) once ДВОЙНА ВРАТИЧКА is checked; the right
@@ -82,21 +88,32 @@ const KORPUS_PARAMS: ParamDef[] = [
   { key: 'ТАВАН_С_КАНТ_ОТДЯСНО', label: 'ТАВАН С КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'РЕБРО_ТАВАН_1_С_КАНТ_ОТПРЕД', label: 'РЕБРО ТАВАН 1 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'РЕБРО_ТАВАН_2_С_КАНТ_ОТПРЕД', label: 'РЕБРО ТАВАН 2 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  // Render mode only (see applyRenderMaterials, admin-page.component.ts): rotates this
+  // panel's wood-grain texture 90° about its own centre (the axis perpendicular to its
+  // own face) — applies to whichever top treatment is actually built (the full ТАВАН
+  // panel, or both РЕБРО ТАВАН ribs when С_РЕБРА is active instead — see korpusPanels).
+  { key: 'ТАВАН_ЗАВЪРТЯН_ФЛАДЕР', label: 'ТАВАН ЗАВЪРТЯН ФЛАДЕР', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ДЪНО_С_КАНТ_ОТПРЕД',   label: 'ДЪНО С КАНТ ОТПРЕД',   defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ДЪНО_С_КАНТ_ОТЛЯВО',   label: 'ДЪНО С КАНТ ОТЛЯВО',   defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ДЪНО_С_КАНТ_ОТДЯСНО',  label: 'ДЪНО С КАНТ ОТДЯСНО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  // Render mode only: same per-panel 90° grain rotation as ТАВАН/ЛЯВА СТРАНИЦА/etc above.
+  { key: 'ДЪНО_ЗАВЪРТЯН_ФЛАДЕР', label: 'ДЪНО ЗАВЪРТЯН ФЛАДЕР', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ЛЯВА_СТРАНИЦА_С_КАНТ_ОТПРЕД',  label: 'ЛЯВА СТРАНИЦА С КАНТ ОТПРЕД',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ЛЯВА_СТРАНИЦА_С_КАНТ_ОТГОРЕ',  label: 'ЛЯВА СТРАНИЦА С КАНТ ОТГОРЕ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ЛЯВА_СТРАНИЦА_С_КАНТ_ОТДОЛУ',  label: 'ЛЯВА СТРАНИЦА С КАНТ ОТДОЛУ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ЛЯВА_СТРАНИЦА_ВИДИМ_КАНТ_ОТПРЕД', label: 'ЛЯВА СТРАНИЦА ВИДИМ КАНТ ОТПРЕД', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ЛЯВА_СТРАНИЦА_ГОРЕН_РЪБ_ОФСЕТ', label: 'ЛЯВА СТРАНИЦА ГОРЕН РЪБ ОФСЕТ', defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ЛЯВА_СТРАНИЦА_ДОЛЕН_РЪБ_ОФСЕТ', label: 'ЛЯВА СТРАНИЦА ДОЛЕН РЪБ ОФСЕТ', defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
+  // Render mode only: same per-panel 90° grain rotation as ТАВАН/ДЪНО/etc above.
+  { key: 'ЛЯВА_СТРАНИЦА_ЗАВЪРТЯН_ФЛАДЕР', label: 'ЛЯВА СТРАНИЦА ЗАВЪРТЯН ФЛАДЕР', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ДЯСНА_СТРАНИЦА_С_КАНТ_ОТПРЕД', label: 'ДЯСНА СТРАНИЦА С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ДЯСНА_СТРАНИЦА_С_КАНТ_ОТГОРЕ', label: 'ДЯСНА СТРАНИЦА С КАНТ ОТГОРЕ', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ДЯСНА_СТРАНИЦА_С_КАНТ_ОТДОЛУ', label: 'ДЯСНА СТРАНИЦА С КАНТ ОТДОЛУ', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ДЯСНА_СТРАНИЦА_ВИДИМ_КАНТ_ОТПРЕД', label: 'ДЯСНА СТРАНИЦА ВИДИМ КАНТ ОТПРЕД', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ДЯСНА_СТРАНИЦА_ГОРЕН_РЪБ_ОФСЕТ', label: 'ДЯСНА СТРАНИЦА ГОРЕН РЪБ ОФСЕТ', defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ДЯСНА_СТРАНИЦА_ДОЛЕН_РЪБ_ОФСЕТ', label: 'ДЯСНА СТРАНИЦА ДОЛЕН РЪБ ОФСЕТ', defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
+  // Render mode only: same per-panel 90° grain rotation as ТАВАН/ДЪНО/etc above.
+  { key: 'ДЯСНА_СТРАНИЦА_ЗАВЪРТЯН_ФЛАДЕР', label: 'ДЯСНА СТРАНИЦА ЗАВЪРТЯН ФЛАДЕР', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ГРЪБ_С_КАНТ_ОТГОРЕ',  label: 'ГРЪБ С КАНТ ОТГОРЕ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ГРЪБ_С_КАНТ_ОТДОЛУ',  label: 'ГРЪБ С КАНТ ОТДОЛУ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ГРЪБ_С_КАНТ_ОТЛЯВО',  label: 'ГРЪБ С КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
@@ -112,6 +129,9 @@ const KORPUS_PARAMS: ParamDef[] = [
   { key: 'ГРЪБ_С_ХОРИЗОНТАЛНА_ФУГА', label: 'ГРЪБ С ХОРИЗОНТАЛНА ФУГА', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ВИСОЧИНА_ГОРЕН_ГРЪБ', label: 'ВИСОЧИНА ГОРЕН ГРЪБ', defaultValue: 360, min: 1, step: 1, unit: 'mm' },
   { key: 'ШИРИНА_ЛЯВ_ГРЪБ',     label: 'ШИРИНА ЛЯВ ГРЪБ',     defaultValue: 400, min: 1, step: 1, unit: 'mm' },
+  // Render mode only: same per-panel 90° grain rotation as ТАВАН/ДЪНО/etc above. Both
+  // leaves of a ДВОЕН_ГРЪБ share this one toggle (same 'ГРЪБ' name).
+  { key: 'ГРЪБ_ЗАВЪРТЯН_ФЛАДЕР', label: 'ГРЪБ ЗАВЪРТЯН ФЛАДЕР', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   // ПОЛИЦИ: up to 10 independent shelf panels, each toggled on/off and positioned by
   // its own ОФСЕТ ОТДОЛУ (mm from the module's nominal bottom to the shelf's own
   // bottom/finished edge); С КАНТ ОТПРЕД bands its front edge. See korpusPanels

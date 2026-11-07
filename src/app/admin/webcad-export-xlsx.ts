@@ -6,8 +6,8 @@
  * the download (ExcelJS's `writeBuffer` → Blob).
  */
 import ExcelJS from 'exceljs';
-import { SceneInstance } from './webcad.model';
-import { Panel, collectPanels, mergePanels } from './webcad-schedule';
+import { SceneInstance, MaterialDef } from './webcad.model';
+import { Panel, collectPanels, mergePanels, byMaterial } from './webcad-schedule';
 
 /** Excel forbids `: \ / ? * [ ]` in a sheet name and caps it at 31 chars; de-duplicate
  *  (two raw material names could collapse to the same sanitized name) by suffixing a
@@ -56,10 +56,14 @@ const HOSE_TEMPLATE_URL = 'assets/templates/hose-template.xlsx';
  * actually used in the scene, each a clone of the real Хосе template (fetched from
  * `HOSE_TEMPLATE_URL`, read-only — this function never saves back to it): same
  * letterhead, instructions, diagrams, fonts, borders and merges as the original, just
- * with the client-info block left blank (this app has no client/delivery-address field
- * to pull from — the user fills it in by hand) and the material+kant summary line
+ * with Клиент/фирма/Телефон/е-mail (D17/D19/D20) always this studio's own static
+ * contact details (by request — this app has no separate client/project-owner field),
+ * the Адрес за доставка line (D18) filled from the sidebar's own `deliveryAddress`
+ * field instead (blank if never filled in — the user's only free-text input here, since
+ * that one genuinely varies per project), and the material+kant summary line
  * auto-filled from this group's panels ("Вид плоскост/цвят/номер/дебелина:" /
- * "Кант /цвят /номер/ дебелина", per the request), then one row per distinct panel
+ * "Кант /цвят /номер/ дебелина" — blank when nothing in the group is actually banded,
+ * or the material is HDF, which never takes a kant at all), then one row per distinct panel
  * size+banding in this material, merged with a count exactly like the .txt export's
  * "merged" mode (`mergePanels`, webcad-schedule.ts), sorted by size1 then size2 — да/−
  * per edge, same convention as the template (E/F = AB/CD edges "отпред"/"отзад", G/H =
@@ -72,8 +76,8 @@ const HOSE_TEMPLATE_URL = 'assets/templates/hose-template.xlsx';
  * without that range's borders/number formatting (very unlikely in practice: that's
  * already more distinct cuts than any of Хосе's own real past orders had).
  */
-export async function buildHoseWorkbook(instances: SceneInstance[]): Promise<ExcelJS.Workbook> {
-  const panels = collectPanels(instances);
+export async function buildHoseWorkbook(instances: SceneInstance[], materialDefs: MaterialDef[], deliveryAddress: string): Promise<ExcelJS.Workbook> {
+  const panels = collectPanels(instances, materialDefs);
   const byMaterialGroup = new Map<string, Panel[]>();
   for (const p of panels) {
     const key = p.material || '(без материал)';
@@ -120,10 +124,27 @@ export async function buildHoseWorkbook(instances: SceneInstance[]): Promise<Exc
     // type declaration bug, not an actual type mismatch.
     for (const img of templateImages) ws.addImage(img.imageId as unknown as number, img.range);
 
+    // Клиент/фирма block — always this studio's own contact details (static, by
+    // request; this app has no separate client/project-owner field). The phone is a
+    // string, not a number, so its leading 0 survives (a numeric cell would drop it).
+    ws.getCell('D17').value = 'Ивелин Матев';
+    ws.getCell('D19').value = '0885272317';
+    ws.getCell('D20').value = 'matev.ivelin@gmail.com';
+
+    // Адрес за доставка — the sidebar field (deliveryAddress, admin-page.component.ts),
+    // entered once per project and saved with it; blank here if never filled in.
+    ws.getCell('D18').value = deliveryAddress;
+
     const thickness = mode(group.map(p => p.thickness));
-    const kantMaterial = mode(group.map(p => p.kantMaterial)) || '';
+    // Кант /цвят /номер/ дебелина stays blank unless this material's panels actually
+    // have SOME banded edge — an unbanded group has no kant to report, even if every
+    // panel still carries a (unused) kant-material pick. HDF never gets a kant line at
+    // all, regardless of banding — matches the real Хосе template (an HDF sheet's own
+    // Кант row is blank there too).
+    const hasKant = !material.toUpperCase().startsWith('HDF') && group.some(p => p.pvc.some(Boolean));
+    const kantMaterial = hasKant ? (mode(group.map(p => p.kantMaterial)) || '') : '';
     const kantThickness = mode(group.map(p => p.kant));
-    ws.getCell('D22').value = `ПДЧ/${material}/${thickness} мм`;
+    ws.getCell('D22').value = `${material}/${thickness} мм`;
     ws.getCell('D23').value = kantMaterial ? `${kantMaterial} / ${kantThickness}мм` : '';
 
     const merged = mergePanels(group, (a, c) => a.size1 - c.size1 || a.size2 - c.size2);
@@ -153,25 +174,27 @@ const SHORT_LABEL = ['-', '1 КЪС', '2 КЪСИ'];
 /**
  * Build a workbook for Мая's production-offer request — a single "Sheet1" matching her
  * own template's layout (D:\WORK_FILES\APARTAMENT_SLAV_KARASLAVOV\PLOT\СЛАВ КАРАСЛАВОВ -
- * ГАРДЕРОБ 1.xlsx): a title row, the column headers (ТИП/МАТЕРИАЛ/МАТЕРИАЛ_КАНТ/BC/AB/
- * КАНТ_ДЪЛГИ/КАНТ_КЪСИ/БРОЙ), a blank spacer row, then every distinct panel size+
- * banding across the WHOLE project (her template interleaves materials, not split into
- * sheets like Хосе's), merged with a count exactly like the .txt export's "merged" mode,
- * sorted by BC then AB (matching the example's own row order) — and a final
- * "Grand total: N" row, a literal count exactly like the example (not a formula; her
- * template doesn't use one either). No source template to clone here — her sheet has
- * no special formatting worth preserving, so this one's built from scratch.
+ * ГАРДЕРОБ 1.xlsx), minus its ТИП column (always just "ПДЧ", dropped per request): a
+ * title row, the column headers (МАТЕРИАЛ/МАТЕРИАЛ_КАНТ/BC/AB/КАНТ_ДЪЛГИ/КАНТ_КЪСИ/
+ * БРОЙ), a blank spacer row, then every distinct panel size+banding across the WHOLE
+ * project (her template interleaves materials, not split into sheets like Хосе's),
+ * merged with a count exactly like the .txt export's "merged" mode, ordered by МАТЕРИАЛ
+ * (then kant material, then size — `byMaterial`, webcad-schedule.ts, same ordering the
+ * .txt export itself uses) — and a final "Grand total: N" row, a literal count exactly
+ * like the example (not a formula; her template doesn't use one either). No source
+ * template to clone here — her sheet has no special formatting worth preserving, so
+ * this one's built from scratch.
  */
-export async function buildMayaWorkbook(instances: SceneInstance[]): Promise<ExcelJS.Workbook> {
-  const panels = collectPanels(instances);
-  const merged = mergePanels(panels, (a, c) => a.size2 - c.size2 || a.size1 - c.size1);
+export async function buildMayaWorkbook(instances: SceneInstance[], materialDefs: MaterialDef[]): Promise<ExcelJS.Workbook> {
+  const panels = collectPanels(instances, materialDefs);
+  const merged = mergePanels(panels, byMaterial);
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Sheet1');
-  ws.columns = [6, 36, 16, 9, 9, 11, 11, 7].map(width => ({ width }));
+  ws.columns = [36, 16, 9, 9, 11, 11, 7].map(width => ({ width }));
 
   ws.getCell('A1').value = 'Спецификация - Всички Гардероб Модули';
-  ['ТИП', 'МАТЕРИАЛ', 'МАТЕРИАЛ_КАНТ', 'BC [mm]', 'AB [mm]', 'КАНТ_ДЪЛГИ', 'КАНТ_КЪСИ', 'БРОЙ']
+  ['МАТЕРИАЛ', 'МАТЕРИАЛ_КАНТ', 'BC [mm]', 'AB [mm]', 'КАНТ_ДЪЛГИ', 'КАНТ_КЪСИ', 'БРОЙ']
     .forEach((h, i) => { ws.getRow(2).getCell(i + 1).value = h; });
 
   let total = 0, rowNum = 4;
@@ -179,7 +202,7 @@ export async function buildMayaWorkbook(instances: SceneInstance[]): Promise<Exc
     const longCount = (p.pvc[0] ? 1 : 0) + (p.pvc[2] ? 1 : 0);
     const shortCount = (p.pvc[1] ? 1 : 0) + (p.pvc[3] ? 1 : 0);
     const row = ws.getRow(rowNum);
-    [ 'ПДЧ', p.material, p.kantMaterial, p.size2, p.size1, LONG_LABEL[longCount], SHORT_LABEL[shortCount], count ]
+    [ p.material, p.kantMaterial, p.size2, p.size1, LONG_LABEL[longCount], SHORT_LABEL[shortCount], count ]
       .forEach((v, i) => { row.getCell(i + 1).value = v; });
     total += count;
     rowNum++;

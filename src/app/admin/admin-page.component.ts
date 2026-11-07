@@ -27,7 +27,7 @@ import {
 import {
   makeMesh, buildWallPath, buildSlabPath, buildLinePath, buildSolidExtrude, buildSolidSweep,
   planePointToWorld, normalizePlaneDesc, planeBasis, setRenderBevel, circlePoints,
-  filletedPolylineShape, panelMaterialGroup,
+  filletedPolylineShape, panelMaterialGroup, panelGrainParamKey,
 } from './webcad-geometry';
 import { FAMILIES } from './webcad-families';
 import { disposeObj, normAnchor, anchorWrap, addEdges, colorObj, setEdgeColor, ghostify } from './webcad-object3d';
@@ -101,6 +101,13 @@ const MIRROR_EXCLUDED_FAMILIES = ['wall', 'slab', 'line', 'module'];
 const AUTOSAVE_KEY = 'webcad-autosave-v1';
 /** How often the autosave safety-net timer writes, in ms (also saved on `beforeunload`). */
 const AUTOSAVE_INTERVAL_MS = 5000;
+/** localStorage key the last opened/saved-as file's NAME is remembered under — unlike
+ *  `savedFileHandle` itself (a live FileSystemFileHandle, which the browser never lets
+ *  survive a reload — there is no API to persist or restore one), a plain string can,
+ *  so the sidebar header and the За Хосе/За Мая export filenames keep using the right
+ *  project name across a refresh instead of silently reverting to "scene". See
+ *  `openedFileName`. */
+const LAST_FILENAME_KEY = 'webcad-last-filename';
 
 /**
  * A Revit-style "temporary dimension" shown after clicking a wall's vertical face: the
@@ -201,12 +208,34 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   // that API, or in browsers that lack it (Firefox/Safari), where "Save" always falls
   // back to "Save as…" (a fresh download) since the page can't get write access otherwise.
   private savedFileHandle: FileSystemFileHandle | null = null;
-  /** The currently tracked file's name, for the sidebar header — null whenever
-   *  `savedFileHandle` is (a brand-new unsaved scene, or opened via the classic
-   *  `<input type=file>` fallback, which never gets write access to overwrite it). A
-   *  getter, not a parallel field, so there's nothing to keep in sync by hand at
-   *  every one of `savedFileHandle`'s own assignment sites. */
-  get openedFileName(): string | null { return this.savedFileHandle?.name ?? null; }
+  /** The last opened/saved-as file's NAME, independent of `savedFileHandle` — a plain
+   *  string, so (unlike the handle itself) it survives a page reload via
+   *  `LAST_FILENAME_KEY` (loaded once in `ngOnInit`). Set by `rememberFileName`
+   *  whenever we genuinely learn a real file name: `loadSceneFile` (covers BOTH the
+   *  File System Access open path and the classic `<input type=file>` fallback — both
+   *  route through it) and `saveSceneAs`'s own success path. */
+  private lastFileName: string | null = null;
+  /** The currently tracked file's name, for the sidebar header AND for naming the
+   *  За Хосе/За Мая exports (`projectBaseName`) — `savedFileHandle`'s own name when we
+   *  still have live write access, else whatever `lastFileName` remembers (e.g. right
+   *  after a reload, where the handle itself can never survive but the name can), else
+   *  null for a scene that's never been opened or saved-as at all. A getter, not a
+   *  parallel field, so there's nothing to keep in sync by hand at every assignment site. */
+  get openedFileName(): string | null { return this.savedFileHandle?.name ?? this.lastFileName; }
+
+  /** Remember a file name across reloads (see `lastFileName`'s own doc comment).
+   *  `localStorage.setItem` can throw (storage full/disabled/private browsing) — this is
+   *  a display nicety, not scene data, so just skip persisting it rather than fail the
+   *  open/save it's attached to. */
+  private rememberFileName(name: string) {
+    this.lastFileName = name;
+    try { localStorage.setItem(LAST_FILENAME_KEY, name); } catch { /* see doc comment */ }
+  }
+  /** Delivery address (sidebar field, under the project name) — free text, persisted
+   *  in the scene JSON (see buildSceneDoc/parseSceneJson) and picked up by the Хосе
+   *  .xlsx export's own "Адрес за доставка:" line (webcad-export-xlsx.ts). This app has
+   *  no other client/project field, so it's entered here per project, once. */
+  deliveryAddress = '';
   marqueeRect: { left: number; top: number; width: number; height: number } | null = null;
   // Distance editor shown next to the cursor during a move/copy/array.
   moveLabel: { x: number; y: number } | null = null;
@@ -492,6 +521,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.resetParams();
+    try { this.lastFileName = localStorage.getItem(LAST_FILENAME_KEY); } catch { /* see rememberFileName's doc comment */ }
     this.ngZone.runOutsideAngular(() => this.initThree());
     this.restoreAutosave();
     this.boundBeforeUnload = () => this.persistAutosave();
@@ -930,13 +960,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /**
    * The repeating THREE.Texture for a material, scaled so one image tile spans
    * `textureW × textureH` mm (panel UVs from ExtrudeGeometry are in model-space mm).
-   * Returns null when the material has no texture.
+   * `extraRotationDeg` adds to the material's own ЗАВЪРТАНЕ НА ТЕКСТУРАТА (Materials
+   * dialog) — used by a panel's own *_ЗАВЪРТЯН_ФЛАДЕР toggle (see `panelGrainRotation`) so one
+   * specific panel's wood grain can run the other way without affecting every other
+   * panel sharing that material. Returns null when the material has no texture.
    */
-  private materialTexture(def: MaterialDef | undefined): THREE.Texture | null {
+  private materialTexture(def: MaterialDef | undefined, extraRotationDeg = 0): THREE.Texture | null {
     if (!def?.texture) return null;
     const w = def.textureW && def.textureW > 0 ? def.textureW : 1000;
     const h = def.textureH && def.textureH > 0 ? def.textureH : 1000;
-    const rot = ((def.textureRotation ?? 0) * Math.PI) / 180;
+    const rot = (((def.textureRotation ?? 0) + extraRotationDeg) * Math.PI) / 180;
     const key = `${w}x${h}@${rot}|${def.texture}`;
     let tex = this.textureCache.get(key);
     if (!tex) {
@@ -1451,6 +1484,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       instances: this.instances,
       // The editable material library (name + colour/transparency/reflection/glossiness).
       materials: this.materialDefs,
+      // Sidebar "Адрес за доставка" field — see its own field doc comment.
+      deliveryAddress: this.deliveryAddress,
       // Visualisation + view settings so the scene reopens looking identical.
       view: {
         theme: this.lightTheme ? 'light' : 'dark',
@@ -1475,13 +1510,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     };
   }
 
-  /** Fallback save: trigger a browser download of the scene JSON (no file handle to keep). */
+  /** Fallback save: trigger a browser download of the scene JSON (no file handle to keep).
+   *  Named after `openedFileName` when we have one (even just `lastFileName`, e.g. right
+   *  after a reload) so this still matches the project instead of reverting to the
+   *  generic "scene.json" the moment live write access is gone. */
   private downloadScene() {
     const blob = new Blob([JSON.stringify(this.buildSceneDoc(), null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'scene.json';
+    a.download = this.openedFileName ?? 'scene.json';
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -1512,13 +1550,14 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     if (picker) {
       try {
         const handle = await picker({
-          suggestedName: 'scene.json',
+          suggestedName: this.openedFileName ?? 'scene.json',
           types: [{ description: 'WebCAD scene', accept: { 'application/json': ['.json'] } }],
         });
         const writable = await handle.createWritable();
         await writable.write(JSON.stringify(this.buildSceneDoc(), null, 2));
         await writable.close();
         this.savedFileHandle = handle;
+        this.rememberFileName(handle.name);
         return;
       } catch (err) {
         if ((err as DOMException)?.name === 'AbortError') return;   // user cancelled the picker
@@ -1590,12 +1629,18 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const { snap, materials, view } = this.parseSceneJson(String(reader.result));
+        const { snap, materials, view, deliveryAddress } = this.parseSceneJson(String(reader.result));
         this.ngZone.run(() => {
           this.pushHistory();   // loading is undoable
           this.restoreScene(snap);
           this.restoreMaterialLibrary(materials);
           this.restoreView(view);
+          this.deliveryAddress = deliveryAddress;
+          // Covers BOTH the File System Access open path and the classic
+          // <input type=file> fallback — both route through here — so the sidebar
+          // header and export filenames keep the right name even where (or once,
+          // after a reload) there's no live write-access handle to derive it from.
+          this.rememberFileName(file.name);
         });
       } catch {
         this.ngZone.run(() => alert('Invalid scene file — expected WebCAD scene JSON.'));
@@ -1605,7 +1650,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   }
 
   /** Normalise + validate a scene JSON string into a restorable snapshot; throws on invalid input. */
-  private parseSceneJson(text: string): { snap: SceneSnapshot; materials: unknown; view: unknown } {
+  private parseSceneJson(text: string): { snap: SceneSnapshot; materials: unknown; view: unknown; deliveryAddress: string } {
     const doc = JSON.parse(text);
     const instances = Array.isArray(doc) ? doc : doc.instances;   // accept a bare array too
     if (!Array.isArray(instances)) throw new Error('no instances array');
@@ -1684,7 +1729,10 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       return match ? Math.max(m, Number(match[1])) : m;
     }, 0);
     const nextSolidNum = Math.max(Number(doc.nextSolidNum) > 0 ? Number(doc.nextSolidNum) : 1, maxSolidLabel + 1);
-    return { snap: { instances: clean, nextId, nextSolidNum }, materials: doc.materials, view: doc.view };
+    return {
+      snap: { instances: clean, nextId, nextSolidNum }, materials: doc.materials, view: doc.view,
+      deliveryAddress: typeof doc.deliveryAddress === 'string' ? doc.deliveryAddress : '',
+    };
   }
 
   // ── Autosave (localStorage) ──────────────────────────────────────────────────
@@ -1727,11 +1775,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const text = localStorage.getItem(AUTOSAVE_KEY);
     if (!text) return;
     try {
-      const { snap, materials, view } = this.parseSceneJson(text);
+      const { snap, materials, view, deliveryAddress } = this.parseSceneJson(text);
       if (snap.instances.length === 0) return;   // nothing worth restoring
       this.restoreScene(snap);
       this.restoreMaterialLibrary(materials);
       this.restoreView(view);
+      this.deliveryAddress = deliveryAddress;
     } catch {
       localStorage.removeItem(AUTOSAVE_KEY);   // corrupted — drop it rather than fail on every load
     }
@@ -1754,6 +1803,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         textureW: Number(m.textureW) > 0 ? Number(m.textureW) : undefined,
         textureH: Number(m.textureH) > 0 ? Number(m.textureH) : undefined,
         textureRotation: Number.isFinite(m.textureRotation as number) ? Number(m.textureRotation) : undefined,
+        grainAxis: m.grainAxis === 'Ш' || m.grainAxis === 'В' ? m.grainAxis : undefined,
       }));
     if (!clean.length) return;
     // Merge in any built-in defaults the saved library is missing (by name), so older scenes
@@ -1987,7 +2037,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
    *  false` so a ОБЩО subtotal shows its plain number instead of the literal formula
    *  text that the actual .txt download (exportSchedule) still gets. */
   get scheduleRows(): string[][] {
-    return buildScheduleText(this.instances, this.itemize, false).replace(/^﻿/, '').split('\r\n').map(l => l.split('\t'));
+    return buildScheduleText(this.instances, this.itemize, this.materialDefs, false).replace(/^﻿/, '').split('\r\n').map(l => l.split('\t'));
   }
 
   /** Column count of the header row — a shorter row (a ОБЩО subtotal/blank separator,
@@ -1999,7 +2049,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   /** Generate the cut-list (see webcad-schedule) and download it as a .txt for the shop —
    *  the preview dialog's own "Изтегли" button. */
   exportSchedule() {
-    const blob = new Blob([buildScheduleText(this.instances, this.itemize)], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob([buildScheduleText(this.instances, this.itemize, this.materialDefs)], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -2033,7 +2083,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   async exportHoseXlsx() {
     try {
-      await this.downloadWorkbook(await buildHoseWorkbook(this.instances), `${this.projectBaseName}_Hose.xlsx`);
+      await this.downloadWorkbook(await buildHoseWorkbook(this.instances, this.materialDefs, this.deliveryAddress), `${this.projectBaseName}_Hose.xlsx`);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Неуспешен експорт за Хосе.');
     }
@@ -2041,7 +2091,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   async exportMayaXlsx() {
     try {
-      await this.downloadWorkbook(await buildMayaWorkbook(this.instances), `${this.projectBaseName}_Laminati.xlsx`);
+      await this.downloadWorkbook(await buildMayaWorkbook(this.instances, this.materialDefs), `${this.projectBaseName}_Laminati.xlsx`);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Неуспешен експорт за Мая.');
     }
@@ -6055,6 +6105,23 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   }
 
   /**
+   * A panel's own wood-grain rotation override (0° or 90°), read from its own
+   * ЗАВЪРТЯН_ФЛАДЕР toggle (see KORPUS_PARAMS, webcad-families.ts and
+   * `panelGrainParamKey`, webcad-geometry.ts) — rotates the texture about its own
+   * centre, about the axis perpendicular to the panel's face, independent of the
+   * material's own global ЗАВЪРТАНЕ НА ТЕКСТУРАТА (every panel using that material
+   * otherwise shares one rotation). Same toggle also flips which of the panel's two
+   * dimensions the cut-list reports as РАЗМЕР 1 — see `collectPanels`'s own grain-swap
+   * (webcad-schedule.ts) — both read the identical ON/OFF state, just applied two ways.
+   * 0 for a family/panel with no such param (e.g. ПОЛИЦА, ЧЕКМЕДЖЕ) — `params[...]` is
+   * simply undefined there.
+   */
+  private panelGrainRotation(inst: SceneInstance, panelName: string | undefined): number {
+    if (!panelName) return 0;
+    return inst.params[panelGrainParamKey(panelName)] === 1 ? 90 : 0;
+  }
+
+  /**
    * Convert an object's flat MeshPhong materials to MeshStandard (PBR) so they react to
    * the environment, and hide its CAD edge lines. Each panel's chosen МАТЕРИАЛИ drive
    * the look: the board face takes its panel material, PVC bands take the matching
@@ -6091,8 +6158,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         const isBand = !!m.userData['edgeBand'];
         const def = isBand ? kantDef : boardDef;
         // A flat board face (no .map) may take the material's JPG texture; the chipboard
-        // edge (which already has m.map) keeps its own look.
-        const defTex = !m.map ? this.materialTexture(def) : null;
+        // edge (which already has m.map) keeps its own look. The *_ЗАВЪРТЯН_ФЛАДЕР grain-
+        // direction override only ever applies to the board face, never the edge band.
+        const defTex = !m.map ? this.materialTexture(def, isBand ? 0 : this.panelGrainRotation(inst, panelName)) : null;
         const std = new THREE.MeshPhysicalMaterial({
           // With a texture the colour is white (show the image faithfully); otherwise a
           // flat face takes the def colour, and a textured edge keeps its own colour.

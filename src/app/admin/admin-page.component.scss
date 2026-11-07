@@ -996,6 +996,30 @@
   text-overflow: ellipsis;
 }
 
+.delivery-address {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 18px 0;
+  span {
+    font-size: 10px;
+    color: var(--c-text-6);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  input {
+    width: 100%;
+    background: var(--c-input);
+    border: 1px solid var(--c-border);
+    border-radius: 6px;
+    color: var(--c-text);
+    font-size: 12px;
+    padding: 6px 8px;
+    outline: none;
+    &:focus { border-color: #d4a96a; }
+  }
+}
+
 .menubar {
   display: flex;
   align-items: center;
@@ -1289,6 +1313,19 @@
       &:focus { border-color: #d4a96a; }
     }
   }
+}
+.mat-grain-row {
+  display: flex;
+  gap: 16px;
+}
+.mat-radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--c-text);
+  cursor: pointer;
+  input { width: 15px; height: 15px; accent-color: #d4a96a; cursor: pointer; }
 }
 .mat-actions {
   display: flex;
