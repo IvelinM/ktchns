@@ -300,14 +300,18 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
   // its own ОФСЕТ_ОТДОЛУ — the shelf's finished bottom edge sits that many mm above the
   // module's nominal bottom, regardless of ДЪНО/ТАВАН/РЕБРА. Always inset between the
   // sides (never extends to the outer face) and never flush to the front door face.
-  const shelfD = frontD(false), shelfZ = frontZ(false);
+  // ОФСЕТ_ОТПРЕД works exactly like ТАВАН_ОФСЕТ_ОТПРЕД above (same frontD/frontZ, just a
+  // per-shelf offset instead of a shared one): negative pulls the shelf's front edge
+  // inward (shrinking its depth), positive extends it forward past the door's rear face.
   for (let n = 1; n <= 10; n++) {
     if (!b(`С_ПОЛИЦА_${n}`)) continue;
     const offset = p[`ПОЛИЦА_${n}_ОФСЕТ_ОТДОЛУ`] ?? 0;
+    const offsetFront = p[`ПОЛИЦА_${n}_ОФСЕТ_ОТПРЕД`] ?? 0;
     const xl = -(W / 2 - t), xr = W / 2 - t;
     const yb = -H / 2 + offset, yt = yb + t;
     const shelfPvc = [b(`ПОЛИЦА_${n}_С_КАНТ_ОТПРЕД`), false, false, false];
-    add(`ПОЛИЦА ${n}`, xr - xl, shelfD, -Math.PI / 2, 0, 0, mid(xl, xr), mid(yb, yt), shelfZ, shelfPvc);
+    add(`ПОЛИЦА ${n}`, xr - xl, frontD(false, offsetFront), -Math.PI / 2, 0, 0,
+        mid(xl, xr), mid(yb, yt), frontZ(false, offsetFront), shelfPvc);
   }
 
   // Top: either one full ТАВАН panel (same depth-override rule as the sides/bottom)…
@@ -342,12 +346,45 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
 
   // Back occupies the rear thickness of the envelope (its own ГРЪБ ДЕБЕЛИНА); each edge
   // runs to the outer face (covers) or is inset per its ГРЪБ_ВИДИМ flag, and is banded
-  // per its ГРЪБ_С_КАНТ flag.
+  // per its ГРЪБ_С_КАНТ flag. ДВОЕН_ГРЪБ splits it into two leaves (see below) instead
+  // of resizing it — this xl/xr/yb/yt opening is unaffected either way.
   if (hasBack) {
     const xl = grbL ? -W / 2 : -(W / 2 - t), xr = grbR ? W / 2 : W / 2 - t;
     const yb = grbB ? -H / 2 : -(H / 2 - t), yt = grbT ? H / 2 : H / 2 - t;
-    const backPvc = [b('ГРЪБ_С_КАНТ_ОТДОЛУ'), b('ГРЪБ_С_КАНТ_ОТДЯСНО'), b('ГРЪБ_С_КАНТ_ОТГОРЕ'), b('ГРЪБ_С_КАНТ_ОТЛЯВО')];
-    add('ГРЪБ', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), -(D / 2 - backT / 2), backPvc, backT);
+    const backZ = -(D / 2 - backT / 2);
+    const grbBottom = b('ГРЪБ_С_КАНТ_ОТДОЛУ'), grbRight = b('ГРЪБ_С_КАНТ_ОТДЯСНО');
+    const grbTopEdge = b('ГРЪБ_С_КАНТ_ОТГОРЕ'), grbLeftEdge = b('ГРЪБ_С_КАНТ_ОТЛЯВО');
+    if (b('ДВОЕН_ГРЪБ')) {
+      // Split into two leaves that ALWAYS touch with zero gap (unlike ДВОЙНА_ВРАТИЧКА's
+      // configurable reveal) — the seam is never exposed, so that edge is never banded
+      // regardless of the matching ГРЪБ_С_КАНТ_* toggle. Both leaves share the SAME
+      // 'ГРЪБ' name (and so the same ГРЪБ_* material/kant lookup), only their size
+      // differs. ГРЪБ_С_ХОРИЗОНТАЛНА_ФУГА (default true — opposite default from
+      // ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА) picks which way they split: true → stacked,
+      // divided by a HORIZONTAL fugue (split along Y, ГОРЕН/ДОЛЕН — ВИСОЧИНА_ГОРЕН_ГРЪБ
+      // sizes the TOP leaf); false → side by side, divided by a VERTICAL fugue (split
+      // along X, ЛЯВ/ДЯСЕН — ШИРИНА_ЛЯВ_ГРЪБ sizes the LEFT leaf).
+      if (b('ГРЪБ_С_ХОРИЗОНТАЛНА_ФУГА')) {
+        const totalH = yt - yb;
+        const topH = Math.max(0, Math.min(p['ВИСОЧИНА_ГОРЕН_ГРЪБ'] ?? totalH / 2, totalH));
+        const splitY = yt - topH;
+        add('ГРЪБ', xr - xl, yt - splitY, 0, 0, 0, mid(xl, xr), mid(splitY, yt), backZ,
+            [false, grbRight, grbTopEdge, grbLeftEdge], backT);
+        add('ГРЪБ', xr - xl, splitY - yb, 0, 0, 0, mid(xl, xr), mid(yb, splitY), backZ,
+            [grbBottom, grbRight, false, grbLeftEdge], backT);
+      } else {
+        const totalW = xr - xl;
+        const leftW = Math.max(0, Math.min(p['ШИРИНА_ЛЯВ_ГРЪБ'] ?? totalW / 2, totalW));
+        const splitX = xl + leftW;
+        add('ГРЪБ', splitX - xl, yt - yb, 0, 0, 0, mid(xl, splitX), mid(yb, yt), backZ,
+            [grbBottom, false, grbTopEdge, grbLeftEdge], backT);
+        add('ГРЪБ', xr - splitX, yt - yb, 0, 0, 0, mid(splitX, xr), mid(yb, yt), backZ,
+            [grbBottom, grbRight, grbTopEdge, false], backT);
+      }
+    } else {
+      add('ГРЪБ', xr - xl, yt - yb, 0, 0, 0, mid(xl, xr), mid(yb, yt), backZ,
+          [grbBottom, grbRight, grbTopEdge, grbLeftEdge], backT);
+    }
   }
 
   // Front door occupies the front thickness of the envelope; left/right edges are
@@ -399,15 +436,15 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
   return panels;
 }
 
-/** Build the full КОРПУС (МОДУЛ) carcass group from params, tagging each panel for sub-selection. */
-export function buildKorpus(p: Record<string, number>, withDoor: boolean): THREE.Group {
-  const kant = p['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
+/** Build a group of `makeMesh` panels from a KorpusPanel[] layout, tagging each one for
+ *  sub-selection (TAB) and the schedule — the shared build step behind both buildKorpus
+ *  and buildDrawer (any family whose geometry is just a flat list of panels). */
+function buildPanelGroup(panels: KorpusPanel[], kant: number): THREE.Group {
   const group = new THREE.Group();
-  for (const pan of korpusPanels(p, withDoor)) {
+  for (const pan of panels) {
     const mesh = makeMesh(pan.AB, pan.BC, 90, pan.t, pan.pvc, kant);
     mesh.rotation.set(pan.rx, pan.ry, pan.rz);
     mesh.position.set(pan.px, pan.py, pan.pz);
-    // Tag the panel node so it can be sub-selected (TAB) and shown read-only.
     mesh.userData['panel'] = {
       name: pan.name, size1: Math.round(pan.AB), size2: Math.round(pan.BC),
       thickness: pan.t, pvc: pan.pvc, kant,
@@ -415,6 +452,75 @@ export function buildKorpus(p: Record<string, number>, withDoor: boolean): THREE
     group.add(mesh);
   }
   return group;
+}
+
+/** Build the full КОРПУС (МОДУЛ) carcass group from params, tagging each panel for sub-selection. */
+export function buildKorpus(p: Record<string, number>, withDoor: boolean): THREE.Group {
+  return buildPanelGroup(korpusPanels(p, withDoor), p['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT);
+}
+
+/**
+ * Decompose a ЧЕКМЕДЖЕ (drawer box) into its panels — the single source of the layout,
+ * consumed both by buildDrawer (3D) and the schedule export, same convention as
+ * korpusPanels/buildKorpus above. Always exactly six panels (no С_* toggles): ДЪНО sits
+ * at the very bottom of the ВИСОЧИНА envelope; ЛЯВА/ДЯСНА СТРАНИЦА stand on it at full
+ * depth; ГРЪБ and КОНСТРУКТИВНО ЧЕЛО sit BETWEEN the sides, flush with the back/front
+ * faces; ЧЕЛО (the visible, fully-banded face) mounts just in front of КОНСТРУКТИВНО
+ * ЧЕЛО, flush with the sides' outer width, its top/bottom edges offset from the box's
+ * own top/bottom by ВРАТИЧКА_ОФСЕТ_ОТГОРЕ/ОТДОЛУ (positive ОТГОРЕ grows it upward past
+ * the box top; negative ОТДОЛУ — the default — grows it downward past the box bottom;
+ * same "positive moves the edge up" sign convention korpusPanels already uses for its
+ * own *_РЪБ_ОФСЕТ params). Materials: see `panelMaterialGroup` below — the structural
+ * panels share one pick, ЧЕЛО has its own.
+ */
+export function drawerPanels(p: Record<string, number>): KorpusPanel[] {
+  const W = p['ШИРИНА_ЧЕКМЕДЖЕ']    ?? 400;
+  const H = p['ВИСОЧИНА_ЧЕКМЕДЖЕ']  ?? 150;
+  const D = p['ДЪЛБОЧИНА_ЧЕКМЕДЖЕ'] ?? 450;
+  const t = p['ПЛОСКОСТ_ДЕБЕЛИНА']  ?? 16;
+  const offTop = p['ВРАТИЧКА_ОФСЕТ_ОТГОРЕ'] ?? 20;
+  const offBot = p['ВРАТИЧКА_ОФСЕТ_ОТДОЛУ'] ?? -20;
+
+  const mid = (a: number, c: number) => (a + c) / 2;
+  const panels: KorpusPanel[] = [];
+  const add = (name: string, AB: number, BC: number, rx: number, ry: number, rz: number,
+               px: number, py: number, pz: number, pvc: boolean[]) =>
+    panels.push({ name, AB, BC, rx, ry, rz, px, py, pz, pvc, t });
+
+  const innerYb = -H / 2 + t, innerYt = H / 2;   // sides/back/front rest on ДЪНО
+
+  add('ДЪНО', W, D, -Math.PI / 2, 0, 0, 0, -(H / 2 - t / 2), 0, [false, false, false, false]);
+  add('ЛЯВА СТРАНИЦА',  D, innerYt - innerYb, 0, Math.PI / 2, 0, -(W / 2 - t / 2), mid(innerYb, innerYt), 0, [false, false, false, false]);
+  add('ДЯСНА СТРАНИЦА', D, innerYt - innerYb, 0, Math.PI / 2, 0,  (W / 2 - t / 2), mid(innerYb, innerYt), 0, [false, false, false, false]);
+
+  const innerW = W - 2 * t;
+  add('ГРЪБ',             innerW, innerYt - innerYb, 0, 0, 0, 0, mid(innerYb, innerYt), -(D / 2 - t / 2), [false, false, false, false]);
+  add('КОНСТРУКТИВНО ЧЕЛО', innerW, innerYt - innerYb, 0, 0, 0, 0, mid(innerYb, innerYt),  (D / 2 - t / 2), [false, false, false, false]);
+
+  const faceYt = H / 2 + offTop, faceYb = -H / 2 + offBot;
+  add('ЧЕЛО', W, faceYt - faceYb, 0, 0, 0, 0, mid(faceYb, faceYt), D / 2 + t / 2, [true, true, true, true]);
+
+  return panels;
+}
+
+/** Build the ЧЕКМЕДЖЕ group from params, tagging each panel for sub-selection. */
+export function buildDrawer(p: Record<string, number>): THREE.Group {
+  return buildPanelGroup(drawerPanels(p), p['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT);
+}
+
+/**
+ * Which stored `inst.materials` key pair a panel's board/edge-band material is read
+ * from — usually just the panel's own NAME (one key pair per panel, spaces→underscores,
+ * the KORPUS_MATERIAL_PARAMS convention); ЧЕКМЕДЖЕ instead shares ONE pair across all
+ * its structural panels (ДЪНО/СТРАНИЦИ/ГРЪБ/КОНСТРУКТИВНО ЧЕЛО, grouped as 'КОРПУС')
+ * and a separate pair for the visible ЧЕЛО face — see the `drawer` family's
+ * materialParams (webcad-families.ts): КОРПУС_МАТЕРИАЛ/КОРПУС_КАНТ_МАТЕРИАЛ and
+ * ЧЕЛО_МАТЕРИАЛ/ЧЕЛО_КАНТ_МАТЕРИАЛ. Used everywhere a panel name is turned into a
+ * materials-map key: cadColorObj/applyRenderMaterials (admin-page.component.ts) and
+ * resolveMaterials (webcad-schedule.ts) — keep all three in sync with this.
+ */
+export function panelMaterialGroup(familyId: string, panelName: string): string {
+  return familyId === 'drawer' && panelName !== 'ЧЕЛО' ? 'КОРПУС' : panelName;
 }
 
 /**

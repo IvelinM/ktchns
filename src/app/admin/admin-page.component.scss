@@ -196,6 +196,30 @@
 
 .rot-slider { width: 100%; accent-color: #d4a96a; }
 
+.rot-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  .rot-slider { flex: 1; }
+
+  .rot-number {
+    width: 52px;
+    flex: 0 0 auto;
+    background: var(--c-input);
+    border: 1px solid var(--c-border);
+    border-radius: 5px;
+    color: var(--c-text);
+    font-size: 12px;
+    padding: 4px 6px;
+    outline: none;
+    appearance: textfield;
+    -moz-appearance: textfield;
+    &::-webkit-inner-spin-button, &::-webkit-outer-spin-button { -webkit-appearance: none; }
+    &:focus { border-color: #d4a96a; }
+  }
+}
+
 .param-input-wrap {
   display: flex;
   align-items: center;
@@ -1029,16 +1053,6 @@
   &:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .menu-sep { height: 1px; background: var(--c-border); margin: 3px 0; }
-.menu-check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 9px;
-  font-size: 12px;
-  color: var(--c-text-3);
-  cursor: pointer;
-  input { accent-color: #d4a96a; cursor: pointer; }
-}
 
 // Measure tool: read-only distance label at the dimension midpoint
 .measure-label {
@@ -1354,6 +1368,60 @@
   color: var(--c-text);
   input { width: 16px; height: 16px; accent-color: #6ab4f4; cursor: pointer; }
 }
+
+// ── Schedule (Спецификация) preview dialog ──────────────────────────────────────
+
+.schedule-dialog { width: 1240px; max-width: calc(100% - 48px); }
+
+.schedule-body {
+  padding: 16px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.schedule-preview {
+  overflow: auto;
+  max-height: 60vh;
+  border: 1px solid var(--c-border-soft);
+  border-radius: 6px;
+}
+
+.schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  white-space: nowrap;
+
+  td {
+    padding: 5px 9px;
+    border-bottom: 1px solid var(--c-border-soft);
+    color: var(--c-text-2);
+  }
+
+  tr.schedule-header td {
+    position: sticky;
+    top: 0;
+    background: var(--c-raised);
+    color: #d4a96a;
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  tr.schedule-total td {
+    background: rgba(212, 169, 106, 0.08);
+    color: #d4a96a;
+    font-weight: 600;
+  }
+
+  tr.schedule-blank td { padding: 2px; border-bottom: none; }
+}
+
+.schedule-actions { display: flex; gap: 10px; }
+.schedule-actions .place-btn { margin-top: 0; flex: 1; }
 
 // ── Responsive ────────────────────────────────────────────────────────────────
 

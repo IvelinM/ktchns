@@ -8,7 +8,7 @@
  */
 import * as THREE from 'three';
 import { FamilyDef, ParamDef, MaterialParamDef, PlaneDesc } from './webcad.model';
-import { makeMesh, buildKorpus, buildWallPath, buildSlabPath, buildLinePath, buildSolidExtrude } from './webcad-geometry';
+import { makeMesh, buildKorpus, buildDrawer, buildWallPath, buildSlabPath, buildLinePath, buildSolidExtrude } from './webcad-geometry';
 
 /** Fallback ground plane for the degenerate (path-less) Line/SOLID buildObject() below. */
 const GROUND_PLANE: PlaneDesc = { origin: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, uAxis: { x: 1, y: 0, z: 0 } };
@@ -101,6 +101,17 @@ const KORPUS_PARAMS: ParamDef[] = [
   { key: 'ГРЪБ_С_КАНТ_ОТДОЛУ',  label: 'ГРЪБ С КАНТ ОТДОЛУ',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ГРЪБ_С_КАНТ_ОТЛЯВО',  label: 'ГРЪБ С КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ГРЪБ_С_КАНТ_ОТДЯСНО', label: 'ГРЪБ С КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  // Splits the single ГРЪБ into two leaves, ALWAYS touching with zero gap (unlike
+  // ДВОЙНА_ВРАТИЧКА's configurable reveal — see korpusPanels, webcad-geometry.ts) —
+  // ВИСОЧИНА_ГОРЕН_ГРЪБ/ШИРИНА_ЛЯВ_ГРЪБ only matter (and are only shown — see
+  // admin-page.component.ts paramRowVisible) once ДВОЕН ГРЪБ is checked.
+  { key: 'ДВОЕН_ГРЪБ', label: 'ДВОЕН ГРЪБ', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
+  // true (default) = stacked one above the other, divided by a HORIZONTAL fugue (split
+  // along Y — opposite default from ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА); false = side by
+  // side, divided by a VERTICAL fugue (split along X).
+  { key: 'ГРЪБ_С_ХОРИЗОНТАЛНА_ФУГА', label: 'ГРЪБ С ХОРИЗОНТАЛНА ФУГА', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ВИСОЧИНА_ГОРЕН_ГРЪБ', label: 'ВИСОЧИНА ГОРЕН ГРЪБ', defaultValue: 360, min: 1, step: 1, unit: 'mm' },
+  { key: 'ШИРИНА_ЛЯВ_ГРЪБ',     label: 'ШИРИНА ЛЯВ ГРЪБ',     defaultValue: 400, min: 1, step: 1, unit: 'mm' },
   // ПОЛИЦИ: up to 10 independent shelf panels, each toggled on/off and positioned by
   // its own ОФСЕТ ОТДОЛУ (mm from the module's nominal bottom to the shelf's own
   // bottom/finished edge); С КАНТ ОТПРЕД bands its front edge. See korpusPanels
@@ -108,33 +119,46 @@ const KORPUS_PARAMS: ParamDef[] = [
   // below, each shown only while its shelf's toggle is checked (admin-page.component.html).
   { key: 'С_ПОЛИЦА_1',  label: 'С ПОЛИЦА 1',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ПОЛИЦА_1_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 1 ОФСЕТ ОТДОЛУ',  defaultValue: 100,  min: -1000, step: 1, unit: 'mm' },
+  // Same semantics as ТАВАН_ОФСЕТ_ОТПРЕД (frontD/frontZ, korpusPanels): negative pulls
+  // the shelf's front edge inward (shrinking its depth), positive extends it forward
+  // past the door's rear face.
+  { key: 'ПОЛИЦА_1_ОФСЕТ_ОТПРЕД',  label: 'ПОЛИЦА 1 ОФСЕТ ОТПРЕД',  defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ПОЛИЦА_1_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 1 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'С_ПОЛИЦА_2',  label: 'С ПОЛИЦА 2',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ПОЛИЦА_2_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 2 ОФСЕТ ОТДОЛУ',  defaultValue: 200,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_2_ОФСЕТ_ОТПРЕД',  label: 'ПОЛИЦА 2 ОФСЕТ ОТПРЕД',  defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ПОЛИЦА_2_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 2 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'С_ПОЛИЦА_3',  label: 'С ПОЛИЦА 3',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ПОЛИЦА_3_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 3 ОФСЕТ ОТДОЛУ',  defaultValue: 300,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_3_ОФСЕТ_ОТПРЕД',  label: 'ПОЛИЦА 3 ОФСЕТ ОТПРЕД',  defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ПОЛИЦА_3_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 3 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'С_ПОЛИЦА_4',  label: 'С ПОЛИЦА 4',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ПОЛИЦА_4_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 4 ОФСЕТ ОТДОЛУ',  defaultValue: 400,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_4_ОФСЕТ_ОТПРЕД',  label: 'ПОЛИЦА 4 ОФСЕТ ОТПРЕД',  defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ПОЛИЦА_4_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 4 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'С_ПОЛИЦА_5',  label: 'С ПОЛИЦА 5',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ПОЛИЦА_5_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 5 ОФСЕТ ОТДОЛУ',  defaultValue: 500,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_5_ОФСЕТ_ОТПРЕД',  label: 'ПОЛИЦА 5 ОФСЕТ ОТПРЕД',  defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ПОЛИЦА_5_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 5 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'С_ПОЛИЦА_6',  label: 'С ПОЛИЦА 6',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ПОЛИЦА_6_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 6 ОФСЕТ ОТДОЛУ',  defaultValue: 600,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_6_ОФСЕТ_ОТПРЕД',  label: 'ПОЛИЦА 6 ОФСЕТ ОТПРЕД',  defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ПОЛИЦА_6_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 6 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'С_ПОЛИЦА_7',  label: 'С ПОЛИЦА 7',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ПОЛИЦА_7_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 7 ОФСЕТ ОТДОЛУ',  defaultValue: 700,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_7_ОФСЕТ_ОТПРЕД',  label: 'ПОЛИЦА 7 ОФСЕТ ОТПРЕД',  defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ПОЛИЦА_7_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 7 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'С_ПОЛИЦА_8',  label: 'С ПОЛИЦА 8',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ПОЛИЦА_8_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 8 ОФСЕТ ОТДОЛУ',  defaultValue: 800,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_8_ОФСЕТ_ОТПРЕД',  label: 'ПОЛИЦА 8 ОФСЕТ ОТПРЕД',  defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ПОЛИЦА_8_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 8 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'С_ПОЛИЦА_9',  label: 'С ПОЛИЦА 9',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ПОЛИЦА_9_ОФСЕТ_ОТДОЛУ',  label: 'ПОЛИЦА 9 ОФСЕТ ОТДОЛУ',  defaultValue: 900,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_9_ОФСЕТ_ОТПРЕД',  label: 'ПОЛИЦА 9 ОФСЕТ ОТПРЕД',  defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ПОЛИЦА_9_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 9 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'С_ПОЛИЦА_10', label: 'С ПОЛИЦА 10', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ПОЛИЦА_10_ОФСЕТ_ОТДОЛУ', label: 'ПОЛИЦА 10 ОФСЕТ ОТДОЛУ', defaultValue: 1000, min: -1000, step: 1, unit: 'mm' },
+  { key: 'ПОЛИЦА_10_ОФСЕТ_ОТПРЕД', label: 'ПОЛИЦА 10 ОФСЕТ ОТПРЕД', defaultValue: 0, min: -1000, step: 1, unit: 'mm' },
   { key: 'ПОЛИЦА_10_С_КАНТ_ОТПРЕД', label: 'ПОЛИЦА 10 С КАНТ ОТПРЕД', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
 ];
 
@@ -182,6 +206,34 @@ const KORPUS_MATERIAL_PARAMS: MaterialParamDef[] = [
   { key: 'ПОЛИЦА_10_КАНТ_МАТЕРИАЛ', label: 'ПОЛИЦА 10 КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
 ];
 
+/**
+ * ЧЕКМЕДЖЕ (drawer box): six fixed ПЛОСКОСТ panels, no С_* toggles — see drawerPanels
+ * (webcad-geometry.ts) for the layout. ВРАТИЧКА_ОФСЕТ_ОТГОРЕ/ОТДОЛУ default to a
+ * symmetric 20 mm overlay (ЧЕЛО extends 20 mm past the box's own top AND bottom),
+ * same sign convention as the МОДУЛ family's ВРАТИЧКА_*_РЪБ_ОФСЕТ (positive moves an
+ * edge up).
+ */
+const DRAWER_PARAMS: ParamDef[] = [
+  { key: 'ШИРИНА_ЧЕКМЕДЖЕ',    label: 'ШИРИНА ЧЕКМЕДЖЕ',    defaultValue: 400, min: 37, step: 1, unit: 'mm' },
+  { key: 'ВИСОЧИНА_ЧЕКМЕДЖЕ',  label: 'ВИСОЧИНА ЧЕКМЕДЖЕ',  defaultValue: 150, min: 37, step: 1, unit: 'mm' },
+  { key: 'ДЪЛБОЧИНА_ЧЕКМЕДЖЕ', label: 'ДЪЛБОЧИНА ЧЕКМЕДЖЕ', defaultValue: 450, min: 37, step: 1, unit: 'mm' },
+  { key: 'ПЛОСКОСТ_ДЕБЕЛИНА',  label: 'ПЛОСКОСТ ДЕБЕЛИНА',  defaultValue: 16,  min: 1,   step: 1,   unit: 'mm' },
+  { key: 'КАНТ_ДЕБЕЛИНА',      label: 'КАНТ ДЕБЕЛИНА',      defaultValue: 1,   min: 0.1, step: 0.1, unit: 'mm' },
+  { key: 'ВРАТИЧКА_ОФСЕТ_ОТГОРЕ', label: 'ВРАТИЧКА ОФСЕТ ОТГОРЕ', defaultValue: 20,  min: -1000, step: 1, unit: 'mm' },
+  { key: 'ВРАТИЧКА_ОФСЕТ_ОТДОЛУ', label: 'ВРАТИЧКА ОФСЕТ ОТДОЛУ', defaultValue: -20, min: -1000, step: 1, unit: 'mm' },
+];
+
+/** МАТЕРИАЛИ for ЧЕКМЕДЖЕ: one shared pick for every structural/corpus panel (ДЪНО,
+ *  ЛЯВА/ДЯСНА СТРАНИЦА, ГРЪБ, КОНСТРУКТИВНО ЧЕЛО) and a separate one for the visible
+ *  ЧЕЛО face — see panelMaterialGroup (webcad-geometry.ts), which groups those five
+ *  structural panel names onto the КОРПУС_* keys below. */
+const DRAWER_MATERIAL_PARAMS: MaterialParamDef[] = [
+  { key: 'КОРПУС_МАТЕРИАЛ',      label: 'МАТЕРИАЛ КОРПУС',      default: 'ГЛАДКО БЯЛО' },
+  { key: 'КОРПУС_КАНТ_МАТЕРИАЛ', label: 'МАТЕРИАЛ КОРПУС КАНТ', default: 'ГЛАДКО БЯЛО' },
+  { key: 'ЧЕЛО_МАТЕРИАЛ',        label: 'ЧЕЛО',                 default: 'ГЛАДКО БЯЛО' },
+  { key: 'ЧЕЛО_КАНТ_МАТЕРИАЛ',   label: 'ЧЕЛО КАНТ',            default: 'ГЛАДКО БЯЛО' },
+];
+
 export const FAMILIES: FamilyDef[] = [
   // ── Ploskost (a single board with optional PVC edge bands) ──────────────────
   {
@@ -226,6 +278,16 @@ export const FAMILIES: FamilyDef[] = [
     params: KORPUS_PARAMS,
     materialParams: KORPUS_MATERIAL_PARAMS,
     buildObject(p) { return buildKorpus(p, true); },
+  },
+
+  // ── ЧЕКМЕДЖЕ (drawer box) — six fixed ПЛОСКОСТ panels (ДЪНО, ЛЯВА/ДЯСНА СТРАНИЦА,
+  // ГРЪБ, КОНСТРУКТИВНО ЧЕЛО, ЧЕЛО), no С_* toggles; see DRAWER_PARAMS and drawerPanels. ──
+  {
+    id: 'drawer',
+    name: 'ЧЕКМЕДЖЕ',
+    params: DRAWER_PARAMS,
+    materialParams: DRAWER_MATERIAL_PARAMS,
+    buildObject(p) { return buildDrawer(p); },
   },
 
   // ── СТЕНА (wall) — a vertical solid drawn as a POLYLINE on the ground. The whole

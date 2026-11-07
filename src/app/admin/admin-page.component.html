@@ -44,11 +44,7 @@
           </button>
           <input #fbxFileInput type="file" accept=".fbx" (change)="importFbx($event)" hidden>
           <div class="menu-sep"></div>
-          <label class="menu-check">
-            <input type="checkbox" [(ngModel)]="itemize">
-            Itemize every instance
-          </label>
-          <button class="menu-item" (click)="fileMenuOpen = false; exportSchedule()" [disabled]="instances.length === 0">
+          <button class="menu-item" (click)="openSchedulePreview()" [disabled]="instances.length === 0">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/>
             </svg>
@@ -358,11 +354,17 @@
       <!-- SOLID (sweep/path-extrusion only): rotate the profile about its own centre
            and offset it from the path, independently of the path itself. -->
       <div class="detail-group" *ngIf="selectedInstance!.familyId === 'solid' && selectedInstance!.solidOp === 'sweep'">
-        <span class="detail-title">Профил — {{ selectedInstance!.params['ПРОФИЛ_ЗАВЪРТАНЕ'] ?? 0 }}°</span>
-        <input type="range" min="0" max="360" step="1" class="rot-slider"
-               [ngModel]="selectedInstance!.params['ПРОФИЛ_ЗАВЪРТАНЕ'] ?? 0"
-               (focus)="beginEdit()"
-               (ngModelChange)="selectedInstance!.params['ПРОФИЛ_ЗАВЪРТАНЕ'] = $event; rebuildSelected()">
+        <span class="detail-title">Профил</span>
+        <div class="rot-row">
+          <input type="range" min="0" max="360" step="1" class="rot-slider"
+                 [ngModel]="selectedInstance!.params['ПРОФИЛ_ЗАВЪРТАНЕ'] ?? 0"
+                 (focus)="beginEdit()"
+                 (ngModelChange)="selectedInstance!.params['ПРОФИЛ_ЗАВЪРТАНЕ'] = $event; rebuildSelected()">
+          <input type="number" min="0" max="360" step="1" class="rot-number"
+                 [ngModel]="selectedInstance!.params['ПРОФИЛ_ЗАВЪРТАНЕ'] ?? 0"
+                 (focus)="beginEdit()"
+                 (ngModelChange)="selectedInstance!.params['ПРОФИЛ_ЗАВЪРТАНЕ'] = $event; rebuildSelected()">
+        </div>
         <div class="xyz-row">
           <label>хориз.<input type="number" step="1"
                  [ngModel]="selectedInstance!.params['ПРОФИЛ_ОТСТЪП_ХОРИЗ'] ?? 0"
@@ -1096,6 +1098,42 @@
           </label>
           <p class="mat-hint">Огледален, леко размазан под в Render (допълнителен рендер на кадър — изключи
             при по-слаба видеокарта).</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Schedule (Спецификация) preview dialog ── -->
+    <div class="dialog-backdrop" *ngIf="scheduleDialogOpen" (click)="closeSchedulePreview()">
+      <div class="mat-dialog schedule-dialog" (click)="$event.stopPropagation()">
+        <div class="mat-dialog-head">
+          <h3>СПЕЦИФИКАЦИЯ</h3>
+          <button class="dialog-close" title="Затвори" (click)="closeSchedulePreview()">✕</button>
+        </div>
+        <div class="schedule-body">
+          <label class="settings-check">
+            <input type="checkbox" [(ngModel)]="itemize">
+            <span>Itemize every instance</span>
+          </label>
+          <div class="schedule-preview">
+            <table class="schedule-table">
+              <tbody>
+                <tr *ngFor="let row of scheduleRows; let i = index"
+                    [class.schedule-header]="i === 0"
+                    [class.schedule-total]="row.length === 1 && row[0]"
+                    [class.schedule-blank]="row.length === 1 && !row[0]">
+                  <ng-container *ngIf="row.length > 1">
+                    <td *ngFor="let cell of row">{{ cell }}</td>
+                  </ng-container>
+                  <td *ngIf="row.length === 1" [attr.colspan]="scheduleColCount">{{ row[0] }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="schedule-actions">
+            <button class="place-btn" (click)="exportSchedule()">Изтегли (.txt)</button>
+            <button class="place-btn" (click)="exportHoseXlsx()">За Хосе (.xlsx)</button>
+            <button class="place-btn" (click)="exportMayaXlsx()">За Мая (.xlsx)</button>
+          </div>
         </div>
       </div>
     </div>

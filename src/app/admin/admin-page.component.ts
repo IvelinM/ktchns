@@ -27,11 +27,13 @@ import {
 import {
   makeMesh, buildWallPath, buildSlabPath, buildLinePath, buildSolidExtrude, buildSolidSweep,
   planePointToWorld, normalizePlaneDesc, planeBasis, setRenderBevel, circlePoints,
-  filletedPolylineShape,
+  filletedPolylineShape, panelMaterialGroup,
 } from './webcad-geometry';
 import { FAMILIES } from './webcad-families';
 import { disposeObj, normAnchor, anchorWrap, addEdges, colorObj, setEdgeColor, ghostify } from './webcad-object3d';
 import { buildScheduleText } from './webcad-schedule';
+import { buildHoseWorkbook, buildMayaWorkbook } from './webcad-export-xlsx';
+import * as XLSX from 'xlsx';
 import { applyVoidCuts } from './webcad-csg';
 import { parseFbxDataUrl } from './webcad-fbx';
 
@@ -155,6 +157,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   // ── Materials dialog ──────────────────────────────────────────────────────────
   materialsDialogOpen = false;
   editingMaterialIndex = 0;
+
+  // ── Schedule (Спецификация) preview dialog ───────────────────────────────────
+  scheduleDialogOpen = false;
 
   // ── 2D plan/elevation view ──────────────────────────────────────────────────────
   /** '3D' = the normal perspective CAD view. Any other value is a true flattened 2D
@@ -559,7 +564,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
   onKey(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       this.cancelMode(); this.fileMenuOpen = false; this.visMenuOpen = false;
-      this.materialsDialogOpen = false; this.settingsDialogOpen = false; return;
+      this.materialsDialogOpen = false; this.settingsDialogOpen = false; this.scheduleDialogOpen = false; return;
     }
 
     const t = e.target as HTMLElement | null;
@@ -771,6 +776,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     ['ДВОЙНА ВРАТИЧКА С ВЕРТИКАЛНА ФУГА', 'ВРАТИЧКА'],
     ['ЛЯВА ВРАТИЧКА ШИРИНА', 'ВРАТИЧКА'],
     ['ФУГА МЕЖДУ ВРАТИЧКИ', 'ВРАТИЧКА'],
+    ['ДВОЕН ГРЪБ', 'ГРЪБ'],
+    ['ВИСОЧИНА ГОРЕН ГРЪБ', 'ГРЪБ'],
+    ['ШИРИНА ЛЯВ ГРЪБ', 'ГРЪБ'],
     ...Array.from({ length: 10 }, (_, i) => [`С ПОЛИЦА ${i + 1}`, 'ПОЛИЦИ'] as [string, string]),
   ]);
   private groupedCache = new Map<string, { top: ParamDef[]; sections: { title: string; params: ParamDef[] }[] }>();
@@ -828,21 +836,35 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   /**
    * ЛЯВА ВРАТИЧКА ШИРИНА, ДВОЙНА ВРАТИЧКА С ВЕРТИКАЛНА ФУГА and ФУГА МЕЖДУ ВРАТИЧКИ only
-   * matter once ДВОЙНА ВРАТИЧКА is checked (the right/second leaf always takes whatever
-   * space is left over, and there's no second leaf — so no fugue orientation or width —
-   * otherwise) — hide their rows until then. Every other param is always shown.
+   * matter once ДВОЙНА ВРАТИЧКА is checked; ГРЪБ С ХОРИЗОНТАЛНА ФУГА only matters once
+   * ДВОЕН ГРЪБ is checked — same reasoning, same pattern, independent "double" toggle
+   * (the second leaf always takes whatever space is left over, and there's no second
+   * leaf — so no fugue orientation/width — otherwise). Every other param is always shown.
    */
-  private static readonly DOUBLE_DOOR_ONLY_PARAMS = new Set([
-    'ЛЯВА_ВРАТИЧКА_ШИРИНА', 'ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА', 'ФУГА_МЕЖДУ_ВРАТИЧКИ',
+  private static readonly DOUBLE_LEAF_GATE = new Map<string, string>([
+    ['ЛЯВА_ВРАТИЧКА_ШИРИНА', 'ДВОЙНА_ВРАТИЧКА'],
+    ['ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА', 'ДВОЙНА_ВРАТИЧКА'],
+    ['ФУГА_МЕЖДУ_ВРАТИЧКИ', 'ДВОЙНА_ВРАТИЧКА'],
+    ['ГРЪБ_С_ХОРИЗОНТАЛНА_ФУГА', 'ДВОЕН_ГРЪБ'],
   ]);
 
   paramRowVisible(p: ParamDef, params: Record<string, number>): boolean {
-    return !AdminPageComponent.DOUBLE_DOOR_ONLY_PARAMS.has(p.key) || params['ДВОЙНА_ВРАТИЧКА'] === 1;
+    // ВИСОЧИНА_ГОРЕН_ГРЪБ/ШИРИНА_ЛЯВ_ГРЪБ (unlike ЛЯВА_ВРАТИЧКА_ШИРИНА, which is reused
+    // and relabelled for either orientation — see paramLabel below) are each their OWN
+    // dedicated size param, so only the one matching the CURRENT split direction is
+    // shown — the other would size a leaf that doesn't exist in that orientation.
+    if (p.key === 'ВИСОЧИНА_ГОРЕН_ГРЪБ') return params['ДВОЕН_ГРЪБ'] === 1 && params['ГРЪБ_С_ХОРИЗОНТАЛНА_ФУГА'] === 1;
+    if (p.key === 'ШИРИНА_ЛЯВ_ГРЪБ')     return params['ДВОЕН_ГРЪБ'] === 1 && params['ГРЪБ_С_ХОРИЗОНТАЛНА_ФУГА'] !== 1;
+    const gate = AdminPageComponent.DOUBLE_LEAF_GATE.get(p.key);
+    return !gate || params[gate] === 1;
   }
 
-  /** Multi-select version: visible only while EVERY selected instance has ДВОЙНА ВРАТИЧКА checked. */
+  /** Multi-select version: visible only while EVERY selected instance agrees on the relevant toggle(s). */
   multiParamRowVisible(p: ParamDef): boolean {
-    return !AdminPageComponent.DOUBLE_DOOR_ONLY_PARAMS.has(p.key) || this.multiToggleState('ДВОЙНА_ВРАТИЧКА') === 'on';
+    if (p.key === 'ВИСОЧИНА_ГОРЕН_ГРЪБ') return this.multiToggleState('ДВОЕН_ГРЪБ') === 'on' && this.multiToggleState('ГРЪБ_С_ХОРИЗОНТАЛНА_ФУГА') === 'on';
+    if (p.key === 'ШИРИНА_ЛЯВ_ГРЪБ')     return this.multiToggleState('ДВОЕН_ГРЪБ') === 'on' && this.multiToggleState('ГРЪБ_С_ХОРИЗОНТАЛНА_ФУГА') !== 'on';
+    const gate = AdminPageComponent.DOUBLE_LEAF_GATE.get(p.key);
+    return !gate || this.multiToggleState(gate) === 'on';
   }
 
   /**
@@ -1953,7 +1975,29 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   // ── Schedule export ──────────────────────────────────────────────────────────
 
-  /** Generate the cut-list (see webcad-schedule) and download it as a .txt for the shop. */
+  /** File menu's "Спецификация (.txt)" — opens the preview dialog instead of downloading
+   *  straight away, so the shop can check it (and toggle Itemize) before committing to a file. */
+  openSchedulePreview() { this.fileMenuOpen = false; this.scheduleDialogOpen = true; }
+  closeSchedulePreview() { this.scheduleDialogOpen = false; }
+
+  /** The preview dialog's own live table: each cut-list line split into cells (see
+   *  webcad-schedule) — recomputed from `itemize`/`instances` on every change detection,
+   *  same "just a getter" pattern as `scheduleColCount` below, so toggling Itemize in
+   *  the dialog updates the preview immediately with no extra wiring. `asFormulas:
+   *  false` so a ОБЩО subtotal shows its plain number instead of the literal formula
+   *  text that the actual .txt download (exportSchedule) still gets. */
+  get scheduleRows(): string[][] {
+    return buildScheduleText(this.instances, this.itemize, false).replace(/^﻿/, '').split('\r\n').map(l => l.split('\t'));
+  }
+
+  /** Column count of the header row — a shorter row (a ОБЩО subtotal/blank separator,
+   *  see webcad-schedule) spans this many columns instead of sitting in the first one. */
+  get scheduleColCount(): number {
+    return this.scheduleRows[0]?.length ?? 1;
+  }
+
+  /** Generate the cut-list (see webcad-schedule) and download it as a .txt for the shop —
+   *  the preview dialog's own "Изтегли" button. */
   exportSchedule() {
     const blob = new Blob([buildScheduleText(this.instances, this.itemize)], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -1963,6 +2007,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     a.click();
     URL.revokeObjectURL(url);
   }
+
+  /** The preview dialog's "За Хосе (.xlsx)"/"За Мая (.xlsx)" buttons — each manufacturer's
+   *  own production-offer request template, filled from the exact same panels as the
+   *  .txt export above (see webcad-export-xlsx.ts for each one's own layout). */
+  exportHoseXlsx() { XLSX.writeFile(buildHoseWorkbook(this.instances), 'Хосе заявка.xlsx'); }
+  exportMayaXlsx() { XLSX.writeFile(buildMayaWorkbook(this.instances), 'Мая спецификация.xlsx'); }
 
   // ── Photoreal export (→ Blender / V-Ray-class offline render) ───────────────────
 
@@ -5953,11 +6003,14 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       // Panel-less families (ПЛОСКОСТ) carry their own МАТЕРИАЛ/МАТЕРИАЛ_КАНТ picks in
       // inst.materials; fall back to the free-text laminate spec (inst.material) for
       // families with neither (СТЕНА/ПЛОЧА) — same rule as applyRenderMaterials below.
-      const boardDef = panelName
-        ? this.materialDef(inst.materials?.[toKey(panelName)])
+      // panelMaterialGroup lets a family share one pick across several panel names
+      // (ЧЕКМЕДЖЕ's structural panels) instead of one per name.
+      const group = panelName ? panelMaterialGroup(inst.familyId, panelName) : undefined;
+      const boardDef = group
+        ? this.materialDef(inst.materials?.[toKey(group)])
         : this.materialDef(inst.materials?.['МАТЕРИАЛ'] ?? inst.material);
-      const kantDef = panelName
-        ? this.materialDef(inst.materials?.[toKantKey(panelName)])
+      const kantDef = group
+        ? this.materialDef(inst.materials?.[toKantKey(group)])
         : (inst.materials?.['МАТЕРИАЛ_КАНТ'] ? this.materialDef(inst.materials['МАТЕРИАЛ_КАНТ']) : boardDef);
       const mats = Array.isArray(child.material) ? child.material : [child.material];
       (mats as THREE.MeshPhongMaterial[]).forEach(m => {
@@ -5990,12 +6043,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       }
       // Panel-less families (ПЛОСКОСТ) carry their own МАТЕРИАЛ/МАТЕРИАЛ_КАНТ picks in
       // inst.materials; fall back to the free-text laminate spec (inst.material) for
-      // families with neither (СТЕНА/ПЛОЧА).
-      const boardDef = panelName
-        ? this.materialDef(inst.materials?.[toKey(panelName)])
+      // families with neither (СТЕНА/ПЛОЧА). panelMaterialGroup lets a family share one
+      // pick across several panel names (ЧЕКМЕДЖЕ's structural panels) instead of one
+      // per name — same rule as cadColorObj above.
+      const group = panelName ? panelMaterialGroup(inst.familyId, panelName) : undefined;
+      const boardDef = group
+        ? this.materialDef(inst.materials?.[toKey(group)])
         : this.materialDef(inst.materials?.['МАТЕРИАЛ'] ?? inst.material);
-      const kantDef = panelName
-        ? this.materialDef(inst.materials?.[toKantKey(panelName)])
+      const kantDef = group
+        ? this.materialDef(inst.materials?.[toKantKey(group)])
         : (inst.materials?.['МАТЕРИАЛ_КАНТ'] ? this.materialDef(inst.materials['МАТЕРИАЛ_КАНТ']) : boardDef);
 
       const conv = (m: THREE.MeshPhongMaterial): THREE.MeshPhysicalMaterial => {
