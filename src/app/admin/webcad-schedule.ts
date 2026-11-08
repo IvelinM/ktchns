@@ -10,7 +10,7 @@ import { SceneInstance, MaterialDef } from './webcad.model';
 import { korpusPanels, drawerPanels, panelMaterialGroup, panelGrainParamKey, KORPUS_KANT } from './webcad-geometry';
 
 export interface Panel {
-  element: string; material: string; kantMaterial: string; size1: number; size2: number;
+  element: string; module: string; material: string; kantMaterial: string; size1: number; size2: number;
   pvc: boolean[]; kant: number; thickness: number;
 }
 
@@ -68,35 +68,41 @@ function grainSwap(inst: SceneInstance, panelName: string | null, boardMaterial:
  * so size1/size2 come out grain-correct (see `grainSwap`). Shared by `buildScheduleText`
  * (the .txt download) and the manufacturer-specific .xlsx exporters
  * (`webcad-export-xlsx.ts`), so every export lists the exact same panels.
+ *
+ * Each panel also carries its owning instance's own `label` as `module` — for a
+ * standalone ПЛОСКОСТ that's the same text as `element` (it IS its own one panel), but
+ * for a МОДУЛ/ЧЕКМЕДЖЕ it's what actually ties e.g. every "ТАВАН" row in an itemized
+ * list back to which physical cabinet it came from (buildScheduleText's own ЕЛЕМЕНТ
+ * column, by itself, can't tell two cabinets' identically-named panels apart).
  */
 export function collectPanels(instances: SceneInstance[], materialDefs: MaterialDef[]): Panel[] {
   const panels: Panel[] = [];
-  const addPanel = (element: string, material: string, kantMaterial: string, AB: number, BC: number, pvc: boolean[], kant: number, thickness: number, swap: boolean) => {
+  const addPanel = (element: string, module: string, material: string, kantMaterial: string, AB: number, BC: number, pvc: boolean[], kant: number, thickness: number, swap: boolean) => {
     const ab = swap ? BC : AB, bc = swap ? AB : BC;
     const p2 = swap ? [pvc[1], pvc[0], pvc[3], pvc[2]] : pvc;
     const r1 = kant * ((p2[1] ? 1 : 0) + (p2[3] ? 1 : 0));
     const r2 = kant * ((p2[0] ? 1 : 0) + (p2[2] ? 1 : 0));
-    panels.push({ element, material, kantMaterial, size1: Math.round(ab - r1), size2: Math.round(bc - r2), pvc: p2, kant, thickness });
+    panels.push({ element, module, material, kantMaterial, size1: Math.round(ab - r1), size2: Math.round(bc - r2), pvc: p2, kant, thickness });
   };
 
   for (const inst of instances) {
     if (inst.familyId === 'ploskost') {
       const p = inst.params;
       const { board, kant: kantMat } = resolveMaterials(inst, null);
-      addPanel(inst.label, board, kantMat, p['AB'], p['BC'],
+      addPanel(inst.label, inst.label, board, kantMat, p['AB'], p['BC'],
         [!!p['pvcAB'], !!p['pvcBC'], !!p['pvcCD'], !!p['pvcDA']], p['kantThickness'] || 0, p['thickness'] || 0,
         grainSwap(inst, null, board, materialDefs));
     } else if (inst.familyId === 'module') {
       const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
       for (const pan of korpusPanels(inst.params, true)) {
         const { board, kant: kantMat } = resolveMaterials(inst, pan.name);
-        addPanel(pan.name, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, board, materialDefs));
+        addPanel(pan.name, inst.label, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, board, materialDefs));
       }
     } else if (inst.familyId === 'drawer') {
       const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
       for (const pan of drawerPanels(inst.params)) {
         const { board, kant: kantMat } = resolveMaterials(inst, pan.name);
-        addPanel(pan.name, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, board, materialDefs));
+        addPanel(pan.name, inst.label, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, board, materialDefs));
       }
     }
   }
@@ -141,6 +147,10 @@ export function mergePanels(panels: Panel[], sortCmp: (a: Panel, c: Panel) => nu
  *   РАЗМЕР 2 = BC, its parallel edges are BC (ОТПРЕД) and DA (ОТЗАД)
  * The cut (core) РАЗМЕР is the nominal size minus the band thickness on each edge
  * PERPENDICULAR to that dimension. An edge cell holds the band thickness (mm) or blank.
+ * ДЕБЕЛИНА (mm, `Panel.thickness`) sits right after КАНТ МАТЕРИАЛ and before РАЗМЕР 1 in
+ * both layouts below — inserting it shifted the merged layout's БРОЙ column from E to F,
+ * so its ОБЩО subtotal formula references F, not E (kept in sync by hand, there's no
+ * single source of column letters here).
  *
  * `itemize` off (default): identical panels (same ЕЛЕМЕНТ, material, kant material, size
  * and banding) collapse to one row with a БРОЙ quantity. `itemize` on: one row per
@@ -175,10 +185,11 @@ export function buildScheduleText(instances: SceneInstance[], itemize: boolean, 
   };
 
   if (itemize) {
-    // One row per physical panel: ЕЛЕМЕНТ column present, no БРОЙ. After each material
-    // group: a ОБЩО subtotal (=COUNTA over that group's ЕЛЕМЕНТ rows — column A) then a
-    // blank separator row.
-    lines.push(['ЕЛЕМЕНТ', 'МАТЕРИАЛ', 'КАНТ МАТЕРИАЛ', 'РАЗМЕР 1', 'РАЗМЕР 2', ...edgeHeaders].join('\t'));
+    // One row per physical panel: ЕЛЕМЕНТ (+ the owning instance's own label, МОДУЛ —
+    // what actually tells two cabinets' identically-named panels apart) column present,
+    // no БРОЙ. After each material group: a ОБЩО subtotal (=COUNTA over that group's
+    // ЕЛЕМЕНТ rows — column A, unaffected by МОДУЛ sitting in B) then a blank separator row.
+    lines.push(['ЕЛЕМЕНТ', 'МОДУЛ', 'МАТЕРИАЛ', 'КАНТ МАТЕРИАЛ', 'ДЕБЕЛИНА', 'РАЗМЕР 1', 'РАЗМЕР 2', ...edgeHeaders].join('\t'));
     const sorted = panels.slice().sort(byMaterial);
     let i = 0;
     while (i < sorted.length) {
@@ -187,7 +198,7 @@ export function buildScheduleText(instances: SceneInstance[], itemize: boolean, 
       let count = 0;
       while (i < sorted.length && sorted[i].material === material) {
         const p = sorted[i];
-        lines.push([p.element, p.material, p.kantMaterial, p.size1, p.size2, ...edges(p)].join('\t'));
+        lines.push([p.element, p.module, p.material, p.kantMaterial, p.thickness, p.size1, p.size2, ...edges(p)].join('\t'));
         count++; i++;
       }
       lines.push(totalLine(material, `COUNTA(A${startRow}:A${lines.length})`, count));
@@ -196,9 +207,9 @@ export function buildScheduleText(instances: SceneInstance[], itemize: boolean, 
   } else {
     // Merge identical panels across the whole project: БРОЙ column present, no ЕЛЕМЕНТ.
     // Same per-material ОБЩО subtotal + blank separator as itemize, but the formula
-    // sums that group's БРОЙ column (E — a row can represent >1 piece) instead of
+    // sums that group's БРОЙ column (F — a row can represent >1 piece) instead of
     // counting rows.
-    lines.push(['МАТЕРИАЛ', 'КАНТ МАТЕРИАЛ', 'РАЗМЕР 1', 'РАЗМЕР 2', 'БРОЙ', ...edgeHeaders].join('\t'));
+    lines.push(['МАТЕРИАЛ', 'КАНТ МАТЕРИАЛ', 'ДЕБЕЛИНА', 'РАЗМЕР 1', 'РАЗМЕР 2', 'БРОЙ', ...edgeHeaders].join('\t'));
     const sorted = mergePanels(panels, byMaterial);
     let i = 0;
     while (i < sorted.length) {
@@ -207,10 +218,10 @@ export function buildScheduleText(instances: SceneInstance[], itemize: boolean, 
       let total = 0;
       while (i < sorted.length && sorted[i].p.material === material) {
         const { p, count } = sorted[i];
-        lines.push([p.material, p.kantMaterial, p.size1, p.size2, count, ...edges(p)].join('\t'));
+        lines.push([p.material, p.kantMaterial, p.thickness, p.size1, p.size2, count, ...edges(p)].join('\t'));
         total += count; i++;
       }
-      lines.push(totalLine(material, `SUM(E${startRow}:E${lines.length})`, total));
+      lines.push(totalLine(material, `SUM(F${startRow}:F${lines.length})`, total));
       lines.push('');
     }
   }

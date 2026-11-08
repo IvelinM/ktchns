@@ -301,7 +301,9 @@
     <section class="panel-section selected-section" *ngIf="selectedInstance && selectedFamilyDef">
       <div class="selected-header">
         <span class="sel-dot"></span>
-        <span class="sel-label">{{ selectedInstance.label }}</span>
+        <input class="sel-label" type="text" [(ngModel)]="selectedInstance!.label"
+               (focus)="beginEdit()" (ngModelChange)="commitPendingEdit()"
+               title="Име на елемента — използва се и в колоната МОДУЛ на Спецификацията">
       </div>
 
       <!-- Material (laminate spec for this module) -->

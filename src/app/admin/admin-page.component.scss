@@ -300,6 +300,22 @@
   font-weight: 600;
   color: var(--c-text);
   flex: 1;
+  // Was a plain <span>, now an editable name field (everything that reads it — the
+  // scene list, the За Хосе/За Мая/Спецификация exports' own МОДУЛ column — just
+  // reads inst.label fresh each time, so renaming here needs no propagation step
+  // anywhere else). Styled to still read as a plain title most of the time: no border/
+  // background until hovered/focused, so it doesn't look like a cluttered form field
+  // sitting in a header row.
+  font-family: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  min-width: 0;
+
+  &:hover { border-color: var(--c-border-soft); }
+  &:focus { outline: none; border-color: #d4a96a; background: var(--c-input); }
 }
 
 .detail-group {
