@@ -1049,3 +1049,139 @@ export function buildSolidSweep(
   }
   return group;
 }
+
+// ── Light fixtures (СПОТ / ЛЕД ЛЕНТА) ───────────────────────────────────────────
+//
+// Real local lights for Render mode — the gap a single sampled "sun" direction
+// (admin-page.component.ts's renderAccum) can't fill: specular highlights and
+// falloff gradients from an actual nearby point/area source. Each fixture is a small
+// cosmetic housing (visible in both CAD and Render, so it can be placed/selected like
+// any other object) plus the real THREE.Light, tagged `userData['isSceneLight']` so
+// admin-page.component.ts can toggle it off in CAD mode (CAD's flat MeshPhongMaterial
+// tinting still RESPONDS to scene lights, unlike Render's PBR swap elsewhere, so an
+// always-on fixture would visibly leak into the plain CAD view otherwise) without
+// having to special-case every light family by id wherever that toggle happens.
+//
+// Both builders take the family's own ParamDef values directly (no new SceneInstance
+// fields needed): horizontal aim reuses the instance's own existing `rotY`; a НАКЛОН
+// param (degrees, 0 = straight down) tilts the beam about local X, baked into the
+// light/target position here rather than a second rotation axis on the instance.
+
+/** Approximate black-body colour temperature → sRGB (Tanner Helland's fit) — good enough
+ *  for a "warm/neutral/cool white" light picker; not colourimetrically exact. */
+export function kelvinToColor(kelvin: number): THREE.Color {
+  const k = Math.max(1000, Math.min(12000, kelvin)) / 100;
+  let r: number, g: number, b: number;
+  if (k <= 66) {
+    r = 255;
+    g = 99.4708025861 * Math.log(k) - 161.1195681661;
+    b = k <= 19 ? 0 : 138.5177312231 * Math.log(k - 10) - 305.0447927307;
+  } else {
+    r = 329.698727446 * Math.pow(k - 60, -0.1332047592);
+    g = 288.1221695283 * Math.pow(k - 60, -0.0755148492);
+    b = 255;
+  }
+  const clamp01 = (v: number) => Math.max(0, Math.min(255, v)) / 255;
+  return new THREE.Color(clamp01(r), clamp01(g), clamp01(b));
+}
+
+/** СПОТ: a small ceiling/shelf spotlight — a THREE.SpotLight aimed via ЪГЪЛ (cone)/
+ *  ЗАТИХВАНЕ (penumbra)/НАКЛОН (tilt from straight down), with an optional shadow. */
+export function buildSpotLightFixture(p: Record<string, number>): THREE.Object3D {
+  const group = new THREE.Group();
+  const color = kelvinToColor(p['ЦВЕТНА_ТЕМПЕРАТУРА'] ?? 3000);
+
+  const housing = new THREE.Mesh(
+    new THREE.CylinderGeometry(40, 46, 50, 20),
+    new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.4 }),
+  );
+  group.add(housing);
+
+  // Lens: shows the configured colour temperature at a glance, even outside Render mode.
+  // emissiveIntensity scales with the light's own ИНТЕНЗИТЕТ (relative to its default) —
+  // a fixed constant regardless of that param looked disconnected from it (a "dim" spot
+  // still showing a full-brightness bulb face) and, at too high a fixed value, bloomed
+  // into an oversized blob out of proportion to the fixture (see buildLineLightFixture's
+  // own note on this, which hit the same thing harder on a thin strip).
+  const lensGlow = Math.min(2, Math.max(0.15, (p['ИНТЕНЗИТЕТ'] ?? 400) / 400));
+  const lens = new THREE.Mesh(
+    new THREE.CircleGeometry(38, 20),
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: lensGlow, roughness: 0.3 }),
+  );
+  lens.position.y = -25.1;
+  lens.rotation.x = -Math.PI / 2;
+  group.add(lens);
+
+  const angleDeg = Math.max(1, Math.min(89, p['ЪГЪЛ'] ?? 30));
+  const light = new THREE.SpotLight(
+    color,
+    Math.max(0, p['ИНТЕНЗИТЕТ'] ?? 400),
+    Math.max(0, p['ОБХВАТ'] ?? 0),
+    THREE.MathUtils.degToRad(angleDeg),
+    Math.max(0, Math.min(1, p['ЗАТИХВАНЕ'] ?? 0.3)),
+    1,
+  );
+  const tilt = THREE.MathUtils.degToRad(p['НАКЛОН'] ?? 0);
+  const target = new THREE.Object3D();
+  target.position.set(0, -1000 * Math.cos(tilt), 1000 * Math.sin(tilt));
+  group.add(target);
+  light.target = target;
+  light.castShadow = (p['СЯНКА'] ?? 1) > 0;
+  if (light.castShadow) {
+    light.shadow.mapSize.set(1024, 1024);
+    light.shadow.camera.near = 10;
+    light.shadow.camera.far = (p['ОБХВАТ'] ?? 0) > 0 ? p['ОБХВАТ'] : 6000;
+    light.shadow.bias = -0.0015;
+  }
+  light.userData['isSceneLight'] = true;
+  group.add(light);
+  return group;
+}
+
+/** ЛЕД ЛЕНТА: a configurable-length LED strip — a THREE.RectAreaLight (area lights have
+ *  no shadow support in Three.js at all, so there's no СЯНКА toggle here — see the
+ *  family's own params doc comment in webcad-families.ts). Needs
+ *  RectAreaLightUniformsLib.init() called once before Render mode actually lights it
+ *  correctly (admin-page.component.ts's ensureRectAreaLightLib, lazy — this builder
+ *  still works/constructs fine before that, it just won't look right on screen yet). */
+export function buildLineLightFixture(p: Record<string, number>): THREE.Object3D {
+  const group = new THREE.Group();
+  const color = kelvinToColor(p['ЦВЕТНА_ТЕМПЕРАТУРА'] ?? 4000);
+  const length = Math.max(10, p['ДЪЛЖИНА'] ?? 600);
+  const width = Math.max(5, p['ШИРИНА'] ?? 15);
+
+  const housing = new THREE.Mesh(
+    new THREE.BoxGeometry(length, 8, width),
+    new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.3 }),
+  );
+  group.add(housing);
+
+  // emissiveIntensity scales with ИНТЕНЗИТЕТ (see buildSpotLightFixture's identical
+  // reasoning) — a long, thin, uniformly bright strip is exactly the shape that most
+  // exposed the old fixed-1.0 constant's downstream problems: at full-res-to-quarter-
+  // res bloom extraction (ensureAccum's bloomExtractQuad), a single point-sample per
+  // output texel randomly hit-or-missed this strip along its length, reading as a
+  // string of separate bright blobs rather than one continuous glow, with the
+  // occasional lucky/unlucky sample spreading into an oversized one once blurred — see
+  // that shader's own comment for the real fix (a proper box-filtered downsample);
+  // this scaling just keeps the SOURCE brightness itself proportionate to what was
+  // actually configured, on top of that.
+  const lensGlow = Math.min(2, Math.max(0.15, (p['ИНТЕНЗИТЕТ'] ?? 1500) / 1500));
+  const lens = new THREE.Mesh(
+    new THREE.PlaneGeometry(Math.max(1, length - 4), Math.max(1, width - 4)),
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: lensGlow, roughness: 0.4, side: THREE.DoubleSide }),
+  );
+  lens.rotation.x = -Math.PI / 2;
+  lens.position.y = -4.01;
+  group.add(lens);
+
+  const light = new THREE.RectAreaLight(color, Math.max(0, p['ИНТЕНЗИТЕТ'] ?? 1500), length, width);
+  // RectAreaLight shines along its local -Z by default — rotate -90° about X to aim it
+  // straight down (НАКЛОН = 0, matching the spot light's own convention), then apply the
+  // tilt on top of that base aim.
+  light.rotation.x = -Math.PI / 2 + THREE.MathUtils.degToRad(p['НАКЛОН'] ?? 0);
+  light.position.y = -4;
+  light.userData['isSceneLight'] = true;
+  group.add(light);
+  return group;
+}

@@ -8,7 +8,7 @@
  */
 import * as THREE from 'three';
 import { FamilyDef, ParamDef, MaterialParamDef, PlaneDesc } from './webcad.model';
-import { makeMesh, buildKorpus, buildDrawer, buildWallPath, buildSlabPath, buildLinePath, buildSolidExtrude } from './webcad-geometry';
+import { makeMesh, buildKorpus, buildDrawer, buildWallPath, buildSlabPath, buildLinePath, buildSolidExtrude, buildSpotLightFixture, buildLineLightFixture } from './webcad-geometry';
 
 /** Fallback ground plane for the degenerate (path-less) Line/SOLID buildObject() below. */
 const GROUND_PLANE: PlaneDesc = { origin: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, uAxis: { x: 1, y: 0, z: 0 } };
@@ -308,6 +308,47 @@ export const FAMILIES: FamilyDef[] = [
     params: DRAWER_PARAMS,
     materialParams: DRAWER_MATERIAL_PARAMS,
     buildObject(p) { return buildDrawer(p); },
+  },
+
+  // ── СПОТ (spot light) — a real local light for Render mode (see buildSpotLightFixture's
+  // own doc comment, webcad-geometry.ts): fills in the specular highlights/falloff
+  // gradients a single sampled "sun" direction can't. Invisible to CAD-mode shading
+  // (toggled off there by admin-page.component.ts — CAD's flat tinting still responds to
+  // scene lights, unlike Render's PBR swap). Horizontal aim reuses the instance's own
+  // rotY like every other family; НАКЛОН tilts the beam from straight down. СЯНКА is
+  // real cost, not just a look — each shadow-casting light adds its own shadow-map
+  // render pass to every accumulated Render-mode sample, so leave it off on fixtures
+  // where a hard shadow doesn't matter.
+  {
+    id: 'spot-light',
+    name: 'СПОТ',
+    params: [
+      { key: 'ИНТЕНЗИТЕТ',           label: 'ИНТЕНЗИТЕТ',           defaultValue: 400,  min: 0, step: 10, unit: '' },
+      { key: 'ЪГЪЛ',                 label: 'ЪГЪЛ',                 defaultValue: 30,   min: 5, max: 80, step: 1, unit: '°', type: 'slider' },
+      { key: 'ЗАТИХВАНЕ',            label: 'ЗАТИХВАНЕ',            defaultValue: 0.3,  min: 0, max: 1, step: 0.05, unit: '', type: 'slider' },
+      { key: 'ОБХВАТ',               label: 'ОБХВАТ',               defaultValue: 0,    min: 0, step: 100, unit: 'mm' },   // 0 = no distance falloff cutoff
+      { key: 'ЦВЕТНА_ТЕМПЕРАТУРА',   label: 'ЦВЕТНА ТЕМПЕРАТУРА',   defaultValue: 3000, min: 2000, max: 10000, step: 100, unit: 'K', type: 'slider' },
+      { key: 'НАКЛОН',               label: 'НАКЛОН',               defaultValue: 0,    min: -89, max: 89, step: 1, unit: '°', type: 'slider' },
+      { key: 'СЯНКА',                label: 'СЯНКА',                defaultValue: 1,    min: 0, step: 1, unit: '', type: 'toggle' },
+    ],
+    buildObject(p) { return buildSpotLightFixture(p); },
+  },
+
+  // ── ЛЕД ЛЕНТА (LED strip / line light) — a configurable-length area light for Render
+  // mode. No СЯНКА toggle: THREE.RectAreaLight has no shadow support at all (a Three.js
+  // limitation, not a setting), so a line light only ever softens/fills, never casts a
+  // hard shadow of its own.
+  {
+    id: 'line-light',
+    name: 'ЛЕД ЛЕНТА',
+    params: [
+      { key: 'ДЪЛЖИНА',              label: 'ДЪЛЖИНА',              defaultValue: 600,  min: 50, step: 10, unit: 'mm' },
+      { key: 'ШИРИНА',               label: 'ШИРИНА',               defaultValue: 15,   min: 5,  step: 1, unit: 'mm' },
+      { key: 'ИНТЕНЗИТЕТ',           label: 'ИНТЕНЗИТЕТ',           defaultValue: 1500, min: 0,  step: 50, unit: '' },
+      { key: 'ЦВЕТНА_ТЕМПЕРАТУРА',   label: 'ЦВЕТНА ТЕМПЕРАТУРА',   defaultValue: 4000, min: 2000, max: 10000, step: 100, unit: 'K', type: 'slider' },
+      { key: 'НАКЛОН',               label: 'НАКЛОН',               defaultValue: 0,    min: -89, max: 89, step: 1, unit: '°', type: 'slider' },
+    ],
+    buildObject(p) { return buildLineLightFixture(p); },
   },
 
   // ── СТЕНА (wall) — a vertical solid drawn as a POLYLINE on the ground. The whole

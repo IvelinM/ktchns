@@ -1325,6 +1325,15 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     const isLineSketch = inst.familyId === 'line';
     const isVoidSolid = inst.familyId === 'solid' && !!inst.isVoid;
     const isFbxImport = inst.familyId === 'fbx-import';
+    // Light fixtures (СПОТ/ЛЕД ЛЕНТА) have their own fixed housing/lens materials, built
+    // in buildSpotLightFixture/buildLineLightFixture (webcad-geometry.ts) — never tagged
+    // by the panel-material system (they have no МАТЕРИАЛИ section at all) and never
+    // CSG-cut by a void (same reasoning as Line/FBX just below — not what either was
+    // built for). They DO still get addEdges like everything else, though — a 2D plan/
+    // elevation view (setMeshFacesVisible) hides every mesh's shaded faces and shows
+    // ONLY the isEdge wireframe, so a fixture without one would be flat-out invisible in
+    // XZ/YZ/XY/CP, not just unwireframed (confirmed: this was a real reported bug).
+    const isLightFixture = inst.familyId === 'spot-light' || inst.familyId === 'line-light';
     const obj = anchorWrap(built, inst.anchor, inst.rotY, this.nominalAnchorSize(inst));
     // Cut BEFORE addEdges/position, while obj is still at its pre-placement identity
     // transform (anchorWrap never sets obj's own position/rotation — see
@@ -1332,7 +1341,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     // traces the already-cut shape. A void itself is never cut by anything else. An
     // FBX import is never cut either — CSG against an arbitrary imported mesh (often
     // many sub-meshes, not necessarily watertight) isn't something this was built for.
-    if (!isVoidSolid && !isFbxImport) applyVoidCuts(obj, inst, this.instances);
+    if (!isVoidSolid && !isFbxImport && !isLightFixture) applyVoidCuts(obj, inst, this.instances);
     if (!isLineSketch && !isVoidSolid && !isFbxImport) addEdges(obj);
     obj.position.set(inst.x, inst.y, inst.z);
     obj.rotation.y = inst.rotY * (Math.PI / 180);
@@ -1347,6 +1356,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
           mat.transparent = true; mat.opacity = 0; mat.depthWrite = false;
         }
       });
+    } else if (isLightFixture) {
+      // The actual THREE.Light inside is only ever "on" in Render mode — CAD mode's flat
+      // MeshPhongMaterial tinting (cadColorObj, used everywhere else) still RESPONDS to
+      // scene lights (unlike Render's full PBR swap), so an always-on fixture would
+      // otherwise visibly leak a bright hotspot into the plain CAD view.
+      obj.traverse(child => { if (child.userData['isSceneLight']) child.visible = this.renderMode; });
     } else if (!isLineSketch && !isFbxImport) {
       if (this.renderMode) this.applyRenderMaterials(obj, inst);
       else this.cadColorObj(obj, inst);        // CAD mode: tint faces by assigned material colour
@@ -5316,6 +5331,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         const [dw, dh] = this.accumSize();
         const bw = Math.max(1, Math.ceil(dw / 4)), bh = Math.max(1, Math.ceil(dh / 4));
         this.bloomBright.setSize(bw, bh); this.bloomA?.setSize(bw, bh); this.bloomB?.setSize(bw, bh);
+        const em = this.bloomExtractQuad!.material as THREE.ShaderMaterial;
+        em.uniforms['uTexel'].value.set(1 / dw, 1 / dh);
       }
       if (this.floorReflector) {
         const [rw, rh] = this.floorReflectionSize();
@@ -5558,6 +5575,7 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     this.ensureAccum();     // lazy-build the progressive-accumulation targets (async, safe if it fails)
     this.loadHdri();        // upgrade RoomEnvironment → studio HDRI once it loads (async)
     this.ensureSSAO();      // lazy-build the SSAO pass (async, gated by its own runtime smoke test)
+    this.ensureRectAreaLightLib();   // lazy-init ЛЕД ЛЕНТА support (async, no-op if never used)
   }
 
   /**
@@ -5890,11 +5908,33 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       this.bloomA = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType, depthBuffer: false });
       this.bloomB = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType, depthBuffer: false });
       this.bloomExtractQuad = new FullScreenQuad(new THREE.ShaderMaterial({
-        uniforms: { tInput: { value: null }, uThreshold: { value: 1 } },
+        uniforms: { tInput: { value: null }, uThreshold: { value: 1 }, uTexel: { value: new THREE.Vector2(1 / w, 1 / h) } },
         vertexShader: vert,
         fragmentShader: `
-          varying vec2 vUv; uniform sampler2D tInput; uniform float uThreshold;
-          void main(){ gl_FragColor = vec4(max(texture2D(tInput, vUv).rgb - uThreshold, 0.0), 1.0); }`,
+          varying vec2 vUv; uniform sampler2D tInput; uniform float uThreshold; uniform vec2 uTexel;
+          void main(){
+            // A single point-sample here (the original version) is textbook point-sampling
+            // aliasing: this pass downsamples tInput (full accumulation resolution) into a
+            // quarter-res buffer, and anything bright but THIN on screen — an LED strip's
+            // emissive lens is often only a few pixels tall — randomly lands on or misses each
+            // output texel's single sample point along its length, instead of being properly
+            // averaged in. The result was reported exactly as it looks: a continuous light
+            // strip reading as a string of separate bright blobs, beaded along its length,
+            // plus the occasional accidental full-intensity sample spreading into an
+            // oversized blob once the blur pass gets hold of it. A small box average over the
+            // footprint this output texel actually covers (4×4 taps at the full-res texel
+            // size) properly pre-filters any bright thin feature before the downsample,
+            // fixing both symptoms at once — and it's a strict improvement for every OTHER
+            // bright highlight (sun glints, specular reflections) too, not just line lights.
+            vec3 sum = vec3(0.0);
+            for (int dy = 0; dy < 4; dy++) {
+              for (int dx = 0; dx < 4; dx++) {
+                vec2 o = (vec2(float(dx), float(dy)) - 1.5) * uTexel;
+                sum += texture2D(tInput, vUv + o).rgb;
+              }
+            }
+            gl_FragColor = vec4(max(sum / 16.0 - uThreshold, 0.0), 1.0);
+          }`,
       }));
       this.bloomBlurQuad = new FullScreenQuad(new THREE.ShaderMaterial({
         uniforms: { tInput: { value: null }, uDir: { value: new THREE.Vector2() }, uRadius: { value: 1 } },
@@ -5949,19 +5989,25 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       const pass = new SSAOPass(this.scene, this.perspectiveCamera, w, h, 32);
       const cam = this.perspectiveCamera;
       const range = cam.far - cam.near;
-      // kernelRadius is intentionally broad (not just a hairline at seams): a large hemisphere
-      // samples a wide swath of neighbouring geometry per pixel, so a whole panel reads a soft
-      // gradient toward every nearby wall/corner/neighbour — not only a thin dark line exactly
-      // at the touching edge. Pushed up from an initial 60mm (which only ever caught the tight
-      // seam itself, leaving the rest of every surface perfectly flat) after exactly that
-      // flatness was reported as still looking wrong. maxDistance is raised to match — it has
-      // to stay comfortably larger than kernelRadius or a 200mm-reach sample's occlusion test
-      // gets clipped away before it can register. kernelSize (32, up from 16) keeps the now-
-      // much-wider hemisphere from reading noisy at this radius (the blur pass only removes
-      // high-frequency speckle, it doesn't compensate for too few samples over a bigger area).
-      pass.kernelRadius = 200;            // literal view-space mm — spans most of a cabinet panel
-      pass.minDistance = 2 / range;       // ≈2mm real occlusion floor, in SSAOShader's normalised-depth units
-      pass.maxDistance = 900 / range;     // ≈900mm real occlusion ceiling, same units
+      // kernelRadius is intentionally broader than a hairline at seams: a wider hemisphere
+      // samples more neighbouring geometry per pixel, so a whole panel reads a soft gradient
+      // toward nearby walls/corners, not only a thin dark line exactly at the touching edge.
+      // Pushed up once already, from an initial 60mm (too flat) to 200mm — but that went too
+      // far the other way: SSAOShader's own blur pass (SSAOBlurShader, Three's stock one, not
+      // ours to tune) is a FIXED 5×5 blur in SCREEN pixels, not world mm — so a wide kernel's
+      // pre-blur AO signal, which already varies over fewer screen pixels for anything far from
+      // the camera (same real-mm spread subtends less of the view the farther away it is),
+      // gets smeared across a proportionally LARGER slice of that distant object's own small
+      // screen footprint by that same fixed pixel-count blur. That's exactly the "farther
+      // things get blurrier" symptom reported — not real depth of field (there isn't one in
+      // this pipeline), just this kernel/blur combination hitting small-on-screen geometry
+      // harder. Settled at 90mm — a middle ground that still softens whole surfaces, not just
+      // seams, without spreading so far in world space that distant content visibly mushes.
+      // maxDistance tracks it (kept at roughly 4× kernelRadius, as before) so a sample at the
+      // kernel's own reach doesn't get clipped away before it can register.
+      pass.kernelRadius = 90;             // literal view-space mm
+      pass.minDistance = 1.5 / range;     // ≈1.5mm real occlusion floor, in SSAOShader's normalised-depth units
+      pass.maxDistance = 360 / range;     // ≈360mm real occlusion ceiling, same units
       this.ssaoPass = pass;
 
       // Tiny readable copy target: doubles as (a) the dummy write/read target for the
@@ -6093,6 +6139,31 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       console.error('[render] HDRI load failed — keeping RoomEnvironment', e);
     } finally {
       this.hdriLoading = false;
+    }
+  }
+
+  /**
+   * One-time setup for ЛЕД ЛЕНТА (line-light) instances: THREE.RectAreaLight needs
+   * RectAreaLightUniformsLib.init() called once before it lights anything correctly —
+   * the LTC lookup tables it loads are ~300KB of baked data, so (same convention as
+   * HDRLoader/Reflector/SSAOPass above) it's lazy-imported, only paid for once Render
+   * mode is actually entered, not in the initial bundle. Harmless to call even when the
+   * scene has no line lights at all — cheap no-op after the first successful call.
+   */
+  private rectAreaLightLibReady = false;
+  private rectAreaLightLibLoading = false;
+  private async ensureRectAreaLightLib() {
+    if (this.rectAreaLightLibReady || this.rectAreaLightLibLoading) return;
+    this.rectAreaLightLibLoading = true;
+    try {
+      const { RectAreaLightUniformsLib } = await import('three/examples/jsm/lights/RectAreaLightUniformsLib.js');
+      RectAreaLightUniformsLib.init();
+      this.rectAreaLightLibReady = true;
+      this.accumDirty = true;   // any line lights already in the scene render correctly from here on
+    } catch (e) {
+      console.error('[render] RectAreaLightUniformsLib failed to load — line lights will look wrong', e);
+    } finally {
+      this.rectAreaLightLibLoading = false;
     }
   }
 
