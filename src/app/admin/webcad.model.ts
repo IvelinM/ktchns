@@ -23,7 +23,8 @@ export interface ParamDef {
   max?: number;   // upper bound for a 'slider' param (ignored otherwise)
 }
 
-/** A per-panel material choice (a string picked from the scene's material list). */
+/** A per-panel material choice — `default` is a `MaterialDef.id` (a stable identity
+ *  ref, not a display name — see MaterialDef's own doc comment for why). */
 export interface MaterialParamDef {
   key: string;
   label: string;
@@ -40,8 +41,25 @@ export interface MaterialParamDef {
  * mapped at real-world scale: `textureW`/`textureH` are the physical size in mm that
  * one tile of the image covers (e.g. a 1200×800 mm tile → 1200/800), so the texture
  * repeats correctly across a panel regardless of its dimensions.
+ *
+ * `id` is the stable identity every reference (SceneInstance.materials[key],
+ * MaterialParamDef.default) actually points at — `name` is purely the editable display
+ * label shown in the Materials dialog and every export. Renaming a material (editing
+ * `name` in place, same object) is instant and free precisely BECAUSE nothing else ever
+ * stores a copy of `name` — every lookup is `materialDefs.find(m => m.id === ref)`,
+ * resolved fresh at read time, so a rename is visible everywhere on the very next read
+ * with no propagation step. Before this field existed, every reference WAS a name
+ * string, which a rename silently orphaned (the instance kept pointing at a name that no
+ * longer existed) — `id` is what this was added specifically to fix. Built-in materials
+ * (DEFAULT_MATERIALS, admin-page.component.ts) use fixed, human-readable slugs
+ * ('gladko-byalo', …) so a fresh scene's default material-param picks are deterministic
+ * across sessions; a material added from the Materials dialog gets a fresh
+ * `crypto.randomUUID()`. A material loaded from a save made before this field existed
+ * gets one assigned on load (restoreMaterialLibrary), with every instance reference that
+ * used to be its NAME rewritten to the new id in the same pass (see its own doc comment).
  */
 export interface MaterialDef {
+  id: string;
   name: string;
   color: string;          // '#rrggbb' (tint; ignored where a texture covers the face)
   transparency: number;   // 0–100 %

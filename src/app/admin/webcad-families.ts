@@ -186,44 +186,44 @@ const KORPUS_PARAMS: ParamDef[] = [
  *  Carries both the ТАВАН-panel and РЕБРО-ТАВАН picks — only whichever mode is active
  *  (С_ТАВАН vs С_РЕБРА) ever actually renders. */
 const KORPUS_MATERIAL_PARAMS: MaterialParamDef[] = [
-  { key: 'ЛЯВА_СТРАНИЦА_МАТЕРИАЛ',       label: 'ЛЯВА СТРАНИЦА МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ЛЯВА_СТРАНИЦА_КАНТ_МАТЕРИАЛ',  label: 'ЛЯВА СТРАНИЦА КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ДЯСНА_СТРАНИЦА_МАТЕРИАЛ',      label: 'ДЯСНА СТРАНИЦА МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
-  { key: 'ДЯСНА_СТРАНИЦА_КАНТ_МАТЕРИАЛ', label: 'ДЯСНА СТРАНИЦА КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
-  { key: 'ТАВАН_МАТЕРИАЛ',              label: 'ТАВАН МАТЕРИАЛ',              default: 'ГЛАДКО БЯЛО' },
-  { key: 'ТАВАН_КАНТ_МАТЕРИАЛ',         label: 'ТАВАН КАНТ МАТЕРИАЛ',         default: 'ГЛАДКО БЯЛО' },
-  { key: 'РЕБРО_ТАВАН_1_МАТЕРИАЛ',      label: 'РЕБРО ТАВАН 1 МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
-  { key: 'РЕБРО_ТАВАН_1_КАНТ_МАТЕРИАЛ', label: 'РЕБРО ТАВАН 1 КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
-  { key: 'РЕБРО_ТАВАН_2_МАТЕРИАЛ',      label: 'РЕБРО ТАВАН 2 МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
-  { key: 'РЕБРО_ТАВАН_2_КАНТ_МАТЕРИАЛ', label: 'РЕБРО ТАВАН 2 КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
-  { key: 'ДЪНО_МАТЕРИАЛ',               label: 'ДЪНО МАТЕРИАЛ',               default: 'ГЛАДКО БЯЛО' },
-  { key: 'ДЪНО_КАНТ_МАТЕРИАЛ',          label: 'ДЪНО КАНТ МАТЕРИАЛ',          default: 'ГЛАДКО БЯЛО' },
-  { key: 'ГРЪБ_МАТЕРИАЛ',               label: 'ГРЪБ МАТЕРИАЛ',               default: 'ГЛАДКО БЯЛО' },
-  { key: 'ГРЪБ_КАНТ_МАТЕРИАЛ',          label: 'ГРЪБ КАНТ МАТЕРИАЛ',          default: 'ГЛАДКО БЯЛО' },
-  { key: 'ВРАТИЧКА_МАТЕРИАЛ',           label: 'ВРАТИЧКА МАТЕРИАЛ',           default: 'ГЛАДКО БЯЛО' },
-  { key: 'ВРАТИЧКА_КАНТ_МАТЕРИАЛ',      label: 'ВРАТИЧКА КАНТ МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
+  { key: 'ЛЯВА_СТРАНИЦА_МАТЕРИАЛ',       label: 'ЛЯВА СТРАНИЦА МАТЕРИАЛ',       default: 'gladko-byalo' },
+  { key: 'ЛЯВА_СТРАНИЦА_КАНТ_МАТЕРИАЛ',  label: 'ЛЯВА СТРАНИЦА КАНТ МАТЕРИАЛ',  default: 'gladko-byalo' },
+  { key: 'ДЯСНА_СТРАНИЦА_МАТЕРИАЛ',      label: 'ДЯСНА СТРАНИЦА МАТЕРИАЛ',      default: 'gladko-byalo' },
+  { key: 'ДЯСНА_СТРАНИЦА_КАНТ_МАТЕРИАЛ', label: 'ДЯСНА СТРАНИЦА КАНТ МАТЕРИАЛ', default: 'gladko-byalo' },
+  { key: 'ТАВАН_МАТЕРИАЛ',              label: 'ТАВАН МАТЕРИАЛ',              default: 'gladko-byalo' },
+  { key: 'ТАВАН_КАНТ_МАТЕРИАЛ',         label: 'ТАВАН КАНТ МАТЕРИАЛ',         default: 'gladko-byalo' },
+  { key: 'РЕБРО_ТАВАН_1_МАТЕРИАЛ',      label: 'РЕБРО ТАВАН 1 МАТЕРИАЛ',      default: 'gladko-byalo' },
+  { key: 'РЕБРО_ТАВАН_1_КАНТ_МАТЕРИАЛ', label: 'РЕБРО ТАВАН 1 КАНТ МАТЕРИАЛ', default: 'gladko-byalo' },
+  { key: 'РЕБРО_ТАВАН_2_МАТЕРИАЛ',      label: 'РЕБРО ТАВАН 2 МАТЕРИАЛ',      default: 'gladko-byalo' },
+  { key: 'РЕБРО_ТАВАН_2_КАНТ_МАТЕРИАЛ', label: 'РЕБРО ТАВАН 2 КАНТ МАТЕРИАЛ', default: 'gladko-byalo' },
+  { key: 'ДЪНО_МАТЕРИАЛ',               label: 'ДЪНО МАТЕРИАЛ',               default: 'gladko-byalo' },
+  { key: 'ДЪНО_КАНТ_МАТЕРИАЛ',          label: 'ДЪНО КАНТ МАТЕРИАЛ',          default: 'gladko-byalo' },
+  { key: 'ГРЪБ_МАТЕРИАЛ',               label: 'ГРЪБ МАТЕРИАЛ',               default: 'gladko-byalo' },
+  { key: 'ГРЪБ_КАНТ_МАТЕРИАЛ',          label: 'ГРЪБ КАНТ МАТЕРИАЛ',          default: 'gladko-byalo' },
+  { key: 'ВРАТИЧКА_МАТЕРИАЛ',           label: 'ВРАТИЧКА МАТЕРИАЛ',           default: 'gladko-byalo' },
+  { key: 'ВРАТИЧКА_КАНТ_МАТЕРИАЛ',      label: 'ВРАТИЧКА КАНТ МАТЕРИАЛ',      default: 'gladko-byalo' },
   // ПОЛИЦА 1..10: each pair only shown (admin-page.component.html) while that shelf's
   // own С_ПОЛИЦА_n toggle is checked.
-  { key: 'ПОЛИЦА_1_МАТЕРИАЛ',       label: 'ПОЛИЦА 1 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_1_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 1 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_2_МАТЕРИАЛ',       label: 'ПОЛИЦА 2 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_2_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 2 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_3_МАТЕРИАЛ',       label: 'ПОЛИЦА 3 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_3_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 3 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_4_МАТЕРИАЛ',       label: 'ПОЛИЦА 4 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_4_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 4 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_5_МАТЕРИАЛ',       label: 'ПОЛИЦА 5 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_5_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 5 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_6_МАТЕРИАЛ',       label: 'ПОЛИЦА 6 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_6_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 6 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_7_МАТЕРИАЛ',       label: 'ПОЛИЦА 7 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_7_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 7 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_8_МАТЕРИАЛ',       label: 'ПОЛИЦА 8 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_8_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 8 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_9_МАТЕРИАЛ',       label: 'ПОЛИЦА 9 МАТЕРИАЛ',       default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_9_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 9 КАНТ МАТЕРИАЛ',  default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_10_МАТЕРИАЛ',      label: 'ПОЛИЦА 10 МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
-  { key: 'ПОЛИЦА_10_КАНТ_МАТЕРИАЛ', label: 'ПОЛИЦА 10 КАНТ МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
+  { key: 'ПОЛИЦА_1_МАТЕРИАЛ',       label: 'ПОЛИЦА 1 МАТЕРИАЛ',       default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_1_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 1 КАНТ МАТЕРИАЛ',  default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_2_МАТЕРИАЛ',       label: 'ПОЛИЦА 2 МАТЕРИАЛ',       default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_2_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 2 КАНТ МАТЕРИАЛ',  default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_3_МАТЕРИАЛ',       label: 'ПОЛИЦА 3 МАТЕРИАЛ',       default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_3_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 3 КАНТ МАТЕРИАЛ',  default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_4_МАТЕРИАЛ',       label: 'ПОЛИЦА 4 МАТЕРИАЛ',       default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_4_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 4 КАНТ МАТЕРИАЛ',  default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_5_МАТЕРИАЛ',       label: 'ПОЛИЦА 5 МАТЕРИАЛ',       default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_5_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 5 КАНТ МАТЕРИАЛ',  default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_6_МАТЕРИАЛ',       label: 'ПОЛИЦА 6 МАТЕРИАЛ',       default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_6_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 6 КАНТ МАТЕРИАЛ',  default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_7_МАТЕРИАЛ',       label: 'ПОЛИЦА 7 МАТЕРИАЛ',       default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_7_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 7 КАНТ МАТЕРИАЛ',  default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_8_МАТЕРИАЛ',       label: 'ПОЛИЦА 8 МАТЕРИАЛ',       default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_8_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 8 КАНТ МАТЕРИАЛ',  default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_9_МАТЕРИАЛ',       label: 'ПОЛИЦА 9 МАТЕРИАЛ',       default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_9_КАНТ_МАТЕРИАЛ',  label: 'ПОЛИЦА 9 КАНТ МАТЕРИАЛ',  default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_10_МАТЕРИАЛ',      label: 'ПОЛИЦА 10 МАТЕРИАЛ',      default: 'gladko-byalo' },
+  { key: 'ПОЛИЦА_10_КАНТ_МАТЕРИАЛ', label: 'ПОЛИЦА 10 КАНТ МАТЕРИАЛ', default: 'gladko-byalo' },
 ];
 
 /**
@@ -248,10 +248,10 @@ const DRAWER_PARAMS: ParamDef[] = [
  *  ЧЕЛО face — see panelMaterialGroup (webcad-geometry.ts), which groups those five
  *  structural panel names onto the КОРПУС_* keys below. */
 const DRAWER_MATERIAL_PARAMS: MaterialParamDef[] = [
-  { key: 'КОРПУС_МАТЕРИАЛ',      label: 'МАТЕРИАЛ КОРПУС',      default: 'ГЛАДКО БЯЛО' },
-  { key: 'КОРПУС_КАНТ_МАТЕРИАЛ', label: 'МАТЕРИАЛ КОРПУС КАНТ', default: 'ГЛАДКО БЯЛО' },
-  { key: 'ЧЕЛО_МАТЕРИАЛ',        label: 'ЧЕЛО',                 default: 'ГЛАДКО БЯЛО' },
-  { key: 'ЧЕЛО_КАНТ_МАТЕРИАЛ',   label: 'ЧЕЛО КАНТ',            default: 'ГЛАДКО БЯЛО' },
+  { key: 'КОРПУС_МАТЕРИАЛ',      label: 'МАТЕРИАЛ КОРПУС',      default: 'gladko-byalo' },
+  { key: 'КОРПУС_КАНТ_МАТЕРИАЛ', label: 'МАТЕРИАЛ КОРПУС КАНТ', default: 'gladko-byalo' },
+  { key: 'ЧЕЛО_МАТЕРИАЛ',        label: 'ЧЕЛО',                 default: 'gladko-byalo' },
+  { key: 'ЧЕЛО_КАНТ_МАТЕРИАЛ',   label: 'ЧЕЛО КАНТ',            default: 'gladko-byalo' },
 ];
 
 export const FAMILIES: FamilyDef[] = [
@@ -275,8 +275,8 @@ export const FAMILIES: FamilyDef[] = [
       { key: 'tilt', label: 'НАКЛОН', defaultValue: 0, min: -180, max: 180, step: 1, unit: '°', type: 'slider' },
     ],
     materialParams: [
-      { key: 'МАТЕРИАЛ',      label: 'МАТЕРИАЛ',      default: 'ГЛАДКО БЯЛО' },
-      { key: 'МАТЕРИАЛ_КАНТ', label: 'МАТЕРИАЛ КАНТ', default: 'ГЛАДКО БЯЛО' },
+      { key: 'МАТЕРИАЛ',      label: 'МАТЕРИАЛ',      default: 'gladko-byalo' },
+      { key: 'МАТЕРИАЛ_КАНТ', label: 'МАТЕРИАЛ КАНТ', default: 'gladko-byalo' },
     ],
     buildObject(p) {
       const obj = makeMesh(
@@ -363,6 +363,12 @@ export const FAMILIES: FamilyDef[] = [
       { key: 'ВИСОЧИНА', label: 'ВИСОЧИНА', defaultValue: 2600, min: 1, step: 1, unit: 'mm' },
       { key: 'ДЕБЕЛИНА', label: 'ДЕБЕЛИНА', defaultValue: 100,  min: 1, step: 1, unit: 'mm' },
     ],
+    // A wall has no panels for cadColorObj/applyRenderMaterials to tag by name (unlike
+    // ПЛОСКОСТ/МОДУЛ's per-panel picks) — a single library pick under this exact key is
+    // its own panel-less lookup, same as SOLID's identical entry below.
+    materialParams: [
+      { key: 'МАТЕРИАЛ', label: 'МАТЕРИАЛ', default: 'gladko-byalo' },
+    ],
     // Degenerate fallback (path-less wall): a single 1 m segment. Real walls go through
     // buildWallPath; this only fires if an instance somehow lacks a path.
     buildObject(p) { return buildWallPath([{ x: 0, z: 0 }, { x: 1000, z: 0 }], p['ВИСОЧИНА'], p['ДЕБЕЛИНА']); },
@@ -377,6 +383,10 @@ export const FAMILIES: FamilyDef[] = [
     hidden: true,
     params: [
       { key: 'ДЕБЕЛИНА', label: 'ДЕБЕЛИНА', defaultValue: 40, min: 1, step: 1, unit: 'mm' },
+    ],
+    // Same panel-less single pick as СТЕНА just above.
+    materialParams: [
+      { key: 'МАТЕРИАЛ', label: 'МАТЕРИАЛ', default: 'gladko-byalo' },
     ],
     // Degenerate fallback (path-less slab): a 600×600 square. Real slabs go through buildSlabPath.
     buildObject(p) { return buildSlabPath([{ x: 0, z: 0 }, { x: 600, z: 0 }, { x: 600, z: 600 }, { x: 0, z: 600 }], p['ДЕБЕЛИНА']); },
@@ -415,7 +425,7 @@ export const FAMILIES: FamilyDef[] = [
     // (`inst.materials?.['МАТЕРИАЛ'] ?? inst.material`), so this is the only entry
     // needed to make a SOLID's own "МАТЕРИАЛИ" section appear and actually take effect.
     materialParams: [
-      { key: 'МАТЕРИАЛ', label: 'МАТЕРИАЛ', default: 'ГЛАДКО БЯЛО' },
+      { key: 'МАТЕРИАЛ', label: 'МАТЕРИАЛ', default: 'gladko-byalo' },
     ],
     // Degenerate fallback (path-less solid): a small square on the ground.
     buildObject(p) { return buildSolidExtrude([{ x: 0, z: 0 }, { x: 300, z: 0 }, { x: 300, z: 300 }, { x: 0, z: 300 }], p['ДЪЛБОЧИНА'], GROUND_PLANE); },

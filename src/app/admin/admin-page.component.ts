@@ -77,17 +77,20 @@ const WALL_DIM_MAX = 15000;
  * finishes are always available. ГЛАДКО БЯЛО is first — it's the family default every
  * materialParam references.
  */
+// `id` is a fixed, human-readable slug (not a random uuid like a Materials-dialog-added
+// material gets) specifically so a fresh scene's materialParams defaults ('gladko-byalo'
+// — see webcad-families.ts) resolve to the same material across every session.
 const DEFAULT_MATERIALS: MaterialDef[] = [
-  { name: 'ГЛАДКО БЯЛО',    color: '#f0f0f0', transparency: 0,  reflection: 8,  glossiness: 50 },
-  { name: 'БЯЛО ГЛАНЦ',     color: '#f4f4f4', transparency: 0,  reflection: 6,  glossiness: 92 },
-  { name: 'БЯЛО МАТ',       color: '#ececec', transparency: 0,  reflection: 2,  glossiness: 14 },
-  { name: 'БЯЛО ШАГРЕ',     color: '#eeeeee', transparency: 0,  reflection: 3,  glossiness: 32, bump: 55 },
-  { name: 'ЧЕРНО ГЛАНЦ',    color: '#0c0c0c', transparency: 0,  reflection: 8,  glossiness: 93 },
-  { name: 'ЧЕРНО МАТ',      color: '#141414', transparency: 0,  reflection: 2,  glossiness: 12 },
-  { name: 'СТЪКЛО',         color: '#d3e2e8', transparency: 85, reflection: 6,  glossiness: 96 },
-  { name: 'ОПУШЕНО СТЪКЛО', color: '#2f3437', transparency: 62, reflection: 6,  glossiness: 95 },
-  { name: 'НЕРЪЖДАВЕЙКА',   color: '#babec2', transparency: 0,  reflection: 85, glossiness: 58 },
-  { name: 'ХРОМ',           color: '#dfe4e9', transparency: 0,  reflection: 98, glossiness: 97 },
+  { id: 'gladko-byalo',    name: 'ГЛАДКО БЯЛО',    color: '#f0f0f0', transparency: 0,  reflection: 8,  glossiness: 50 },
+  { id: 'byalo-glanc',     name: 'БЯЛО ГЛАНЦ',     color: '#f4f4f4', transparency: 0,  reflection: 6,  glossiness: 92 },
+  { id: 'byalo-mat',       name: 'БЯЛО МАТ',       color: '#ececec', transparency: 0,  reflection: 2,  glossiness: 14 },
+  { id: 'byalo-shagre',    name: 'БЯЛО ШАГРЕ',     color: '#eeeeee', transparency: 0,  reflection: 3,  glossiness: 32, bump: 55 },
+  { id: 'cherno-glanc',    name: 'ЧЕРНО ГЛАНЦ',    color: '#0c0c0c', transparency: 0,  reflection: 8,  glossiness: 93 },
+  { id: 'cherno-mat',      name: 'ЧЕРНО МАТ',      color: '#141414', transparency: 0,  reflection: 2,  glossiness: 12 },
+  { id: 'stklo',           name: 'СТЪКЛО',         color: '#d3e2e8', transparency: 85, reflection: 6,  glossiness: 96 },
+  { id: 'opusheno-stklo',  name: 'ОПУШЕНО СТЪКЛО', color: '#2f3437', transparency: 62, reflection: 6,  glossiness: 95 },
+  { id: 'nerzhdaveyka',    name: 'НЕРЪЖДАВЕЙКА',   color: '#babec2', transparency: 0,  reflection: 85, glossiness: 58 },
+  { id: 'hrom',            name: 'ХРОМ',           color: '#dfe4e9', transparency: 0,  reflection: 98, glossiness: 97 },
 ];
 
 /** Families the Mirror tool refuses to touch: wall/slab/line are path-based geometry the
@@ -998,19 +1001,16 @@ export class AdminPageComponent implements OnInit, OnDestroy {
 
   // ── Materials (МАТЕРИАЛИ section) ────────────────────────────────────────────
 
-  /** Every material name selectable in the scene: the library plus any already in use. */
-  get availableMaterials(): string[] {
-    const set = new Set<string>(this.materialDefs.map(m => m.name));
-    for (const inst of this.instances) {
-      if (inst.material && inst.material.trim()) set.add(inst.material.trim());
-      if (inst.materials) for (const v of Object.values(inst.materials)) if (v) set.add(v);
-    }
-    return [...set];
-  }
+  /** Every material selectable from a МАТЕРИАЛИ dropdown — the library, as-is (picks are
+   *  by `id`, so there's no name-collision/legacy-value case left to merge in here the
+   *  way the old name-keyed version had to). */
+  get availableMaterials(): MaterialDef[] { return this.materialDefs; }
 
-  /** Look up a library material by name (used by Render mode to read its look). */
-  private materialDef(name: string | undefined): MaterialDef | undefined {
-    return name ? this.materialDefs.find(m => m.name === name) : undefined;
+  /** Look up a library material by id (used by Render/CAD mode to read its look). A
+   *  dangling id (its material got deleted — deleteMaterial leaves instances pointing at
+   *  it unchanged) simply resolves to undefined, same as an unset pick always has. */
+  private materialDef(id: string | undefined): MaterialDef | undefined {
+    return id ? this.materialDefs.find(m => m.id === id) : undefined;
   }
 
   // Cache the loaded THREE.Texture per (image + tile size) so all faces using a material
@@ -1074,12 +1074,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** Add a fresh material to the library (unique name) and select it for editing. */
+  /** Add a fresh material to the library (unique name, fresh id) and select it for editing. */
   addMaterial() {
     let n = 1, name = 'НОВ МАТЕРИАЛ';
     const names = new Set(this.materialDefs.map(m => m.name));
     while (names.has(name)) name = `НОВ МАТЕРИАЛ ${++n}`;
-    this.materialDefs.push({ name, color: '#cccccc', transparency: 0, reflection: 10, glossiness: 50 });
+    this.materialDefs.push({ id: crypto.randomUUID(), name, color: '#cccccc', transparency: 0, reflection: 10, glossiness: 50 });
     this.editingMaterialIndex = this.materialDefs.length - 1;
   }
 
@@ -1167,7 +1167,8 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     return Math.ceil(Math.hypot(w, h));
   }
 
-  /** Remove a material from the library (keeps at least one); instances keep their name. */
+  /** Remove a material from the library (keeps at least one); instances referencing its id
+   *  keep that (now dangling) id — materialDef resolves it to undefined, same as unset. */
   deleteMaterial(i: number) {
     if (this.materialDefs.length <= 1) return;
     this.materialDefs.splice(i, 1);
@@ -1898,12 +1899,20 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** Restore the saved material library (v2+); older files leave the current library intact. */
+  /** Restore the saved material library (v2+); older files leave the current library intact.
+   *  Also migrates a pre-`id` save (every MaterialDef.id here is new, assigned below) —
+   *  such a file's instances still reference materials by the NAME string that was all
+   *  there was back then, so every `inst.materials[key]` value that doesn't match any
+   *  current id gets looked up by name and rewritten to that material's new id, right
+   *  here, before anything re-skins the scene with these defs. A value matching neither
+   *  (material deleted, or genuinely never resolved) is left as-is — same dangling-
+   *  reference fallback as materialDef's own doc comment already describes. */
   private restoreMaterialLibrary(mats: unknown) {
     if (!Array.isArray(mats)) return;
     const clean: MaterialDef[] = mats
       .filter((m): m is Partial<MaterialDef> => !!m && typeof m === 'object')
       .map(m => ({
+        id: typeof m.id === 'string' && m.id ? m.id : crypto.randomUUID(),
         name: String(m.name ?? 'МАТЕРИАЛ'),
         color: typeof m.color === 'string' ? m.color : '#cccccc',
         transparency: Number(m.transparency) || 0,
@@ -1923,6 +1932,20 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     // still get the standard finishes (ХРОМ, СТЪКЛО, …) without losing custom materials.
     const have = new Set(clean.map(m => m.name));
     for (const d of DEFAULT_MATERIALS) if (!have.has(d.name)) clean.push({ ...d });
+
+    // Legacy-name → id migration (see this method's own doc comment above).
+    const idSet = new Set(clean.map(m => m.id));
+    const byName = new Map(clean.map(m => [m.name, m.id]));
+    for (const inst of this.instances) {
+      if (!inst.materials) continue;
+      for (const key of Object.keys(inst.materials)) {
+        const v = inst.materials[key];
+        if (!v || idSet.has(v)) continue;
+        const id = byName.get(v);
+        if (id) inst.materials[key] = id;
+      }
+    }
+
     this.clearTextureCache();
     this.materialDefs = clean;
     this.editingMaterialIndex = 0;
@@ -6466,11 +6489,12 @@ export class AdminPageComponent implements OnInit, OnDestroy {
       if (!(child instanceof THREE.Mesh) || child.userData['isEdge']) return;
       let n: THREE.Object3D | null = child, panelName: string | undefined;
       while (n && n !== obj) { if (n.userData['panel']) { panelName = n.userData['panel'].name as string; break; } n = n.parent; }
-      // Panel-less families (ПЛОСКОСТ) carry their own МАТЕРИАЛ/МАТЕРИАЛ_КАНТ picks in
-      // inst.materials; fall back to the free-text laminate spec (inst.material) for
-      // families with neither (СТЕНА/ПЛОЧА) — same rule as applyRenderMaterials below.
-      // panelMaterialGroup lets a family share one pick across several panel names
-      // (ЧЕКМЕДЖЕ's structural panels) instead of one per name.
+      // Panel-less families (ПЛОСКОСТ, СТЕНА, ПЛОЧА, SOLID) carry a flat МАТЕРИАЛ(/_КАНТ)
+      // pick in inst.materials instead of a per-panel one — see applyRenderMaterials's
+      // identical lookup for why `?? inst.material` is effectively just a defensive
+      // last-resort fallback at this point, not an active path. panelMaterialGroup lets a
+      // family share one pick across several panel names (ЧЕКМЕДЖЕ's structural panels)
+      // instead of one per name.
       const group = panelName ? panelMaterialGroup(inst.familyId, panelName) : undefined;
       const boardDef = group
         ? this.materialDef(inst.materials?.[toKey(group)])
@@ -6524,11 +6548,14 @@ export class AdminPageComponent implements OnInit, OnDestroy {
         if (n.userData['panel']) { panelName = n.userData['panel'].name as string; break; }
         n = n.parent;
       }
-      // Panel-less families (ПЛОСКОСТ) carry their own МАТЕРИАЛ/МАТЕРИАЛ_КАНТ picks in
-      // inst.materials; fall back to the free-text laminate spec (inst.material) for
-      // families with neither (СТЕНА/ПЛОЧА). panelMaterialGroup lets a family share one
-      // pick across several panel names (ЧЕКМЕДЖЕ's structural panels) instead of one
-      // per name — same rule as cadColorObj above.
+      // Panel-less families (ПЛОСКОСТ, СТЕНА, ПЛОЧА, SOLID) carry a flat МАТЕРИАЛ(/_КАНТ)
+      // pick in inst.materials instead of a per-panel one; `?? inst.material` is only a
+      // last-resort fallback for an instance saved before materialParams existed at all
+      // (inst.material is free text, not a material id — it only resolves if it happens
+      // to equal a material's own id, which a legacy save's value never will, so this is
+      // effectively dead except as defensive belt-and-braces). panelMaterialGroup lets a
+      // family share one pick across several panel names (ЧЕКМЕДЖЕ's structural panels)
+      // instead of one per name — same rule as cadColorObj above.
       const group = panelName ? panelMaterialGroup(inst.familyId, panelName) : undefined;
       const boardDef = group
         ? this.materialDef(inst.materials?.[toKey(group)])

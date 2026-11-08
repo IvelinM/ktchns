@@ -151,7 +151,7 @@
               <label class="param-label">{{ mp.label }}</label>
               <div class="select-wrap">
                 <select [(ngModel)]="currentMaterials[mp.key]">
-                  <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
+                  <option *ngFor="let m of availableMaterials" [value]="m.id">{{ m.name }}</option>
                 </select>
                 <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                      stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -235,7 +235,7 @@
                 <div class="select-wrap">
                   <select [ngModel]="multiMaterialValue(mp.key)" (ngModelChange)="setMultiMaterial(mp.key, $event)">
                     <option *ngIf="multiMaterialValue(mp.key) === null" value="" disabled>— различни —</option>
-                    <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
+                    <option *ngFor="let m of availableMaterials" [value]="m.id">{{ m.name }}</option>
                   </select>
                   <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                        stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -437,7 +437,7 @@
                   <select [ngModel]="materialOf(selectedInstance!, mp.key)"
                           (focus)="beginEdit()"
                           (ngModelChange)="setMaterial(mp.key, $event)">
-                    <option *ngFor="let m of availableMaterials" [value]="m">{{ m }}</option>
+                    <option *ngFor="let m of availableMaterials" [value]="m.id">{{ m.name }}</option>
                   </select>
                   <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                        stroke-width="2" stroke-linecap="round" aria-hidden="true">

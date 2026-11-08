@@ -15,14 +15,22 @@ export interface Panel {
 }
 
 /**
- * This panel's board + edge-band material names, resolved the SAME way the 3D build
- * colours it (cadColorObj/applyRenderMaterials in admin-page.component.ts):
- * panel-based families (МОДУЛ) key their per-panel pick as `<PANEL_NAME>_МАТЕРИАЛ` /
- * `_КАНТ_МАТЕРИАЛ` (spaces → underscores); panel-less families (ПЛОСКОСТ) use the flat
- * `МАТЕРИАЛ`/`МАТЕРИАЛ_КАНТ` keys, falling back to the legacy free-text `material` field
- * for an instance saved before either existed. Blank (not a guess) when nothing resolves.
+ * This panel's board + edge-band material — resolved the SAME way the 3D build colours
+ * it (cadColorObj/applyRenderMaterials in admin-page.component.ts): panel-based families
+ * (МОДУЛ) key their per-panel pick as `<PANEL_NAME>_МАТЕРИАЛ` / `_КАНТ_МАТЕРИАЛ` (spaces
+ * → underscores); panel-less families (ПЛОСКОСТ, СТЕНА, ПЛОЧА, SOLID) use the flat
+ * `МАТЕРИАЛ`/`МАТЕРИАЛ_КАНТ` keys. `inst.materials[key]` holds a MaterialDef `id`, not a
+ * name (see MaterialDef's own doc comment) — resolved to the library's CURRENT `name`
+ * here, at export time, which is exactly what makes a material rename show up in every
+ * export immediately, with no propagation step: nothing here ever stores a copy of the
+ * old name. `?? inst.material` is a defensive fallback for an instance saved before
+ * materialParams existed at all (inst.material is free text, not an id, so it only
+ * resolves if it happens to equal a real id — never for a genuinely legacy value).
+ * `board`/`kant` are blank (not a guess) when the id doesn't resolve to any current
+ * material (unset, or its material was since deleted).
  */
-function resolveMaterials(inst: SceneInstance, panelName: string | null): { board: string; kant: string } {
+function resolveMaterials(inst: SceneInstance, panelName: string | null, materialDefs: MaterialDef[]): { boardId: string; board: string; kantId: string; kant: string } {
+  let boardId: string, kantId: string;
   if (panelName) {
     // panelMaterialGroup lets a family share one pick across several panel names
     // (ЧЕКМЕДЖЕ's structural panels) instead of one per name — same rule
@@ -30,11 +38,17 @@ function resolveMaterials(inst: SceneInstance, panelName: string | null): { boar
     const group = panelMaterialGroup(inst.familyId, panelName);
     const toKey = group.replace(/ /g, '_') + '_МАТЕРИАЛ';
     const toKantKey = group.replace(/ /g, '_') + '_КАНТ_МАТЕРИАЛ';
-    return { board: inst.materials?.[toKey] ?? '', kant: inst.materials?.[toKantKey] ?? '' };
+    boardId = inst.materials?.[toKey] ?? '';
+    kantId = inst.materials?.[toKantKey] ?? '';
+  } else {
+    boardId = inst.materials?.['МАТЕРИАЛ'] ?? inst.material ?? '';
+    kantId = inst.materials?.['МАТЕРИАЛ_КАНТ'] ?? '';
   }
-  const board = inst.materials?.['МАТЕРИАЛ'] ?? inst.material ?? '';
-  const kant = inst.materials?.['МАТЕРИАЛ_КАНТ'] ?? '';
-  return { board, kant };
+  return {
+    boardId, kantId,
+    board: materialDefs.find(m => m.id === boardId)?.name ?? '',
+    kant: materialDefs.find(m => m.id === kantId)?.name ?? '',
+  };
 }
 
 /**
@@ -50,8 +64,8 @@ function resolveMaterials(inst: SceneInstance, panelName: string | null): { boar
  * texture's own 90° spin) flips it. Only matters when the board material actually HAS a
  * texture — a flat colour has no grain to align, so never swaps.
  */
-function grainSwap(inst: SceneInstance, panelName: string | null, boardMaterial: string, materialDefs: MaterialDef[]): boolean {
-  const def = materialDefs.find(m => m.name === boardMaterial);
+function grainSwap(inst: SceneInstance, panelName: string | null, boardMaterialId: string, materialDefs: MaterialDef[]): boolean {
+  const def = materialDefs.find(m => m.id === boardMaterialId);
   if (!def?.texture) return false;
   const baseAxis = def.grainAxis ?? 'В';
   const rotated = panelName ? inst.params[panelGrainParamKey(panelName)] === 1 : false;
@@ -88,21 +102,21 @@ export function collectPanels(instances: SceneInstance[], materialDefs: Material
   for (const inst of instances) {
     if (inst.familyId === 'ploskost') {
       const p = inst.params;
-      const { board, kant: kantMat } = resolveMaterials(inst, null);
+      const { boardId, board, kant: kantMat } = resolveMaterials(inst, null, materialDefs);
       addPanel(inst.label, inst.label, board, kantMat, p['AB'], p['BC'],
         [!!p['pvcAB'], !!p['pvcBC'], !!p['pvcCD'], !!p['pvcDA']], p['kantThickness'] || 0, p['thickness'] || 0,
-        grainSwap(inst, null, board, materialDefs));
+        grainSwap(inst, null, boardId, materialDefs));
     } else if (inst.familyId === 'module') {
       const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
       for (const pan of korpusPanels(inst.params, true)) {
-        const { board, kant: kantMat } = resolveMaterials(inst, pan.name);
-        addPanel(pan.name, inst.label, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, board, materialDefs));
+        const { boardId, board, kant: kantMat } = resolveMaterials(inst, pan.name, materialDefs);
+        addPanel(pan.name, inst.label, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, boardId, materialDefs));
       }
     } else if (inst.familyId === 'drawer') {
       const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
       for (const pan of drawerPanels(inst.params)) {
-        const { board, kant: kantMat } = resolveMaterials(inst, pan.name);
-        addPanel(pan.name, inst.label, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, board, materialDefs));
+        const { boardId, board, kant: kantMat } = resolveMaterials(inst, pan.name, materialDefs);
+        addPanel(pan.name, inst.label, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, boardId, materialDefs));
       }
     }
   }
