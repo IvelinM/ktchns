@@ -157,6 +157,13 @@ export interface KorpusPanel {
   px: number; py: number; pz: number;
   pvc: boolean[];   // [AB, BC, CD, DA]
   t: number;        // this panel's thickness (mm) — the back may differ (ГРЪБ ДЕБЕЛИНА)
+  // Set ONLY on a ДВОЙНА_ВРАТИЧКА side-by-side leaf (vertical fugue) — which one it is
+  // is known for certain right here (the leaf built first/at the smaller X is the left
+  // one), unlike downstream (webcad-schedule.ts's hinge-mark logic), which would
+  // otherwise have no way to tell two identically-named 'ВРАТИЧКА' panels apart. Absent
+  // for every other panel (including a HORIZONTAL-fugue stacked pair, where "left/right"
+  // genuinely doesn't apply — see hingeMark's own doc comment, webcad-schedule.ts).
+  doorSide?: 'лява' | 'дясна';
 }
 
 /**
@@ -231,8 +238,8 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
   const panels: KorpusPanel[] = [];
   const add = (name: string, AB: number, BC: number, rx: number, ry: number, rz: number,
                px: number, py: number, pz: number,
-               pvc: boolean[] = [false, false, false, false], pt: number = t) =>
-    panels.push({ name, AB, BC, rx, ry, rz, px, py, pz, pvc, t: pt });
+               pvc: boolean[] = [false, false, false, false], pt: number = t, doorSide?: 'лява' | 'дясна') =>
+    panels.push({ name, AB, BC, rx, ry, rz, px, py, pz, pvc, t: pt, doorSide });
 
   // ДЪЛБОЧИНА is the OUTER depth: the back occupies the rear backT and the door the
   // front t (when present). The sides, top and bottom fit BETWEEN them, so their
@@ -420,8 +427,8 @@ export function korpusPanels(p: Record<string, number>, withDoor: boolean): Korp
         const totalW = xr - xl;
         const leftW = Math.max(0, Math.min(p['ЛЯВА_ВРАТИЧКА_ШИРИНА'] ?? (totalW - GAP) / 2, totalW - GAP));
         const splitX = xl + leftW;
-        add('ВРАТИЧКА', splitX - xl, yt - yb, 0, 0, 0, mid(xl, splitX), mid(yb, yt), doorZ, doorPvc);
-        add('ВРАТИЧКА', xr - (splitX + GAP), yt - yb, 0, 0, 0, mid(splitX + GAP, xr), mid(yb, yt), doorZ, doorPvc);
+        add('ВРАТИЧКА', splitX - xl, yt - yb, 0, 0, 0, mid(xl, splitX), mid(yb, yt), doorZ, doorPvc, t, 'лява');
+        add('ВРАТИЧКА', xr - (splitX + GAP), yt - yb, 0, 0, 0, mid(splitX + GAP, xr), mid(yb, yt), doorZ, doorPvc, t, 'дясна');
       } else {
         const totalH = yt - yb;
         const topH = Math.max(0, Math.min(p['ЛЯВА_ВРАТИЧКА_ШИРИНА'] ?? (totalH - GAP) / 2, totalH - GAP));

@@ -83,6 +83,20 @@ const KORPUS_PARAMS: ParamDef[] = [
   // matters once ДВОЙНА ВРАТИЧКА is checked. See korpusPanels (webcad-geometry.ts).
   { key: 'ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА', label: 'ДВОЙНА ВРАТИЧКА С ВЕРТИКАЛНА ФУГА', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ЛЯВА_ВРАТИЧКА_ШИРИНА',  label: 'ЛЯВА ВРАТИЧКА ШИРИНА',  defaultValue: 400, min: 1, step: 1,   unit: 'mm' },
+  // Hinge prep marking for the Хосе/Мая shop exports (hingeInfo, webcad-schedule.ts) —
+  // doesn't affect the 3D geometry at all, purely cut-list metadata. С ПАНТИ gates
+  // whether a ВРАТИЧКА panel gets marked at all (off for e.g. push-to-open doors with no
+  // visible hinges). БРОЙ ПАНТИ is the hinge count per panel — Хосе doesn't use it
+  // directly (its К column just names a length/side), but Мая's own ПАНТИ column
+  // aggregates it across merged panels ("2 по дълга", "4 по дълга", …).
+  { key: 'ВРАТИЧКА_С_ПАНТИ',     label: 'ВРАТИЧКА С ПАНТИ',     defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
+  { key: 'ВРАТИЧКА_БРОЙ_ПАНТИ',  label: 'ВРАТИЧКА БРОЙ ПАНТИ',  defaultValue: 2, min: 1, step: 1, unit: '' },
+  // Which side the hinge mounts on — only consulted at all when ДВОЙНА_ВРАТИЧКА is on (a
+  // single door never names a side, see hingeInfo's own doc comment), and even then only
+  // for a stacked (horizontal-fugue) pair, which has no inherent left/right of its own;
+  // a side-by-side (vertical-fugue) pair's two leaves are instead forced by their own
+  // position (set by korpusPanels as each leaf's `doorSide`), ignoring this entirely.
+  { key: 'ВРАТИЧКА_ПАНТИ_ОТДЯСНО', label: 'ВРАТИЧКА ПАНТИ ОТДЯСНО', defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ТАВАН_С_КАНТ_ОТПРЕД',  label: 'ТАВАН С КАНТ ОТПРЕД',  defaultValue: 1, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ТАВАН_С_КАНТ_ОТЛЯВО',  label: 'ТАВАН С КАНТ ОТЛЯВО',  defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },
   { key: 'ТАВАН_С_КАНТ_ОТДЯСНО', label: 'ТАВАН С КАНТ ОТДЯСНО', defaultValue: 0, min: 0, step: 1, unit: '', type: 'toggle' },

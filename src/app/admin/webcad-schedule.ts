@@ -12,6 +12,9 @@ import { korpusPanels, drawerPanels, panelMaterialGroup, panelGrainParamKey, KOR
 export interface Panel {
   element: string; module: string; material: string; kantMaterial: string; size1: number; size2: number;
   pvc: boolean[]; kant: number; thickness: number;
+  hinge: string;                        // Хосе's full value, e.g. "дълга" or "дълга дясна"
+  hingeLength: '' | 'дълга' | 'къса';    // Мая's grouping key (side-less — see buildMayaWorkbook)
+  hingeCount: number;                    // hinges on this one panel (0 when hinge === '')
 }
 
 /**
@@ -73,6 +76,50 @@ function grainSwap(inst: SceneInstance, panelName: string | null, boardMaterialI
   return effective === 'В';
 }
 
+/** Hinge-prep info for one door panel — everything either export needs, computed once. */
+interface HingeInfo {
+  full: string;               // Хосе's K column: "дълга"/"къса", plus " лява"/" дясна" for a ДВОЙНА_ВРАТИЧКА leaf
+  length: '' | 'дълга' | 'къса';  // Мая's own ПАНТИ grouping key — side-less, see buildMayaWorkbook
+  count: number;               // ВРАТИЧКА_БРОЙ_ПАНТИ — hinges per panel, 0 when this panel isn't marked at all
+}
+const NO_HINGE: HingeInfo = { full: '', length: '', count: 0 };
+
+/**
+ * Hinge-prep marking for a door panel, matching the Хосе template's own "панти Ø35мм
+ * дълга/къса лява/дясна" column (К25:К26 in hose-template.xlsx) and feeding Мая's own
+ * aggregated ПАНТИ column (webcad-export-xlsx.ts — "2 по дълга" etc., a different
+ * presentation of the SAME underlying length/count, built from `length`/`count` here
+ * rather than reusing `full` directly). Blank unless this is a МОДУЛ's own 'ВРАТИЧКА'
+ * panel AND its ВРАТИЧКА_С_ПАНТИ toggle is on (off for e.g. a push-to-open door with no
+ * visible hinges) — purely cut-list metadata, never affects the 3D geometry.
+ *
+ * дълга/къса: compares this panel's own true vertical extent (`panelBC` — ALWAYS the
+ * raw, pre-grain-swap height from korpusPanels; a panel's size1/size2 in the exported
+ * cut-list may already be swapped for grain-cutting purposes, which is irrelevant here —
+ * hinges mount on the physical edge regardless of how that edge gets reported) against
+ * the cabinet's full ВИСОЧИНА: at or near full height (≥90%, generous enough to clear
+ * the usual few-mm ФУГА reveals) → дълга; meaningfully shorter (a
+ * ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА=false stacked leaf, roughly half height) → къса.
+ *
+ * лява/дясна is reported in `full` ONLY when ДВОЙНА_ВРАТИЧКА is on (two doors for this
+ * cabinet) — a single door never names a side. For the double-door case:
+ *  1. `doorSide` — set by korpusPanels ONLY for a side-by-side (vertical-fugue) leaf,
+ *     whose own left/right identity is otherwise undeterminable downstream (both leaves
+ *     share the name 'ВРАТИЧКА').
+ *  2. A stacked (horizontal-fugue) pair has no inherent left/right either leaf — falls
+ *     back to the manual ВРАТИЧКА_ПАНТИ_ОТДЯСНО override, applied to both leaves alike.
+ */
+function hingeInfo(inst: SceneInstance, panelName: string, panelBC: number, doorSide?: 'лява' | 'дясна'): HingeInfo {
+  if (inst.familyId !== 'module' || !panelName.includes('ВРАТИЧКА')) return NO_HINGE;
+  if (!(inst.params['ВРАТИЧКА_С_ПАНТИ'] ?? 1)) return NO_HINGE;
+  const H = inst.params['ВИСОЧИНА'] ?? 720;
+  const length: 'дълга' | 'къса' = panelBC >= H * 0.9 ? 'дълга' : 'къса';
+  const count = inst.params['ВРАТИЧКА_БРОЙ_ПАНТИ'] ?? 2;
+  if (!inst.params['ДВОЙНА_ВРАТИЧКА']) return { full: length, length, count };
+  const side = doorSide ?? ((inst.params['ВРАТИЧКА_ПАНТИ_ОТДЯСНО'] ?? 1) ? 'дясна' : 'лява');
+  return { full: `${length} ${side}`, length, count };
+}
+
 /**
  * Collect every ploskost panel in the project — standalone ПЛОСКОСТ objects AND each
  * board that composes a МОДУЛ/ЧЕКМЕДЖЕ (via `korpusPanels`/`drawerPanels`, the same
@@ -91,12 +138,15 @@ function grainSwap(inst: SceneInstance, panelName: string | null, boardMaterialI
  */
 export function collectPanels(instances: SceneInstance[], materialDefs: MaterialDef[]): Panel[] {
   const panels: Panel[] = [];
-  const addPanel = (element: string, module: string, material: string, kantMaterial: string, AB: number, BC: number, pvc: boolean[], kant: number, thickness: number, swap: boolean) => {
+  const addPanel = (element: string, module: string, material: string, kantMaterial: string, AB: number, BC: number, pvc: boolean[], kant: number, thickness: number, swap: boolean, hinge: HingeInfo) => {
     const ab = swap ? BC : AB, bc = swap ? AB : BC;
     const p2 = swap ? [pvc[1], pvc[0], pvc[3], pvc[2]] : pvc;
     const r1 = kant * ((p2[1] ? 1 : 0) + (p2[3] ? 1 : 0));
     const r2 = kant * ((p2[0] ? 1 : 0) + (p2[2] ? 1 : 0));
-    panels.push({ element, module, material, kantMaterial, size1: Math.round(ab - r1), size2: Math.round(bc - r2), pvc: p2, kant, thickness });
+    panels.push({
+      element, module, material, kantMaterial, size1: Math.round(ab - r1), size2: Math.round(bc - r2), pvc: p2, kant, thickness,
+      hinge: hinge.full, hingeLength: hinge.length, hingeCount: hinge.count,
+    });
   };
 
   for (const inst of instances) {
@@ -105,18 +155,20 @@ export function collectPanels(instances: SceneInstance[], materialDefs: Material
       const { boardId, board, kant: kantMat } = resolveMaterials(inst, null, materialDefs);
       addPanel(inst.label, inst.label, board, kantMat, p['AB'], p['BC'],
         [!!p['pvcAB'], !!p['pvcBC'], !!p['pvcCD'], !!p['pvcDA']], p['kantThickness'] || 0, p['thickness'] || 0,
-        grainSwap(inst, null, boardId, materialDefs));
+        grainSwap(inst, null, boardId, materialDefs), hingeInfo(inst, inst.label, p['BC']));
     } else if (inst.familyId === 'module') {
       const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
       for (const pan of korpusPanels(inst.params, true)) {
         const { boardId, board, kant: kantMat } = resolveMaterials(inst, pan.name, materialDefs);
-        addPanel(pan.name, inst.label, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, boardId, materialDefs));
+        addPanel(pan.name, inst.label, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t,
+          grainSwap(inst, pan.name, boardId, materialDefs), hingeInfo(inst, pan.name, pan.BC, pan.doorSide));
       }
     } else if (inst.familyId === 'drawer') {
       const kant = inst.params['КАНТ_ДЕБЕЛИНА'] ?? KORPUS_KANT;
       for (const pan of drawerPanels(inst.params)) {
         const { boardId, board, kant: kantMat } = resolveMaterials(inst, pan.name, materialDefs);
-        addPanel(pan.name, inst.label, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t, grainSwap(inst, pan.name, boardId, materialDefs));
+        addPanel(pan.name, inst.label, board, kantMat, pan.AB, pan.BC, pan.pvc, kant, pan.t,
+          grainSwap(inst, pan.name, boardId, materialDefs), NO_HINGE);
       }
     }
   }
@@ -140,7 +192,16 @@ export const byMaterial = (a: Panel, c: Panel) =>
 /**
  * Merge identical panels (same material, kant material, size and banding) into one row
  * each with a piece count — the "merged"/non-itemize convention `buildScheduleText` and
- * the Мая .xlsx export both use. Sorted by whatever comparator the caller passes.
+ * both the Хосе and Мая .xlsx exports use. The hinge mark (`hinge`/`hingeLength`) is
+ * deliberately NOT part of the key — it used to be, but since a double door's two leaves
+ * (and even plain end-unit cabinets, forced to one side or the other) very often differ
+ * only by hinge side, keying on it was splitting almost every group into its own row,
+ * defeating "merged" mode entirely (reported as "now we almost itemize all instances").
+ * A merged group's `hinge`/`hingeLength`/`hingeCount` is simply whichever panel happened
+ * to be first into the group — same best-effort convention already used for every other
+ * non-keyed field here (`element`, `module`): good enough for the common case where a
+ * merged group's hinge marks agree anyway, not a guaranteed per-row truth when they
+ * don't. Sorted by whatever comparator the caller passes.
  */
 export function mergePanels(panels: Panel[], sortCmp: (a: Panel, c: Panel) => number): { p: Panel; count: number }[] {
   const rows = new Map<string, { p: Panel; count: number }>();

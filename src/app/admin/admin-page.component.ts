@@ -939,6 +939,9 @@ export class AdminPageComponent implements OnInit, OnDestroy {
     ['ДВОЙНА_ВРАТИЧКА_С_ВЕРТИКАЛНА_ФУГА', 'ДВОЙНА_ВРАТИЧКА'],
     ['ФУГА_МЕЖДУ_ВРАТИЧКИ', 'ДВОЙНА_ВРАТИЧКА'],
     ['ГРЪБ_С_ХОРИЗОНТАЛНА_ФУГА', 'ДВОЕН_ГРЪБ'],
+    // Only consulted at all once there are two doors to tell apart (hingeInfo,
+    // webcad-schedule.ts — a single door never names a hinge side).
+    ['ВРАТИЧКА_ПАНТИ_ОТДЯСНО', 'ДВОЙНА_ВРАТИЧКА'],
   ]);
 
   paramRowVisible(p: ParamDef, params: Record<string, number>): boolean {

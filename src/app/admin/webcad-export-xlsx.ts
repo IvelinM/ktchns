@@ -158,6 +158,13 @@ export async function buildHoseWorkbook(instances: SceneInstance[], materialDefs
       ws.getCell(`F${r}`).value = BAND(p.pvc[2]);
       ws.getCell(`G${r}`).value = BAND(p.pvc[1]);
       ws.getCell(`H${r}`).value = BAND(p.pvc[3]);
+      // K25:K26 "панти Ø35мм дълга/къса лява/дясна" — blank for anything that isn't a
+      // hinge-marked ВРАТИЧКА panel; a side word only for a ДВОЙНА_ВРАТИЧКА leaf, never a
+      // single door (see hingeInfo, webcad-schedule.ts). `merged` doesn't key on this at
+      // all (mergePanels's own doc comment), so a лява and дясна leaf of equal size — the
+      // common symmetric-split case — merge into ONE row here now, showing whichever
+      // leaf happened to be first; a genuinely mixed group isn't split back apart.
+      ws.getCell(`K${r}`).value = p.hinge;
     });
   }
 
@@ -174,16 +181,26 @@ const SHORT_LABEL = ['-', '1 КЪС', '2 КЪСИ'];
 /**
  * Build a workbook for Мая's production-offer request — a single "Sheet1" matching her
  * own template's layout (D:\WORK_FILES\APARTAMENT_SLAV_KARASLAVOV\PLOT\СЛАВ КАРАСЛАВОВ -
- * ГАРДЕРОБ 1.xlsx), minus its ТИП column (always just "ПДЧ", dropped per request): a
- * title row, the column headers (МАТЕРИАЛ/МАТЕРИАЛ_КАНТ/BC/AB/КАНТ_ДЪЛГИ/КАНТ_КЪСИ/
- * БРОЙ), a blank spacer row, then every distinct panel size+banding across the WHOLE
- * project (her template interleaves materials, not split into sheets like Хосе's),
- * merged with a count exactly like the .txt export's "merged" mode, ordered by МАТЕРИАЛ
- * (then kant material, then size — `byMaterial`, webcad-schedule.ts, same ordering the
- * .txt export itself uses) — and a final "Grand total: N" row, a literal count exactly
- * like the example (not a formula; her template doesn't use one either). No source
- * template to clone here — her sheet has no special formatting worth preserving, so
- * this one's built from scratch.
+ * ГАРДЕРОБ 1.xlsx), minus its ТИП column (always just "ПДЧ", dropped per request) plus a
+ * ДЕБЕЛИНА column (panel thickness, mm) inserted right after МАТЕРИАЛ_КАНТ and a ПАНТИ
+ * column appended at the end (neither in her original template): a title row, the column
+ * headers (МАТЕРИАЛ/МАТЕРИАЛ_КАНТ/ДЕБЕЛИНА/BC/AB/КАНТ_ДЪЛГИ/КАНТ_КЪСИ/БРОЙ/ПАНТИ), a
+ * blank spacer row, then every distinct panel size+banding across the WHOLE project (her
+ * template interleaves materials, not split into sheets like Хосе's), merged with a
+ * count exactly like the .txt export's "merged" mode (ordered by МАТЕРИАЛ, then kant
+ * material, then size — `byMaterial`, webcad-schedule.ts, same ordering the .txt export
+ * itself uses) — and a final "Grand total: N" row, a literal count exactly like the
+ * example (not a formula; her template doesn't use one either). No source template to
+ * clone here — her sheet has no special formatting worth preserving, so this one's built
+ * from scratch.
+ *
+ * ПАНТИ here reads "2 по дълга" / "3 по дълга" / "2 по къса" — a side-LESS length+count
+ * (unlike Хосе's own К column, which can name a side for a double door — see hingeInfo's
+ * own doc comment, webcad-schedule.ts). `mergePanels` does NOT key on the hinge mark at
+ * all (see its own doc comment — keying on it used to split almost every group into its
+ * own row), so a merged group's `hingeLength`/`hingeCount` are just whichever panel
+ * happened to be first into it; a mostly-uniform project (the common case) still reports
+ * correctly, a mixed one is a best-effort single value, not a guaranteed per-row truth.
  */
 export async function buildMayaWorkbook(instances: SceneInstance[], materialDefs: MaterialDef[]): Promise<ExcelJS.Workbook> {
   const panels = collectPanels(instances, materialDefs);
@@ -191,18 +208,19 @@ export async function buildMayaWorkbook(instances: SceneInstance[], materialDefs
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Sheet1');
-  ws.columns = [36, 16, 9, 9, 11, 11, 7].map(width => ({ width }));
+  ws.columns = [36, 16, 10, 9, 9, 11, 11, 7, 14].map(width => ({ width }));
 
   ws.getCell('A1').value = 'Спецификация - Всички Гардероб Модули';
-  ['МАТЕРИАЛ', 'МАТЕРИАЛ_КАНТ', 'BC [mm]', 'AB [mm]', 'КАНТ_ДЪЛГИ', 'КАНТ_КЪСИ', 'БРОЙ']
+  ['МАТЕРИАЛ', 'МАТЕРИАЛ_КАНТ', 'ДЕБЕЛИНА', 'BC [mm]', 'AB [mm]', 'КАНТ_ДЪЛГИ', 'КАНТ_КЪСИ', 'БРОЙ', 'ПАНТИ']
     .forEach((h, i) => { ws.getRow(2).getCell(i + 1).value = h; });
 
   let total = 0, rowNum = 4;
   for (const { p, count } of merged) {
     const longCount = (p.pvc[0] ? 1 : 0) + (p.pvc[2] ? 1 : 0);
     const shortCount = (p.pvc[1] ? 1 : 0) + (p.pvc[3] ? 1 : 0);
+    const hinge = p.hingeLength ? `${p.hingeCount} по ${p.hingeLength}` : '';
     const row = ws.getRow(rowNum);
-    [ p.material, p.kantMaterial, p.size2, p.size1, LONG_LABEL[longCount], SHORT_LABEL[shortCount], count ]
+    [ p.material, p.kantMaterial, p.thickness, p.size2, p.size1, LONG_LABEL[longCount], SHORT_LABEL[shortCount], count, hinge ]
       .forEach((v, i) => { row.getCell(i + 1).value = v; });
     total += count;
     rowNum++;
